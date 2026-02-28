@@ -238,6 +238,34 @@ class TestBuildJobFromPlan:
         job = build_job_from_plan("c1", "original", plan, models)
         assert job.tasks["t1"].model == "haiku"  # first key = default
 
+    def test_qa_field_preserved(self):
+        models = {"haiku": "fast"}
+        plan = {
+            "tasks": [
+                {
+                    "logical_id": "research",
+                    "agent": "researcher",
+                    "model": "haiku",
+                    "description": "Do research",
+                    "qa": "Verify all claims have citations",
+                    "max_retries": 3,
+                    "depends_on": [],
+                },
+                {
+                    "logical_id": "simple",
+                    "agent": "worker",
+                    "model": "haiku",
+                    "description": "Simple task",
+                    "depends_on": [],
+                },
+            ]
+        }
+        job = build_job_from_plan("c1", "original", plan, models)
+        assert job.tasks["research"].qa == "Verify all claims have citations"
+        assert job.tasks["research"].max_retries == 3
+        assert job.tasks["simple"].qa == ""
+        assert job.tasks["simple"].max_retries == 2  # default
+
 
 # ---------------------------------------------------------------------------
 # E2E fixtures
@@ -660,3 +688,196 @@ class TestE2E:
             monkeypatch, mock_spawn, chat_id, "Research something"
         )
         assert result == "Final answer"
+
+    async def test_qa_pass(self, monkeypatch, mock_worker_factory, clear_retained):
+        """Task with qa field — QA passes, graph advances normally."""
+        chat_id = f"test-qa-pass-{uuid.uuid4().hex[:8]}"
+        planner_response = json.dumps(
+            {
+                "action": "delegate",
+                "tasks": [
+                    {
+                        "logical_id": "research",
+                        "agent": "researcher",
+                        "model": "haiku",
+                        "description": "Do research",
+                        "qa": "Verify claims have citations",
+                        "depends_on": [],
+                    },
+                ],
+            }
+        )
+        mock_spawn = mock_worker_factory(
+            {
+                "planner": planner_response,
+                "researcher": "Research with [citation]",
+                "qa": '{"pass":true}',
+                "writer": "Final QA-passed answer",
+            }
+        )
+
+        result = await self._run_with_coordinator(
+            monkeypatch, mock_spawn, chat_id, "Research with QA"
+        )
+        assert result == "Final QA-passed answer"
+
+    async def test_qa_fail_then_pass(
+        self, monkeypatch, mock_worker_factory, clear_retained
+    ):
+        """QA fails first time, worker retried with feedback, QA passes on retry."""
+        chat_id = f"test-qa-retry-{uuid.uuid4().hex[:8]}"
+        planner_response = json.dumps(
+            {
+                "action": "delegate",
+                "tasks": [
+                    {
+                        "logical_id": "research",
+                        "agent": "researcher",
+                        "model": "haiku",
+                        "description": "Do research",
+                        "qa": "Verify claims have citations",
+                        "depends_on": [],
+                    },
+                ],
+            }
+        )
+
+        # Track spawn counts to vary responses
+        spawn_counts: dict[str, int] = {}
+        spawned_tasks: list[tuple[str, str, str]] = []
+
+        async def _delayed_result(chat_id_: str, task_id_: str, text: str):
+            await asyncio.sleep(0.05)
+            result_msg = TaskResultMessage(
+                task_id=task_id_, chat_id=chat_id_, result=text
+            )
+            async with aiomqtt.Client(
+                MQTT_HOST, MQTT_PORT, identifier=f"mock-{task_id_[:8]}"
+            ) as c:
+                await c.publish(
+                    f"skitter/results/{chat_id_}/{task_id_}",
+                    result_msg.to_json(),
+                    qos=1,
+                )
+
+        def mock_spawn(agent: str, chat_id_: str, task_id_: str):
+            spawned_tasks.append((agent, chat_id_, task_id_))
+            spawn_counts[agent] = spawn_counts.get(agent, 0) + 1
+
+            if agent == "planner":
+                asyncio.get_running_loop().create_task(
+                    _delayed_result(chat_id_, task_id_, planner_response)
+                )
+            elif agent == "researcher":
+                if spawn_counts["researcher"] == 1:
+                    asyncio.get_running_loop().create_task(
+                        _delayed_result(chat_id_, task_id_, "No citations here")
+                    )
+                else:
+                    asyncio.get_running_loop().create_task(
+                        _delayed_result(chat_id_, task_id_, "Research with [citation]")
+                    )
+            elif agent == "qa":
+                if spawn_counts["qa"] == 1:
+                    asyncio.get_running_loop().create_task(
+                        _delayed_result(
+                            chat_id_,
+                            task_id_,
+                            '{"pass":false,"feedback":"Missing citations"}',
+                        )
+                    )
+                else:
+                    asyncio.get_running_loop().create_task(
+                        _delayed_result(chat_id_, task_id_, '{"pass":true}')
+                    )
+            elif agent == "writer":
+                asyncio.get_running_loop().create_task(
+                    _delayed_result(chat_id_, task_id_, "Final after retry")
+                )
+
+        result = await self._run_with_coordinator(
+            monkeypatch, mock_spawn, chat_id, "Research with QA"
+        )
+        assert result == "Final after retry"
+        # Researcher spawned twice (original + retry)
+        researcher_spawns = [s for s in spawned_tasks if s[0] == "researcher"]
+        assert len(researcher_spawns) == 2
+        # QA spawned twice (fail + pass)
+        qa_spawns = [s for s in spawned_tasks if s[0] == "qa"]
+        assert len(qa_spawns) == 2
+
+    async def test_qa_fail_exhausted(
+        self, monkeypatch, mock_worker_factory, clear_retained
+    ):
+        """QA fails past max_retries — coordinator advances anyway."""
+        chat_id = f"test-qa-exhaust-{uuid.uuid4().hex[:8]}"
+        planner_response = json.dumps(
+            {
+                "action": "delegate",
+                "tasks": [
+                    {
+                        "logical_id": "research",
+                        "agent": "researcher",
+                        "model": "haiku",
+                        "description": "Do research",
+                        "qa": "Verify claims have citations",
+                        "max_retries": 1,
+                        "depends_on": [],
+                    },
+                ],
+            }
+        )
+
+        spawn_counts: dict[str, int] = {}
+        spawned_tasks: list[tuple[str, str, str]] = []
+
+        async def _delayed_result(chat_id_: str, task_id_: str, text: str):
+            await asyncio.sleep(0.05)
+            result_msg = TaskResultMessage(
+                task_id=task_id_, chat_id=chat_id_, result=text
+            )
+            async with aiomqtt.Client(
+                MQTT_HOST, MQTT_PORT, identifier=f"mock-{task_id_[:8]}"
+            ) as c:
+                await c.publish(
+                    f"skitter/results/{chat_id_}/{task_id_}",
+                    result_msg.to_json(),
+                    qos=1,
+                )
+
+        def mock_spawn(agent: str, chat_id_: str, task_id_: str):
+            spawned_tasks.append((agent, chat_id_, task_id_))
+            spawn_counts[agent] = spawn_counts.get(agent, 0) + 1
+
+            if agent == "planner":
+                asyncio.get_running_loop().create_task(
+                    _delayed_result(chat_id_, task_id_, planner_response)
+                )
+            elif agent == "researcher":
+                asyncio.get_running_loop().create_task(
+                    _delayed_result(chat_id_, task_id_, "Bad research no citations")
+                )
+            elif agent == "qa":
+                # Always fail
+                asyncio.get_running_loop().create_task(
+                    _delayed_result(
+                        chat_id_,
+                        task_id_,
+                        '{"pass":false,"feedback":"Still no citations"}',
+                    )
+                )
+            elif agent == "writer":
+                asyncio.get_running_loop().create_task(
+                    _delayed_result(chat_id_, task_id_, "Final despite QA failure")
+                )
+
+        result = await self._run_with_coordinator(
+            monkeypatch, mock_spawn, chat_id, "Research with QA"
+        )
+        assert result == "Final despite QA failure"
+        # Researcher: 1 original + 1 retry (max_retries=1)
+        researcher_spawns = [s for s in spawned_tasks if s[0] == "researcher"]
+        assert len(researcher_spawns) == 2
+        # QA: 2 times (fail, then fail again = exhausted)
+        qa_spawns = [s for s in spawned_tasks if s[0] == "qa"]
+        assert len(qa_spawns) == 2

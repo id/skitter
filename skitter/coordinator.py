@@ -85,6 +85,7 @@ Guidelines:
 - Do NOT include a final synthesis/summary task — one will be added automatically
 - "soul" = worker persona (e.g. "You are a research specialist. Cite sources.")
 - "skills" = tool guidance (e.g. "Read all .md files in the current directory. Summarize findings.")
+- "qa" (optional) = quality criteria for reviewing this task's output (e.g. "Verify sources are cited and claims are factual")
 - Prefer direct response for simple questions — don't over-delegate
 - Delegate to 2-5 sub-agents when parallelizable or sequential work exists
 - Output ONLY the JSON object, nothing else
@@ -186,6 +187,8 @@ def build_job_from_plan(
             skills=t.get("skills", ""),
             depends_on=t.get("depends_on", []),
             model=model,
+            qa=t.get("qa", ""),
+            max_retries=t.get("max_retries", 2),
         )
         all_logical_ids.append(logical_id)
 
@@ -519,6 +522,108 @@ async def run() -> None:
                         await client.publish(job_topic, b"", qos=1, retain=True)
                         jobs.pop(chat_id, None)
                         continue
+
+                # --- QA result handling ---
+                if logical_id.startswith("qa:"):
+                    original_id = logical_id[3:]
+                    original_task = job.tasks.get(original_id)
+                    if original_task is None:
+                        log.warning(
+                            "[coordinator] QA result for unknown task '%s'",
+                            original_id,
+                        )
+                        continue
+
+                    # Parse QA verdict
+                    qa_passed = False
+                    qa_feedback = ""
+                    try:
+                        qa_result = extract_json(result_msg.result)
+                        qa_passed = qa_result.get("pass", False)
+                        qa_feedback = qa_result.get("feedback", "")
+                    except Exception as e:
+                        log.warning(
+                            "[coordinator] Failed to parse QA result for '%s': %s — treating as pass",
+                            original_id,
+                            e,
+                        )
+                        qa_passed = True
+
+                    # Clean up ephemeral QA task and result
+                    job.tasks.pop(logical_id, None)
+                    job.results.pop(logical_id, None)
+
+                    if qa_passed:
+                        log.info("[coordinator] QA passed for '%s'", original_id)
+                        # original task stays done, fall through to advance graph
+                    elif original_task.retries < original_task.max_retries:
+                        original_task.retries += 1
+                        log.info(
+                            "[coordinator] QA failed for '%s' (retry %d/%d): %s",
+                            original_id,
+                            original_task.retries,
+                            original_task.max_retries,
+                            qa_feedback,
+                        )
+                        # Reset original task for retry with feedback appended
+                        original_task.status = "pending"
+                        original_task.description += f"\n\n[QA feedback, attempt {original_task.retries}]: {qa_feedback}"
+                        # Remove old result so worker starts fresh
+                        job.results.pop(original_id, None)
+                    else:
+                        log.warning(
+                            "[coordinator] QA failed for '%s' but retries exhausted (%d/%d) — advancing anyway",
+                            original_id,
+                            original_task.retries,
+                            original_task.max_retries,
+                        )
+                        # Keep original result and status=done, advance graph
+
+                    # Fall through to get_ready_tasks / advance graph
+                    ready = get_ready_tasks(job)
+                    for task in ready:
+                        task.status = "running"
+                        await publish_task(client, job, task)
+                        task_to_chat[task.task_id] = (chat_id, task.agent)
+                        spawn_worker(task.agent, chat_id, task.task_id)
+
+                    await client.publish(job_topic, job.to_json(), qos=1, retain=True)
+                    continue
+
+                # --- Normal task with QA: spawn QA agent ---
+                if (
+                    logical_id not in ("planner", "synthesize")
+                    and not logical_id.startswith("qa:")
+                    and job.tasks[logical_id].qa
+                ):
+                    qa_logical_id = f"qa:{logical_id}"
+                    qa_task_id = uuid.uuid4().hex[:12]
+                    qa_task = JobTask(
+                        logical_id=qa_logical_id,
+                        task_id=qa_task_id,
+                        agent="qa",
+                        description=(
+                            f"## QA Criteria\n{job.tasks[logical_id].qa}\n\n"
+                            f"## Original Task\n{job.tasks[logical_id].description}\n\n"
+                            f"## Worker Output\n{result_msg.result}"
+                        ),
+                        soul="You are a QA reviewer. Evaluate the work against the criteria. Return JSON only.",
+                        skills='Output ONLY {"pass":true} or {"pass":false,"feedback":"specific actionable feedback"}',
+                        max_turns=0,
+                        model=PLANNER_MODEL,
+                    )
+                    job.tasks[qa_logical_id] = qa_task
+                    qa_task.status = "running"
+                    await publish_task(client, job, qa_task)
+                    task_to_chat[qa_task_id] = (chat_id, "qa")
+                    spawn_worker("qa", chat_id, qa_task_id)
+                    await client.publish(job_topic, job.to_json(), qos=1, retain=True)
+                    log.info(
+                        "[coordinator] Spawned QA for '%s' (%s)",
+                        logical_id,
+                        qa_task_id,
+                    )
+                    continue
 
                 # --- Normal task result: advance the graph ---
                 # Check if synthesize task just completed

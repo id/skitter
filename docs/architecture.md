@@ -18,6 +18,9 @@ stateDiagram-v2
     DirectResponse --> [*]
     DAGBuilt --> WorkersRunning
     WorkersRunning --> WorkersRunning
+    WorkersRunning --> QAReview
+    QAReview --> WorkersRunning: fail + retries left
+    QAReview --> WorkersRunning: pass
     WorkersRunning --> Synthesizing
     Synthesizing --> [*]
 ```
@@ -28,6 +31,7 @@ stateDiagram-v2
 - **DirectResponse** — Planner returns a direct answer, coordinator forwards to outbound
 - **DAGBuilt** — Planner returns a task graph, coordinator builds DAG with synthesize node
 - **WorkersRunning** — Workers execute in parallel; as results arrive, newly unblocked tasks spawn
+- **QAReview** — If a task has QA criteria, an ephemeral QA agent validates the output. On failure, the task retries with feedback
 - **Synthesizing** — All workers done, synthesize task combines results into final response
 
 ## Coordinator Message Loop
@@ -51,11 +55,21 @@ flowchart TD
     end
 
     subgraph Result Handler
-        RESULT[Worker result] --> IS_PLANNER{Planner task?}
+        RESULT[Worker result] --> IS_QA{QA result?}
+        IS_QA -->|yes| QA_PARSE[Parse pass/fail JSON]
+        QA_PARSE -->|pass| QA_ADVANCE[Clean up QA task, advance graph]
+        QA_PARSE -->|fail + retries left| QA_RETRY[Reset task to pending, append feedback]
+        QA_PARSE -->|fail + exhausted| QA_FORCE[Log warning, advance anyway]
+        QA_RETRY --> SPAWN_READY
+        QA_FORCE --> SPAWN_READY
+        QA_ADVANCE --> SPAWN_READY
+        IS_QA -->|no| IS_PLANNER{Planner task?}
         IS_PLANNER -->|respond| DIRECT[Publish to outbound and clear job]
         IS_PLANNER -->|delegate| BUILD[Build full DAG and add synthesize node]
-        IS_PLANNER -->|other task| IS_SYNTH{Synthesize task?}
+        IS_PLANNER -->|other task| HAS_QA{Has qa field?}
         BUILD --> SPAWN_READY[Spawn workers for ready tasks]
+        HAS_QA -->|yes| SPAWN_QA[Spawn ephemeral QA agent]
+        HAS_QA -->|no| IS_SYNTH{Synthesize task?}
         IS_SYNTH -->|yes| FINAL[Publish to outbound and clear job]
         IS_SYNTH -->|no| ADVANCE[Find newly unblocked tasks]
         ADVANCE --> SPAWN_READY
@@ -89,12 +103,67 @@ flowchart LR
     end
 ```
 
-The coordinator advances the graph with pure logic — no LLM calls:
+When a task has a `qa` field, an ephemeral QA agent gates its completion before downstream tasks can proceed.
+
+```mermaid
+flowchart LR
+    subgraph QA-gated task
+        A[research - sonnet] -.->|qa| QA[qa:research]
+        QA -.->|pass| S[synthesize - haiku]
+        QA -.->|fail| A
+    end
+```
+
+The coordinator advances the graph with pure logic, with no LLM calls:
 
 1. Mark completed task as "done", store its result
-2. Find tasks where all dependencies are "done" and status is "pending"
-3. For each: build context from upstream results, publish retained task, spawn worker
-4. Re-publish updated job spec
+2. If the task has a `qa` field, spawn an ephemeral QA agent instead of advancing (see QA below)
+3. Find tasks where all dependencies are "done" and status is "pending"
+4. For each: build context from upstream results, publish retained task, spawn worker
+5. Re-publish updated job spec
+
+## QA Feedback Loop
+
+The planner can attach a `"qa"` field to any task with criteria for validating the output. When a task with QA completes:
+
+```mermaid
+flowchart TD
+    DONE[Worker completes task] --> HAS_QA{Has qa field?}
+    HAS_QA -->|no| ADVANCE[Advance graph normally]
+    HAS_QA -->|yes| SPAWN_QA[Spawn ephemeral QA agent]
+    SPAWN_QA --> QA_EVAL[QA evaluates result against criteria]
+    QA_EVAL --> PASS{Pass?}
+    PASS -->|yes| ADVANCE
+    PASS -->|no| RETRIES{Retries left?}
+    RETRIES -->|yes| RESET[Reset task to pending, append feedback]
+    RESET --> RESPAWN[Worker re-spawned with feedback in description]
+    RESPAWN --> DONE
+    RETRIES -->|no| FORCE[Log warning, advance with last result]
+```
+
+**Details:**
+
+- QA tasks use logical ID `qa:{original_id}` and are ephemeral and don't appear in the synthesize `depends_on` list
+- The QA agent gets: the original task description, the worker's output, and the QA criteria. It has no tools (`max_turns=0`) and must return `{"pass":true}` or `{"pass":false,"feedback":"..."}`
+- On failure, the coordinator increments `retries`, appends feedback to the task description, resets the task to `"pending"`, and removes the old result. The normal `get_ready_tasks()` logic picks it up and re-spawns the worker
+- Default `max_retries` is 2. The planner can override this per task
+- If retries are exhausted, the coordinator keeps the last result and advances the graph anyway
+
+### Planner Schema
+
+```json
+{
+  "logical_id": "research",
+  "agent": "researcher",
+  "model": "sonnet",
+  "description": "Research the topic thoroughly",
+  "qa": "Verify all claims have citations and sources are reputable",
+  "max_retries": 3,
+  "depends_on": []
+}
+```
+
+The `qa` and `max_retries` fields are optional. Tasks without `qa` behave exactly as before.
 
 ## Worker Lifecycle
 

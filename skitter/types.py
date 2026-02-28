@@ -128,6 +128,9 @@ class JobTask:
     status: str = "pending"
     max_turns: int = 10
     model: str = ""
+    qa: str = ""
+    retries: int = 0
+    max_retries: int = 2
 
     def to_dict(self) -> dict:
         return {
@@ -141,6 +144,9 @@ class JobTask:
             "status": self.status,
             "max_turns": self.max_turns,
             "model": self.model,
+            "qa": self.qa,
+            "retries": self.retries,
+            "max_retries": self.max_retries,
         }
 
     @classmethod
@@ -156,6 +162,9 @@ class JobTask:
             status=d.get("status", "pending"),
             max_turns=d.get("max_turns", 10),
             model=d.get("model", ""),
+            qa=d.get("qa", ""),
+            retries=d.get("retries", 0),
+            max_retries=d.get("max_retries", 2),
         )
 
 

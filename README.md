@@ -1,6 +1,6 @@
 # Skitter
 
-MQTT-based multi-agent AI system. A stateless coordinator reads job specs from the broker, advances a task DAG, and spawns workers, making zero LLM calls itself. Workers use `claude-agent-sdk` for AI. The whole system is ~400 lines of Python.
+MQTT-based multi-agent AI system. A stateless coordinator reads job specs from the broker, advances a task DAG, and spawns workers, making zero LLM calls itself. Workers use `claude-agent-sdk` for AI. The whole system is ~1,000 lines of Python.
 
 ## Architecture
 
@@ -23,14 +23,22 @@ MQTT-based multi-agent AI system. A stateless coordinator reads job specs from t
                             │          │             │   ┌───▶│  Worker A    │
                             │          ├─────────────────┤    │  (haiku)     │
                             │          │             │   └───▶│  Worker B    │
-                            │          │             │        └──────────────┘
-                            │          │             │              │
-                            │          │  results    │◀─────────────┘
+                            │          │             │        └──────┬───────┘
+                            │          │             │               │
+                            │          │  results    │◀──────────────┘
                             │          ▼             │
                             │   ┌─────────────┐      │        ┌──────────────┐
-                            │   │ Coordinator │──────────────▶│  Synthesize  │
-                            │   │ advances DAG│◀──────────────│  (haiku)     │
+                            │   │ Coordinator │──────────────▶│  QA Agent    │
+                            │   │ checks qa   │◀──────────────│  pass/fail?  │
                             │   └──────┬──────┘      │        └──────────────┘
+                            │          │             │
+                            │     fail + retries     │
+                            │     left? retry ───────────────▶ re-spawn worker
+                            │          │             │
+                            │     pass / exhausted   │        ┌──────────────┐
+                            │          ├─────────────────────▶│  Synthesize  │
+                            │          │             │◀───────│  (opus)      │
+                            │          ▼             │        └──────────────┘
         subscribe           │          │             │
   ◀─────────────────────────── outbound/{chat_id}    │
                             │                        │
@@ -41,7 +49,7 @@ MQTT-based multi-agent AI system. A stateless coordinator reads job specs from t
 
 ## Why MQTT
 
-In a typical HTTP-based agent system, the orchestrator must handle routing, queuing, retries, fan-out, and load balancing itself — on top of the actual AI reasoning. With MQTT, all of that infrastructure moves into the broker:
+In a typical HTTP-based agent system, the orchestrator must handle routing, queuing, retries, fan-out, and load balancing itself, on top of the actual AI reasoning. With MQTT, all of that infrastructure moves into the broker:
 
 <p align="center"><img src="http-vs-mqtt.svg" width="720" alt="HTTP vs MQTT architecture comparison"/></p>
 
@@ -51,6 +59,7 @@ This separation has practical consequences:
 - **Workers can run anywhere.** Since workers communicate through the broker, they can be local processes, containers on Kubernetes, AWS Lambda functions, or machines in different regions with minimal modifications.
 - **The coordinator can be serverless too.** It's a stateless event handler: message arrives, advance the DAG, publish, done. It doesn't need to run 24/7, it could be triggered by MQTT events on Lambda or Cloud Run.
 - **Monitoring is free.** Any MQTT client (including browser-based ones via WebSocket) can subscribe to `skitter/#` and see every job spec, task assignment, result, and status change in real time, no dashboard code required.
+- **Cloud-hosted brokers work out of the box.** [EMQX Serverless](https://www.emqx.com/en/cloud/serverless-mqtt) offers a forever-free tier that's sufficient for most use cases, just point `MQTT_HOST`/`MQTT_PORT` at it instead of running Docker locally. (Auth support is not yet implemented but would be trivial to add.)
 
 ## MQTT Topics
 
@@ -70,12 +79,12 @@ This separation has practical consequences:
 - **No authentication.** Any client that can reach the MQTT broker can submit jobs, trigger Claude API calls, and execute code on the host.
 - **No TLS.** All MQTT traffic is unencrypted (port 1883).
 - **Workers run with `bypassPermissions`.** Claude agents can read/write any file and execute any command accessible to the process user.
-- **No rate limiting or cost controls.** There is no cap on concurrent jobs, API calls, or spending. The planner LLM chooses the model per task — a crafted prompt can force every task to Opus.
+- **No rate limiting or cost controls.** There is no cap on concurrent jobs, API calls, or spending. The planner LLM chooses the model per task; a crafted prompt can force every task to Opus.
 - **No input validation.** Message fields (`chat_id`, `description`, etc.) are used unsanitized in topic strings and passed directly to workers.
 
 **Do not expose the MQTT broker to untrusted networks. Run only on localhost or within a trusted, firewalled environment.**
 
-Default EMQX dashboard credentials (`admin`/`public`) are not secure — change them before binding the broker to any non-loopback interface.
+Default EMQX dashboard credentials (`admin`/`public`) are not secure. Change them before binding the broker to any non-loopback interface.
 
 ## Prerequisites
 
@@ -96,7 +105,7 @@ uv sync
 # 3. Start the coordinator
 uv run python -m skitter
 
-# 4. In another terminal — subscribe to responses, then send a message
+# 4. In another terminal: subscribe to responses, then send a message
 mosquitto_sub -h localhost -t "skitter/outbound/my-chat" &
 echo -n '{"text":"Hello!","sender":"me","chat_id":"my-chat"}' \
   | mosquitto_pub -h localhost -t "skitter/inbound/my-chat" -s
@@ -124,28 +133,30 @@ EMQX dashboard (default broker): http://localhost:18083 (default login: `admin` 
 3. Planner returns either `{"action":"respond","text":"..."}` or `{"action":"delegate","tasks":[...]}`
 4. If delegate: coordinator builds a DAG, spawns workers for ready tasks (parallel where possible)
 5. As results arrive, coordinator advances the DAG and spawns newly unblocked tasks
-6. A **synthesize** task (auto-added, depends on all others) combines results into a final response
-7. Final response published to `skitter/outbound/{chat_id}`
+6. If a task has a `"qa"` field, an ephemeral QA agent evaluates the result against the criteria. Failures retry with feedback (up to `max_retries`, default 2)
+7. A **synthesize** task (auto-added, depends on all others) combines results into a final response
+8. Final response published to `skitter/outbound/{chat_id}`
 
-The planner picks which model to use per task (haiku for simple work, sonnet/opus for complex reasoning). See [docs/architecture.md](docs/architecture.md) for the full design.
+The planner picks which model to use per task (haiku for simple work, sonnet/opus for complex reasoning). It can also attach QA criteria to tasks that need validation. See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Known Limitations
 
 **Reliability:**
-- No task or job timeouts — a hung Claude agent runs indefinitely
-- Dead worker respawn has no backoff or retry limit — a worker crashing on startup will be respawned in a tight loop
+- No task or job timeouts, so a hung Claude agent runs indefinitely
+- Dead worker respawn has no backoff or retry limit, so a worker crashing on startup will be respawned in a tight loop
 - Crash recovery restores running tasks but misses pending tasks whose dependencies completed before the crash
 
 **Correctness:**
-- Concurrent messages with the same `chat_id` silently overwrite each other — the first job's workers continue into the wrong job
-- Worker errors (API failures, quota exhaustion, SDK crashes) are published as normal results — the synthesizer incorporates error strings into the user-facing response
+- Concurrent messages with the same `chat_id` silently overwrite each other; the first job's workers continue into the wrong job
+- Worker errors (API failures, quota exhaustion, SDK crashes) are published as normal results, so the synthesizer incorporates error strings into the user-facing response
 - Invalid `depends_on` references from the planner crash the coordinator (unhandled `KeyError`)
-- No dependency cycle detection — circular task graphs hang silently forever
+- No dependency cycle detection, so circular task graphs hang silently forever
 - The planner occasionally ignores the JSON-only instruction and returns prose, causing a parse error that is forwarded to the user
 
 **Missing features:**
-- No conversation memory — each message is a fresh context
+- No conversation memory; each message is a fresh context
 - No way to cancel an in-flight job
 - No structured logging or metrics
+- QA feedback is appended to the task description as plain text, with no structured diff or per-field feedback
 
 **Cost:** Each inbound message triggers at least 2 Claude API calls (planner + synthesizer), plus one per delegated task. Monitor your usage.

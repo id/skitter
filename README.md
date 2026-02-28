@@ -1,6 +1,8 @@
 # Skitter
 
-MQTT-based multi-agent AI system. A stateless coordinator reads job specs from the broker, advances a task DAG, and spawns workers, making zero LLM calls itself. Workers use `claude-agent-sdk` for AI. The whole system is ~1,000 lines of Python.
+Personal AI assistant built on MQTT. Instead of a monolithic agent process that owns orchestration, LLM calls, and chat I/O in one place, skitter decomposes the problem: a stateless coordinator advances a task DAG through an MQTT broker, and independent workers handle the AI. The whole system is ~1,000 lines of Python.
+
+The coordinator makes zero LLM calls. Planning, execution, QA, and synthesis are all worker tasks. Adding a new chat platform (Telegram, WhatsApp, Slack) means writing a standalone bridge script that translates messages to/from MQTT topics — the coordinator never changes.
 
 ## Architecture
 
@@ -37,7 +39,7 @@ MQTT-based multi-agent AI system. A stateless coordinator reads job specs from t
                             │          │             │
                             │     pass / exhausted   │        ┌──────────────┐
                             │          ├─────────────────────▶│  Synthesize  │
-                            │          │             │◀───────│  (opus)      │
+                            │          │             │◀───────│  (sonnet)    │
                             │          ▼             │        └──────────────┘
         subscribe           │          │             │
   ◀─────────────────────────── outbound/{chat_id}    │
@@ -55,7 +57,7 @@ In a typical HTTP-based agent system, the orchestrator must handle routing, queu
 
 This separation has practical consequences:
 
-- **Chat app integration without code changes.** To connect Telegram, WhatsApp, Slack, or any other frontend, you write a single `{chat_app} <-> MQTT` bridge. Skitter itself doesn't change, it only sees `inbound/` and `outbound/` topics.
+- **Chat app integration without code changes.** To connect Telegram, WhatsApp, Slack, or any other frontend, you write a standalone bridge (~100 lines) that translates between the chat API and two MQTT topics: `inbound/{chat_id}` and `outbound/{chat_id}`. The coordinator and workers never change. In a monolithic agent system, every new channel must be wired into the core process.
 - **Workers can run anywhere.** Since workers communicate through the broker, they can be local processes, containers on Kubernetes, AWS Lambda functions, or machines in different regions with minimal modifications.
 - **The coordinator can be serverless too.** It's a stateless event handler: message arrives, advance the DAG, publish, done. It doesn't need to run 24/7, it could be triggered by MQTT events on Lambda or Cloud Run.
 - **Monitoring is free.** Any MQTT client (including browser-based ones via WebSocket) can subscribe to `skitter/#` and see every job spec, task assignment, result, and status change in real time, no dashboard code required.
@@ -139,22 +141,27 @@ EMQX dashboard (default broker): http://localhost:18083 (default login: `admin` 
 
 The planner picks which model to use per task (haiku for simple work, sonnet/opus for complex reasoning). It can also attach QA criteria to tasks that need validation. See [docs/architecture.md](docs/architecture.md) for the full design.
 
+## Next Up
+
+- **Telegram bridge** — standalone script that connects a Telegram bot to skitter via MQTT
+- **Conversation memory** — per-`chat_id` message history injected as context
+- **Input validation** — sanitize `chat_id` and other fields before use in topic strings
+- **Task/job timeouts** — configurable deadline that kills hung workers
+- **Dependency cycle detection** — reject circular DAGs at plan ingestion time
+- **Respawn backoff** — exponential delay + max retries for crashing workers
+
 ## Known Limitations
 
 **Reliability:**
-- No task or job timeouts, so a hung Claude agent runs indefinitely
-- Dead worker respawn has no backoff or retry limit, so a worker crashing on startup will be respawned in a tight loop
 - Crash recovery restores running tasks but misses pending tasks whose dependencies completed before the crash
 
 **Correctness:**
 - Concurrent messages with the same `chat_id` silently overwrite each other; the first job's workers continue into the wrong job
 - Worker errors (API failures, quota exhaustion, SDK crashes) are published as normal results, so the synthesizer incorporates error strings into the user-facing response
 - Invalid `depends_on` references from the planner crash the coordinator (unhandled `KeyError`)
-- No dependency cycle detection, so circular task graphs hang silently forever
 - The planner occasionally ignores the JSON-only instruction and returns prose, causing a parse error that is forwarded to the user
 
 **Missing features:**
-- No conversation memory; each message is a fresh context
 - No way to cancel an in-flight job
 - No structured logging or metrics
 - QA feedback is appended to the task description as plain text, with no structured diff or per-field feedback

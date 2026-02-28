@@ -1,12 +1,63 @@
 # Skitter
 
-Personal AI assistant built on MQTT. Instead of a monolithic agent process that owns orchestration, LLM calls, and chat I/O in one place, skitter decomposes the problem: a stateless coordinator advances a task DAG through an MQTT broker, and independent workers handle the AI. The whole system is ~1,000 lines of Python.
+> **Warning: Experimental Proof-of-Concept**
+> Skitter currently has no authentication, no TLS, and agents run with bypass permissions. Please only run this on localhost or inside a trusted, firewalled environment.
 
-The coordinator makes zero LLM calls. Planning, execution, QA, and synthesis are all worker tasks. Adding a new chat platform (Telegram, WhatsApp, Slack) means writing a standalone bridge script that translates messages to/from MQTT topics — the coordinator never changes.
+Skitter is a personal AI assistant built on MQTT.
 
-## Architecture
+Instead of a monolithic agent process that tries to handle orchestration, LLM calls, and chat I/O all in one place, Skitter completely decouples the stack. A stateless coordinator manages a task DAG via an MQTT broker, while independent workers handle the actual AI reasoning.
 
-```
+The whole system is ~1,000 lines of Python.
+
+## Prerequisites
+
+* Docker (for the MQTT broker)
+* Python 3.10+
+* [uv](https://docs.astral.sh/uv/)
+* Claude Code logged in (any plan supporting Claude Code)
+
+## Quickstart
+
+1. **Start the MQTT broker**
+   ```bash
+   docker compose up -d
+   ```
+
+2. **Install dependencies and start the coordinator**
+   ```bash
+   uv sync
+   uv run python -m skitter
+   ```
+
+3. **Chat with it** (in another terminal)
+   ```bash
+   uv run python -m skitter chat
+   ```
+   Type a message, press Enter, and wait for the response. Use `--chat-id` to set a specific session ID:
+   ```bash
+   uv run python -m skitter chat --chat-id my-session
+   ```
+
+*You can also use any MQTT client directly (`mqttx`, `mosquitto_pub`/`mosquitto_sub`, custom Telegram/Slack bots, etc).*
+
+## Why MQTT?
+
+In a typical HTTP-based AI system, the orchestrator handles routing, retries, fan-out, and load balancing on top of the actual AI reasoning. By leaning on MQTT, we push all that infrastructure into the broker.
+
+[![HTTP vs MQTT architecture comparison](http-vs-mqtt.svg)](http-vs-mqtt.svg)
+
+What this means in practice:
+
+* **Zero-code UI integrations:** To connect Telegram or WhatsApp, you just write a tiny ~100-line bridge script translating chat APIs to `inbound/` and `outbound/` topics. The core AI coordinator never changes.
+* **Run workers anywhere:** Workers can be local processes, k8s containers, or Lambda functions. As long as they can reach the broker, they work.
+* **Serverless coordinator:** The coordinator is a stateless event handler (message arrives -> advance DAG -> publish). It can easily run on AWS Lambda or Cloud Run.
+* **Free monitoring:** Subscribe to `skitter/#` using any MQTT client and watch every job spec, task assignment, and result flow in real-time.
+
+## How It Works
+
+Skitter relies on a pure graph executor. Planning and synthesis are just standard worker tasks. If the coordinator crashes, it simply recovers in-flight jobs from retained MQTT messages when it boots back up.
+
+```text
   Any MQTT Client                    MQTT Broker                     Workers
  (mqttx, mosquitto,              (Docker, port 1883)            (claude-agent-sdk)
   Telegram bot, etc.)
@@ -47,73 +98,13 @@ The coordinator makes zero LLM calls. Planning, execution, QA, and synthesis are
                             └────────────────────────┘
 ```
 
-**Key property:** the coordinator is a pure graph executor. Planning and synthesis are worker tasks. If the coordinator crashes, it recovers in-flight jobs from retained MQTT messages on restart.
-
-## Why MQTT
-
-In a typical HTTP-based agent system, the orchestrator must handle routing, queuing, retries, fan-out, and load balancing itself, on top of the actual AI reasoning. With MQTT, all of that infrastructure moves into the broker:
-
-<p align="center"><img src="http-vs-mqtt.svg" width="720" alt="HTTP vs MQTT architecture comparison"/></p>
-
-This separation has practical consequences:
-
-- **Chat app integration without code changes.** To connect Telegram, WhatsApp, Slack, or any other frontend, you write a standalone bridge (~100 lines) that translates between the chat API and two MQTT topics: `inbound/{chat_id}` and `outbound/{chat_id}`. The coordinator and workers never change. In a monolithic agent system, every new channel must be wired into the core process.
-- **Workers can run anywhere.** Since workers communicate through the broker, they can be local processes, containers on Kubernetes, AWS Lambda functions, or machines in different regions with minimal modifications.
-- **The coordinator can be serverless too.** It's a stateless event handler: message arrives, advance the DAG, publish, done. It doesn't need to run 24/7, it could be triggered by MQTT events on Lambda or Cloud Run.
-- **Monitoring is free.** Any MQTT client (including browser-based ones via WebSocket) can subscribe to `skitter/#` and see every job spec, task assignment, result, and status change in real time, no dashboard code required.
-- **Cloud-hosted brokers work out of the box.** [EMQX Serverless](https://www.emqx.com/en/cloud/serverless-mqtt) offers a forever-free tier that's sufficient for most use cases, just point `MQTT_HOST`/`MQTT_PORT` at it instead of running Docker locally. (Auth support is not yet implemented but would be trivial to add.)
-
-## MQTT Topics
-
-| Topic | Retain | Purpose |
-|---|---|---|
-| `skitter/inbound/{chat_id}` | No | User message → coordinator |
-| `skitter/outbound/{chat_id}` | No | Final response → user |
-| `skitter/jobs/{chat_id}` | Yes | Job spec (DAG + accumulated results) |
-| `skitter/tasks/{agent}/{chat_id}/{task_id}` | Yes | Individual task for a worker |
-| `skitter/results/{chat_id}/{task_id}` | No | Worker result → coordinator |
-| `skitter/workers/{chat_id}/{task_id}/status` | No | Worker liveness (LWT) |
-
-## Security Notice
-
-**Skitter is an experimental proof-of-concept. It is not production-ready.**
-
-- **No authentication.** Any client that can reach the MQTT broker can submit jobs, trigger Claude API calls, and execute code on the host.
-- **No TLS.** All MQTT traffic is unencrypted (port 1883).
-- **Workers run with `bypassPermissions`.** Claude agents can read/write any file and execute any command accessible to the process user.
-- **No rate limiting or cost controls.** There is no cap on concurrent jobs, API calls, or spending. The planner LLM chooses the model per task; a crafted prompt can force every task to Opus.
-- **No input validation.** Message fields (`chat_id`, `description`, etc.) are used unsanitized in topic strings and passed directly to workers.
-
-**Do not expose the MQTT broker to untrusted networks. Run only on localhost or within a trusted, firewalled environment.**
-
-Default EMQX dashboard credentials (`admin`/`public`) are not secure. Change them before binding the broker to any non-loopback interface.
-
-## Prerequisites
-
-- Docker (for MQTT broker)
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/)
-- Claude Code logged in (any plan that supports Claude Code)
-
-## Quickstart
-
-```bash
-# 1. Start the MQTT broker
-docker compose up -d
-
-# 2. Install dependencies
-uv sync
-
-# 3. Start the coordinator
-uv run python -m skitter
-
-# 4. In another terminal: subscribe to responses, then send a message
-mosquitto_sub -h localhost -t "skitter/outbound/my-chat" &
-echo -n '{"text":"Hello!","sender":"me","chat_id":"my-chat"}' \
-  | mosquitto_pub -h localhost -t "skitter/inbound/my-chat" -s
-```
-
-Any MQTT client works: `mqttx`, `mosquitto_pub`/`mosquitto_sub`, or a custom adapter (Telegram bot, Slack, etc.).
+1. **Input:** User publishes to `skitter/inbound/{chat_id}`.
+2. **Plan:** Coordinator spawns a planner worker. It returns either a direct response or a DAG (Directed Acyclic Graph) of tasks to execute.
+3. **Execute:** Coordinator builds the DAG and spawns workers for ready tasks in parallel.
+4. **Advance:** As results arrive, the coordinator advances the DAG, spawning newly unblocked tasks.
+5. **QA & Retry:** If a task includes QA criteria, an ephemeral QA agent evaluates the result. Failures automatically retry with feedback.
+6. **Synthesize:** A final synthesize task combines all results into a human-readable response.
+7. **Output:** The response is published to `skitter/outbound/{chat_id}`.
 
 ## Configuration
 
@@ -121,49 +112,21 @@ Copy `.env.example` to `.env` to override defaults:
 
 | Variable | Default | Description |
 |---|---|---|
-| `MQTT_HOST` | `localhost` | MQTT broker hostname |
-| `MQTT_PORT` | `1883` | MQTT broker port |
-| `SKITTER_PLANNER_MODEL` | `sonnet` | Model for the planner worker |
-| `SKITTER_MODELS` | `haiku:...\|sonnet:...\|opus:...` | Available models for workers (see [docs/architecture.md](docs/architecture.md)) |
+| `MQTT_HOST` | `localhost` | Broker hostname |
+| `MQTT_PORT` | `1883` | Broker port |
+| `SKITTER_PLANNER_MODEL` | `sonnet` | Model used for the planner worker |
+| `SKITTER_MODELS` | `haiku:...|sonnet:...` | Available models for workers (see [docs/architecture.md](docs/architecture.md)) |
 
-EMQX dashboard (default broker): http://localhost:18083 (default login: `admin` / `public`).
+## Roadmap & Known Limitations
 
-## How It Works (short version)
+**Currently working on:**
+- [ ] **Telegram bridge** — standalone script connecting a bot to Skitter.
+- [ ] **Conversation memory** — injecting per-chat history as context.
+- [ ] **Dependency cycle detection** — rejecting circular DAGs early.
+- [ ] **Worker timeouts & backoff** — handling hung or continually crashing workers.
 
-1. User publishes to `skitter/inbound/{chat_id}`
-2. Coordinator spawns a **planner** worker (zero tools, just JSON output)
-3. Planner returns either `{"action":"respond","text":"..."}` or `{"action":"delegate","tasks":[...]}`
-4. If delegate: coordinator builds a DAG, spawns workers for ready tasks (parallel where possible)
-5. As results arrive, coordinator advances the DAG and spawns newly unblocked tasks
-6. If a task has a `"qa"` field, an ephemeral QA agent evaluates the result against the criteria. Failures retry with feedback (up to `max_retries`, default 2)
-7. A **synthesize** task (auto-added, depends on all others) combines results into a final response
-8. Final response published to `skitter/outbound/{chat_id}`
-
-The planner picks which model to use per task (haiku for simple work, sonnet/opus for complex reasoning). It can also attach QA criteria to tasks that need validation. See [docs/architecture.md](docs/architecture.md) for the full design.
-
-## Next Up
-
-- **Telegram bridge** — standalone script that connects a Telegram bot to skitter via MQTT
-- **Conversation memory** — per-`chat_id` message history injected as context
-- **Input validation** — sanitize `chat_id` and other fields before use in topic strings
-- **Task/job timeouts** — configurable deadline that kills hung workers
-- **Dependency cycle detection** — reject circular DAGs at plan ingestion time
-- **Respawn backoff** — exponential delay + max retries for crashing workers
-
-## Known Limitations
-
-**Reliability:**
-- Crash recovery restores running tasks but misses pending tasks whose dependencies completed before the crash
-
-**Correctness:**
-- Concurrent messages with the same `chat_id` silently overwrite each other; the first job's workers continue into the wrong job
-- Worker errors (API failures, quota exhaustion, SDK crashes) are published as normal results, so the synthesizer incorporates error strings into the user-facing response
-- Invalid `depends_on` references from the planner crash the coordinator (unhandled `KeyError`)
-- The planner occasionally ignores the JSON-only instruction and returns prose, causing a parse error that is forwarded to the user
-
-**Missing features:**
-- No way to cancel an in-flight job
-- No structured logging or metrics
-- QA feedback is appended to the task description as plain text, with no structured diff or per-field feedback
-
-**Cost:** Each inbound message triggers at least 2 Claude API calls (planner + synthesizer), plus one per delegated task. Monitor your usage.
+**Things to watch out for:**
+- **Cost:** Each inbound message triggers at least 2 Claude API calls (planner + synthesizer), plus one per delegated task. Keep an eye on your usage limits!
+- **State overwrites:** Concurrent messages with the same `chat_id` currently overwrite each other.
+- **Error handling:** Worker errors (API failures, quota hits) are currently passed back as normal results, meaning the synthesizer might incorporate an error string directly into the user-facing chat.
+- **Incomplete crash recovery:** Restarting recovers running tasks, but might drop pending tasks if their dependencies finished right before the crash.

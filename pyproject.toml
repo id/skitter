@@ -1,0 +1,13 @@
+[project]
+name = "skitter"
+version = "0.1.0"
+description = "MQTT-based Personal AI Assistant"
+requires-python = ">=3.10"
+dependencies = [
+    "aiomqtt>=2.5.0",
+    "claude-agent-sdk>=0.1.44",
+    "python-dotenv>=1.2.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.25"]

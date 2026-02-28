@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# Environment
+.env
+
+# EMQX data
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp

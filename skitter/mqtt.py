@@ -1,0 +1,15 @@
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+
+TOPIC_INBOUND = "skitter/inbound/{chat_id}"
+TOPIC_OUTBOUND = "skitter/outbound/{chat_id}"
+TOPIC_JOBS = "skitter/jobs/{chat_id}"
+TOPIC_TASKS = "skitter/tasks/{agent}/{chat_id}/{task_id}"
+TOPIC_RESULTS = "skitter/results/{chat_id}/{task_id}"
+TOPIC_WORKER_STATUS = "skitter/workers/{chat_id}/{task_id}/status"

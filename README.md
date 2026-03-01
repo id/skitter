@@ -33,7 +33,7 @@ The whole system is ~1,000 lines of Python.
    ```bash
    uv run python -m skitter chat
    ```
-   Type a message, press Enter, and wait for the response. Use `--chat-id` to set a specific session ID:
+   Type or paste a message, then enter `/send` to send. Use `/drop` to discard. Use `--chat-id` to set a specific session ID:
    ```bash
    uv run python -m skitter chat --chat-id my-session
    ```

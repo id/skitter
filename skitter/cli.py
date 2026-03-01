@@ -16,7 +16,8 @@ async def run_chat(chat_id: str) -> None:
 
     print(f"Connecting to {MQTT_HOST}:{MQTT_PORT}")
     print(f"Chat ID: {chat_id}")
-    print("Type a message and press Enter. Ctrl+C to exit.\n")
+    print("Type or paste a message. /send to send, /drop to discard.")
+    print("Ctrl+C to exit.\n")
 
     async with aiomqtt.Client(MQTT_HOST, MQTT_PORT) as client:
         await client.subscribe(outbound_topic)
@@ -25,7 +26,6 @@ async def run_chat(chat_id: str) -> None:
             async for msg in client.messages:
                 try:
                     out = OutboundMessage.from_json(msg.payload.decode())
-                    # Clear the prompt line, print response, reshow prompt
                     print(f"\r\033[K{out.text}")
                     print("> ", end="", flush=True)
                 except Exception:
@@ -34,10 +34,22 @@ async def run_chat(chat_id: str) -> None:
         listener = asyncio.create_task(listen())
         loop = asyncio.get_event_loop()
 
+        def read_message() -> str:
+            lines = []
+            while True:
+                prompt = "> " if not lines else ". "
+                line = input(prompt)
+                if line.strip() == "/send" and lines:
+                    break
+                if line.strip() == "/drop":
+                    print("Discarded.")
+                    return ""
+                lines.append(line)
+            return "\n".join(lines).strip()
+
         try:
             while True:
-                text = await loop.run_in_executor(None, input, "> ")
-                text = text.strip()
+                text = await loop.run_in_executor(None, read_message)
                 if not text:
                     continue
                 msg = InboundMessage(text=text, sender="cli", chat_id=chat_id)

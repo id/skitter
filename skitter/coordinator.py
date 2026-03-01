@@ -13,15 +13,22 @@ import aiomqtt
 from skitter.mqtt import (
     MQTT_HOST,
     MQTT_PORT,
+    TOPIC_CANCEL,
+    TOPIC_FEEDBACK,
     TOPIC_JOBS,
     TOPIC_OUTBOUND,
+    TOPIC_RESULTS,
+    TOPIC_STREAM_SNAPSHOT,
     TOPIC_TASKS,
 )
 from skitter.types import (
+    CancelSignal,
+    FeedbackSignal,
     InboundMessage,
     JobSpec,
     JobTask,
     OutboundMessage,
+    StreamSnapshot,
     TaskMessage,
     TaskResultMessage,
 )
@@ -34,7 +41,26 @@ log = logging.getLogger("skitter.coordinator")
 SOUL_PATH = Path("SOUL.md")
 
 DEFAULT_MODELS = "haiku:Fast and cheap, good for simple tasks and summaries|sonnet:Balanced, good for research and analysis|opus:Most capable, use for complex reasoning and coding"
-PLANNER_MODEL = os.environ.get("SKITTER_PLANNER_MODEL", "sonnet")
+PLANNER_MODEL = os.environ.get("SKITTER_PLANNER_MODEL", "opus")
+QA_MODEL = os.environ.get("SKITTER_QA_MODEL", "sonnet")
+SYNTH_MODEL = os.environ.get("SKITTER_SYNTH_MODEL", "sonnet")
+EARLY_QA_MODEL = "haiku"
+
+EARLY_QA_SYSTEM = "You are a lightweight QA monitor. Evaluate worker progress. Return JSON only."
+EARLY_QA_SKILLS = 'Output ONLY {"pass":true} or {"pass":false,"feedback":"one sentence"}'
+EARLY_QA_TEMPLATE = """\
+Task: {description}
+QA criteria: {qa}
+
+Worker status after {elapsed_s:.0f}s, {tool_calls} tool calls ({errors} errors):
+Tools:
+{tool_log}
+
+Recent output (last 1KB):
+{recent_text}
+
+Is this worker on track? Return ONLY: {{"pass":true}} or {{"pass":false,"feedback":"one sentence"}}
+"""
 
 
 def load_models() -> dict[str, str]:
@@ -85,7 +111,9 @@ Guidelines:
 - Do NOT include a final synthesis/summary task — one will be added automatically
 - "soul" = worker persona (e.g. "You are a research specialist. Cite sources.")
 - "skills" = tool guidance (e.g. "Read all .md files in the current directory. Summarize findings.")
+- "max_turns" (optional, integer) = tool-use turn budget for this task. Default 10. The worker is told its budget and must write a summary before turns run out. Set higher (15-25) for deep research tasks, lower (3-5) for focused tasks.
 - "qa" (optional) = quality criteria for reviewing this task's output (e.g. "Verify sources are cited and claims are factual")
+- "early_qa_interval" (optional, integer) = check worker progress every N streaming chunks (e.g. 10). Use for expensive/long-running tasks on opus to catch bad trajectories early. Default 0 (disabled).
 - Prefer direct response for simple questions — don't over-delegate
 - Delegate to 2-5 sub-agents when parallelizable or sequential work exists
 - Output ONLY the JSON object, nothing else
@@ -187,8 +215,10 @@ def build_job_from_plan(
             skills=t.get("skills", ""),
             depends_on=t.get("depends_on", []),
             model=model,
+            max_turns=t.get("max_turns", 10),
             qa=t.get("qa", ""),
             max_retries=t.get("max_retries", 2),
+            early_qa_interval=t.get("early_qa_interval", 0),
         )
         all_logical_ids.append(logical_id)
 
@@ -207,7 +237,7 @@ def build_job_from_plan(
         skills="",
         depends_on=all_logical_ids,
         max_turns=0,
-        model=PLANNER_MODEL,
+        model=SYNTH_MODEL,
     )
 
     return job
@@ -321,11 +351,13 @@ async def respawn_running_tasks(
 async def run() -> None:
     jobs: dict[str, JobSpec] = {}
     task_to_chat: dict[str, tuple[str, str]] = {}
+    snapshots: dict[str, StreamSnapshot] = {}  # task_id -> latest snapshot
+    early_qa_attempts: dict[str, int] = {}  # logical_id -> attempt count
 
     async with aiomqtt.Client(
         MQTT_HOST,
         MQTT_PORT,
-        identifier="skitter-coordinator",
+        identifier=f"skitter-coordinator-{uuid.uuid4().hex[:8]}",
     ) as client:
         # --- Recovery phase: read retained job specs from broker ---
         jobs = await recover_jobs(client)
@@ -344,6 +376,7 @@ async def run() -> None:
         await client.subscribe("skitter/inbound/+", qos=1)
         await client.subscribe("skitter/results/+/+", qos=1)
         await client.subscribe("skitter/workers/+/+/status", qos=1)
+        await client.subscribe("skitter/stream/+/+/snapshot", qos=1)
         log.info("[coordinator] Subscribed and ready")
 
         async for mqtt_msg in client.messages:
@@ -523,6 +556,55 @@ async def run() -> None:
                         jobs.pop(chat_id, None)
                         continue
 
+                # --- Early QA result handling ---
+                if logical_id.startswith("early_qa:"):
+                    original_id = logical_id[9:]
+                    original_task = job.tasks.get(original_id)
+
+                    qa_passed = True
+                    qa_feedback = ""
+                    try:
+                        qa_result = extract_json(result_msg.result)
+                        qa_passed = qa_result.get("pass", True)
+                        qa_feedback = qa_result.get("feedback", "")
+                    except Exception:
+                        pass
+
+                    # Clean up ephemeral early QA task and result
+                    job.tasks.pop(logical_id, None)
+                    job.results.pop(logical_id, None)
+
+                    if (
+                        original_task
+                        and original_task.status == "running"
+                        and not qa_passed
+                        and qa_feedback
+                    ):
+                        attempt = early_qa_attempts.get(original_id, 1)
+                        feedback = FeedbackSignal(
+                            task_id=original_task.task_id,
+                            chat_id=chat_id,
+                            feedback=qa_feedback,
+                            attempt=attempt,
+                        )
+                        feedback_topic = TOPIC_FEEDBACK.format(
+                            chat_id=chat_id, task_id=original_task.task_id,
+                        )
+                        await client.publish(
+                            feedback_topic, feedback.to_json(), qos=1, retain=True,
+                        )
+                        log.info(
+                            "[coordinator] Early QA failed for '%s' (attempt %d): %s",
+                            original_id,
+                            attempt,
+                            qa_feedback,
+                        )
+                    elif qa_passed:
+                        log.info("[coordinator] Early QA passed for '%s'", original_id)
+
+                    await client.publish(job_topic, job.to_json(), qos=1, retain=True)
+                    continue
+
                 # --- QA result handling ---
                 if logical_id.startswith("qa:"):
                     original_id = logical_id[3:]
@@ -610,7 +692,7 @@ async def run() -> None:
                         soul="You are a QA reviewer. Evaluate the work against the criteria. Return JSON only.",
                         skills='Output ONLY {"pass":true} or {"pass":false,"feedback":"specific actionable feedback"}',
                         max_turns=0,
-                        model=PLANNER_MODEL,
+                        model=QA_MODEL,
                     )
                     job.tasks[qa_logical_id] = qa_task
                     qa_task.status = "running"
@@ -630,7 +712,7 @@ async def run() -> None:
                 if logical_id == "synthesize":
                     out = OutboundMessage(text=result_msg.result, chat_id=chat_id)
                     await client.publish(
-                        TOPIC_OUTBOUND.format(chat_id=chat_id), out.to_json(), qos=1
+                        TOPIC_OUTBOUND.format(chat_id=chat_id), out.to_json(), qos=1, retain=True
                     )
                     # Clear job spec
                     await client.publish(job_topic, b"", qos=1, retain=True)
@@ -659,6 +741,91 @@ async def run() -> None:
                         chat_id,
                     )
 
+            # --- Stream snapshot (for early QA and crash recovery) ---
+            elif (
+                topic.startswith("skitter/stream/")
+                and topic.endswith("/snapshot")
+            ):
+                if not payload:
+                    # Cleared snapshot — remove from tracking
+                    parts = topic.split("/")
+                    if len(parts) == 5:
+                        snapshots.pop(parts[3], None)
+                    continue
+                try:
+                    snapshot = StreamSnapshot.from_json(payload)
+                    snapshots[snapshot.task_id] = snapshot
+                except Exception:
+                    continue
+
+                # --- Early QA trigger ---
+                snap_task_id = snapshot.task_id
+                if snap_task_id not in task_to_chat:
+                    continue
+                snap_chat_id, _ = task_to_chat[snap_task_id]
+                snap_job = jobs.get(snap_chat_id)
+                if not snap_job:
+                    continue
+                snap_logical_id = find_logical_id_by_task_id(snap_job, snap_task_id)
+                if not snap_logical_id:
+                    continue
+                snap_task = snap_job.tasks[snap_logical_id]
+                early_qa_id = f"early_qa:{snap_logical_id}"
+
+                if (
+                    snap_task.status == "running"
+                    and snap_task.qa
+                    and snap_task.early_qa_interval > 0
+                    and snapshot.seq >= snap_task.early_qa_interval
+                    and snapshot.seq % snap_task.early_qa_interval == 0
+                    and early_qa_id not in snap_job.tasks
+                ):
+                    attempt = early_qa_attempts.get(snap_logical_id, 0) + 1
+                    early_qa_attempts[snap_logical_id] = attempt
+
+                    recent_text = snapshot.text[-1024:] if snapshot.text else "(no output yet)"
+                    tool_log_str = (
+                        "\n".join(snapshot.tool_log[-20:])
+                        if snapshot.tool_log
+                        else "(no tools used)"
+                    )
+                    description = EARLY_QA_TEMPLATE.format(
+                        description=snap_task.description[:200],
+                        qa=snap_task.qa,
+                        elapsed_s=snapshot.elapsed_s,
+                        tool_calls=snapshot.tool_calls,
+                        errors=snapshot.errors,
+                        tool_log=tool_log_str,
+                        recent_text=recent_text,
+                    )
+
+                    qa_task_id = uuid.uuid4().hex[:12]
+                    qa_task = JobTask(
+                        logical_id=early_qa_id,
+                        task_id=qa_task_id,
+                        agent="qa",
+                        description=description,
+                        soul=EARLY_QA_SYSTEM,
+                        skills=EARLY_QA_SKILLS,
+                        max_turns=0,
+                        model=EARLY_QA_MODEL,
+                    )
+                    snap_job.tasks[early_qa_id] = qa_task
+                    qa_task.status = "running"
+                    await publish_task(client, snap_job, qa_task)
+                    task_to_chat[qa_task_id] = (snap_chat_id, "qa")
+                    spawn_worker("qa", snap_chat_id, qa_task_id)
+
+                    snap_job_topic = TOPIC_JOBS.format(chat_id=snap_chat_id)
+                    await client.publish(
+                        snap_job_topic, snap_job.to_json(), qos=1, retain=True,
+                    )
+                    log.info(
+                        "[coordinator] Spawned early QA for '%s' (attempt %d)",
+                        snap_logical_id,
+                        attempt,
+                    )
+
             # --- Worker status (LWT or explicit) ---
             elif topic.startswith("skitter/workers/"):
                 try:
@@ -666,26 +833,61 @@ async def run() -> None:
                 except Exception:
                     continue
 
-                state = status.get("status", "")
-                task_id = status.get("task_id", "")
+                wk_state = status.get("status", "")
+                wk_task_id = status.get("task_id", "")
 
-                if not task_id:
+                if not wk_task_id:
                     # Extract from topic: skitter/workers/{chat_id}/{task_id}/status
                     parts = topic.split("/")
                     if len(parts) >= 4:
-                        task_id = parts[3]
+                        wk_task_id = parts[3]
 
-                if state == "alive":
-                    log.info("[coordinator] Worker alive for task %s", task_id)
-                elif state == "done":
-                    log.info("[coordinator] Worker done for task %s", task_id)
-                elif state == "dead":
-                    log.warning(
-                        "[coordinator] Worker DEAD for task %s — respawning", task_id
-                    )
-                    if task_id in task_to_chat:
-                        chat_id, agent = task_to_chat[task_id]
-                        spawn_worker(agent, chat_id, task_id)
+                if wk_state == "alive":
+                    log.info("[coordinator] Worker alive for task %s", wk_task_id)
+                elif wk_state == "done":
+                    log.info("[coordinator] Worker done for task %s", wk_task_id)
+                    snapshots.pop(wk_task_id, None)
+                elif wk_state == "dead":
+                    if wk_task_id in task_to_chat:
+                        wk_chat_id, wk_agent = task_to_chat[wk_task_id]
+                        snapshot = snapshots.pop(wk_task_id, None)
+                        if snapshot and len(snapshot.text) > 100:
+                            log.warning(
+                                "[coordinator] Worker DEAD for task %s — using partial result (%d chars, %d tool calls)",
+                                wk_task_id,
+                                len(snapshot.text),
+                                snapshot.tool_calls,
+                            )
+                            result_text = (
+                                f"[PARTIAL — worker crashed after {snapshot.elapsed_s:.0f}s, "
+                                f"{snapshot.tool_calls} tool calls]\n\n{snapshot.text}"
+                            )
+                            result_msg = TaskResultMessage(
+                                task_id=wk_task_id,
+                                chat_id=wk_chat_id,
+                                result=result_text,
+                            )
+                            result_topic = TOPIC_RESULTS.format(
+                                chat_id=wk_chat_id, task_id=wk_task_id,
+                            )
+                            await client.publish(
+                                result_topic, result_msg.to_json(), qos=1,
+                            )
+                            # Clear retained snapshot
+                            await client.publish(
+                                TOPIC_STREAM_SNAPSHOT.format(
+                                    chat_id=wk_chat_id, task_id=wk_task_id,
+                                ),
+                                b"",
+                                qos=1,
+                                retain=True,
+                            )
+                        else:
+                            log.warning(
+                                "[coordinator] Worker DEAD for task %s — respawning",
+                                wk_task_id,
+                            )
+                            spawn_worker(wk_agent, wk_chat_id, wk_task_id)
 
 
 def main() -> None:

@@ -257,7 +257,111 @@
       color: var(--text-muted);
       margin-bottom: 3px;
     }
+    .chat-msg .msg-meta { display: flex; align-items: center; gap: 6px; }
     .chat-msg .msg-text { color: var(--text-primary); white-space: pre-wrap; }
+    .msg-download {
+      background: none;
+      border: 1px solid var(--border-default);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      transition: all 0.15s;
+      margin-left: auto;
+    }
+    .msg-download:hover { background: var(--bg-elevated); color: var(--text-secondary); }
+
+    /* ═══════════════════════════════════════════
+       Sidebar — Compose
+       ═══════════════════════════════════════════ */
+    .sidebar-compose {
+      flex-shrink: 0;
+      border-top: 1px solid var(--border-default);
+      padding: 10px 12px;
+      background: var(--bg-surface);
+    }
+    .sidebar-compose.disabled {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+    .compose-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .compose-header span {
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    #new-session-btn {
+      background: none;
+      border: 1px solid var(--border-default);
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    #new-session-btn:hover {
+      background: var(--bg-elevated);
+      color: var(--accent-cyan);
+      border-color: var(--accent-cyan);
+    }
+    .compose-input-wrap {
+      display: flex;
+      gap: 6px;
+      align-items: flex-end;
+    }
+    #compose-input {
+      flex: 1;
+      background: var(--bg-deep);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 8px 10px;
+      resize: vertical;
+      min-height: 36px;
+      max-height: 120px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #compose-input::placeholder { color: var(--text-muted); }
+    #compose-input:focus { border-color: var(--accent-cyan); }
+    #compose-send {
+      background: rgba(34, 211, 238, 0.12);
+      border: 1px solid rgba(34, 211, 238, 0.25);
+      color: var(--accent-cyan);
+      font-size: 14px;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.15s;
+    }
+    #compose-send:hover {
+      background: rgba(34, 211, 238, 0.22);
+      border-color: var(--accent-cyan);
+    }
 
     /* ═══════════════════════════════════════════
        Kanban
@@ -405,6 +509,98 @@
       0%, 100% { opacity: 1; }
       50% { opacity: 0.3; }
     }
+    .stream-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--status-running);
+      animation: stream-pulse 1s ease-in-out infinite;
+      display: inline-block;
+    }
+    @keyframes stream-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.3; transform: scale(0.7); }
+    }
+    .card-stream-preview {
+      font-size: 10px;
+      line-height: 1.35;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 3px;
+      padding: 2px 6px;
+      background: var(--bg-deep);
+      border-radius: 3px;
+      border: 1px solid var(--border-subtle);
+    }
+    .stop-btn {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      color: var(--status-error);
+      font-family: var(--font-display);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .stop-btn:hover {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+    .stop-all-btn {
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: var(--status-error);
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+      margin-left: auto;
+    }
+    .stop-all-btn:hover {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.35);
+    }
+    .detail-stream-output {
+      background: var(--bg-deep);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 12px 14px;
+      max-height: 250px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .detail-stream-output .chunk-tool {
+      color: var(--accent-cyan);
+      opacity: 0.8;
+    }
+    .detail-stream-output .chunk-error {
+      color: var(--status-error);
+    }
+    .detail-stream-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+    .detail-stream-meta .val { color: var(--text-secondary); font-weight: 500; }
     .card-desc {
       font-size: 11px;
       line-height: 1.45;
@@ -642,6 +838,16 @@
           <div class="sidebar-header">Messages</div>
           <div id="chat-log"></div>
         </div>
+        <div class="sidebar-compose disabled" id="compose-bar">
+          <div class="compose-header">
+            <span>New Request</span>
+            <button id="new-session-btn" title="Start new session">+</button>
+          </div>
+          <div class="compose-input-wrap">
+            <textarea id="compose-input" placeholder="Ask Skitter..." rows="2"></textarea>
+            <button id="compose-send" title="Send (Enter)">&#9654;</button>
+          </div>
+        </div>
       </aside>
 
       <div id="content">
@@ -672,11 +878,14 @@
       taskResults: new Map(),
       workerStatus: new Map(),
       taskUsage: new Map(),    // "chat_id/task_id" -> {usage, cost_usd}
+      streamChunks: new Map(), // "chat_id/task_id" -> [{seq, type, content}]
+      streamSnapshots: new Map(), // "chat_id/task_id" -> snapshot object
       chatMessages: [],
       selectedChatId: null,
       selectedTaskId: null,
     };
     let mqttClient = null;
+    let streamRenderPending = false;
 
     /* ═══════════════════════════════════════════
        Utilities
@@ -722,6 +931,50 @@
 
     function getUsageForTask(chatId, task) {
       return state.taskUsage.get(`${chatId}/${task.task_id}`) || null;
+    }
+
+    function scheduleStreamRender() {
+      if (!streamRenderPending) {
+        streamRenderPending = true;
+        setTimeout(() => {
+          renderKanban();
+          renderDetail();
+          streamRenderPending = false;
+        }, 500);
+      }
+    }
+
+    function getLatestStreamText(chatId, task) {
+      const key = `${chatId}/${task.task_id}`;
+      const chunks = state.streamChunks.get(key);
+      if (!chunks || chunks.length === 0) return null;
+      // Find last text chunk
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        if (chunks[i].type === 'text') return chunks[i].content;
+      }
+      // Fall back to last chunk of any type
+      return chunks[chunks.length - 1].content;
+    }
+
+    function publishCancel(chatId, taskId, reason) {
+      if (!mqttClient || !state.connected) return;
+      const topic = `skitter/cancel/${chatId}/${taskId}`;
+      const payload = JSON.stringify({
+        task_id: taskId, chat_id: chatId,
+        reason: reason || 'User cancelled from dashboard',
+        timestamp: Date.now() / 1000,
+      });
+      mqttClient.publish(topic, payload, { qos: 1, retain: true });
+    }
+
+    function publishCancelAll(chatId) {
+      const job = state.jobs.get(chatId);
+      if (!job) return;
+      for (const task of Object.values(job.tasks)) {
+        if (task.status === 'running') {
+          publishCancel(chatId, task.task_id, 'User stopped all tasks');
+        }
+      }
     }
 
     function getJobUsageTotals(chatId) {
@@ -820,6 +1073,33 @@
         return;
       }
 
+      // skitter/stream/{chat_id}/{task_id} — live stream chunks
+      if (parts[1] === 'stream' && parts.length === 4 && raw) {
+        try {
+          const chunk = JSON.parse(raw);
+          const key = `${parts[2]}/${parts[3]}`;
+          if (!state.streamChunks.has(key)) state.streamChunks.set(key, []);
+          const chunks = state.streamChunks.get(key);
+          chunks.push(chunk);
+          // Cap at 200 chunks to avoid memory issues
+          if (chunks.length > 200) chunks.splice(0, chunks.length - 200);
+        } catch(e) {}
+        scheduleStreamRender();
+        return;
+      }
+
+      // skitter/stream/{chat_id}/{task_id}/snapshot — retained snapshots
+      if (parts[1] === 'stream' && parts.length === 5 && parts[4] === 'snapshot') {
+        const key = `${parts[2]}/${parts[3]}`;
+        if (!raw) {
+          state.streamSnapshots.delete(key);
+        } else {
+          try { state.streamSnapshots.set(key, JSON.parse(raw)); } catch(e) {}
+        }
+        scheduleStreamRender();
+        return;
+      }
+
       // skitter/inbound/{chat_id}
       if (parts[1] === 'inbound' && parts.length === 3 && raw) {
         try {
@@ -858,6 +1138,7 @@
         label.className = '';
         label.textContent = 'DISCONNECTED';
       }
+      updateComposeState();
     }
 
     function renderClock() {
@@ -920,13 +1201,26 @@
       for (const m of msgs) {
         const dir = m.direction === 'in' ? 'in' : 'out';
         const label = m.direction === 'in' ? 'USER' : 'SKITTER';
+        const dlBtn = dir === 'out' ? `<button class="msg-download" onclick="downloadReport('${m.chat_id}', this)" title="Download as Markdown">&#8615;</button>` : '';
         html += `<div class="chat-msg ${dir}">
-          <div class="msg-meta">${label} &middot; ${formatTime(m.timestamp)}</div>
-          <div class="msg-text">${esc(truncate(m.text, 500))}</div>
+          <div class="msg-meta">${label} &middot; ${formatTime(m.timestamp)}${dlBtn}</div>
+          <div class="msg-text">${esc(m.text)}</div>
         </div>`;
       }
       el.innerHTML = html;
       el.scrollTop = el.scrollHeight;
+    }
+
+    function downloadReport(chatId, btn) {
+      const textEl = btn.closest('.chat-msg').querySelector('.msg-text');
+      const text = textEl.textContent;
+      const blob = new Blob([text], { type: 'text/markdown' });
+      const ts = new Date().toISOString().replace(/[-:T]/g, m => m === 'T' ? '-' : '').slice(0, 15);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `skitter-${chatId}-${ts}.md`;
+      a.click();
+      URL.revokeObjectURL(a.href);
     }
 
     /* ═══════════════════════════════════════════
@@ -940,7 +1234,7 @@
         kanban.innerHTML = `<div class="kanban-empty">
           <div class="empty-icon">&#9670;</div>
           <div class="empty-text">${state.jobs.size === 0 ? 'Waiting for jobs' : 'Select a session'}</div>
-          <div class="empty-hint">${state.jobs.size === 0 ? 'Start a chat with: uv run python -m skitter chat' : ''}</div>
+          <div class="empty-hint">${state.jobs.size === 0 ? 'Type a message in the sidebar to get started' : ''}</div>
         </div>`;
         clearEdges();
         return;
@@ -965,13 +1259,17 @@
         kanban.parentElement.insertBefore(bar, kanban);
       }
 
+      const stopAllBtn = running.length > 0
+        ? `<button class="stop-all-btn" onclick="publishCancelAll('${esc(state.selectedChatId)}')">STOP ALL</button>`
+        : '';
+
       kanban.innerHTML = `
         <div class="kanban-column">
           <div class="column-header"><span class="column-dot pending"></span><h3>PENDING</h3><span class="column-count">${pending.length}</span></div>
           <div class="column-body">${pending.map(t => renderCard(t, job)).join('')}</div>
         </div>
         <div class="kanban-column">
-          <div class="column-header"><span class="column-dot running"></span><h3>RUNNING</h3><span class="column-count">${running.length}</span></div>
+          <div class="column-header"><span class="column-dot running"></span><h3>RUNNING</h3><span class="column-count">${running.length}</span>${stopAllBtn}</div>
           <div class="column-body">${running.map(t => renderCard(t, job)).join('')}</div>
         </div>
         <div class="kanban-column">
@@ -1001,38 +1299,51 @@
 
       // Worker status for running tasks
       let workerDot = '';
+      let streamIndicator = '';
+      let streamPreview = '';
       if (task.status === 'running') {
         const ws = state.workerStatus.get(`${chatId}/${task.task_id}`);
         if (ws === 'alive') workerDot = '<span class="worker-dot alive"></span>';
         else if (ws === 'dead') workerDot = '<span class="worker-dot dead"></span>';
         else if (ws === 'done') workerDot = '<span class="worker-dot wdone"></span>';
+
+        // Streaming indicator
+        const hasChunks = state.streamChunks.has(`${chatId}/${task.task_id}`);
+        if (hasChunks) {
+          streamIndicator = '<span class="stream-dot"></span>';
+          const lastText = getLatestStreamText(chatId, task);
+          if (lastText) {
+            streamPreview = `<div class="card-stream-preview">${esc(truncate(lastText, 60))}</div>`;
+          }
+        }
       }
 
       const { original } = extractQAFeedback(task.description);
       const desc = truncate(original, 100);
 
       const usage = getUsageForTask(chatId, task);
-      let footerHtml = '';
-      if (isRetry || usage) {
-        footerHtml = '<div class="card-footer">';
-        if (isRetry) footerHtml += `<span class="card-retry">&#x21bb; ${task.retries}/${task.max_retries}</span>`;
-        if (usage && usage.usage) {
-          const total = (usage.usage.input_tokens || 0) + (usage.usage.output_tokens || 0);
-          footerHtml += `<span class="card-tokens">${fmtTokens(total)} tok</span>`;
-        }
-        if (usage && usage.cost_usd != null) {
-          footerHtml += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
-        }
-        footerHtml += '</div>';
+      let footerHtml = '<div class="card-footer">';
+      if (isRetry) footerHtml += `<span class="card-retry">&#x21bb; ${task.retries}/${task.max_retries}</span>`;
+      if (usage && usage.usage) {
+        const total = (usage.usage.input_tokens || 0) + (usage.usage.output_tokens || 0);
+        footerHtml += `<span class="card-tokens">${fmtTokens(total)} tok</span>`;
       }
+      if (usage && usage.cost_usd != null) {
+        footerHtml += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
+      }
+      if (task.status === 'running') {
+        footerHtml += `<button class="stop-btn" data-task-id="${esc(task.task_id)}" data-chat-id="${esc(chatId)}" onclick="event.stopPropagation(); publishCancel('${esc(chatId)}','${esc(task.task_id)}','User stopped task')">STOP</button>`;
+      }
+      footerHtml += '</div>';
 
       return `<div class="task-card ${statusClass}${selected ? ' selected' : ''}" data-logical-id="${esc(task.logical_id)}">
         <div class="card-top">
-          <span class="card-logical-id">${esc(task.logical_id)}</span>
+          <span class="card-logical-id">${streamIndicator}${esc(task.logical_id)}</span>
           ${task.model ? `<span class="card-model">${esc(task.model)}</span>` : ''}
         </div>
         <div class="card-agent">${workerDot}${esc(task.agent)}</div>
         <div class="card-desc">${esc(desc)}</div>
+        ${streamPreview}
         ${footerHtml}
       </div>`;
     }
@@ -1150,11 +1461,16 @@
 
       let statusClass = 'status-' + task.status;
 
+      const stopBtn = task.status === 'running'
+        ? `<button class="stop-btn" onclick="publishCancel('${esc(state.selectedChatId)}','${esc(task.task_id)}','User stopped task')">STOP TASK</button>`
+        : '';
+
       let html = `<div class="detail-header">
         <h2>${esc(task.logical_id)}</h2>
         <span class="detail-badge agent">${esc(task.agent)}</span>
         ${task.model ? `<span class="detail-badge model">${esc(task.model)}</span>` : ''}
         <span class="detail-badge ${statusClass}">${esc(task.status)}</span>
+        ${stopBtn}
         <button class="detail-close" onclick="closeDetail()">&times; close</button>
       </div>`;
 
@@ -1163,6 +1479,44 @@
         <div class="detail-section-label">Description</div>
         <div class="detail-text">${esc(original)}</div>
       </div>`;
+
+      // Live streaming output (for running tasks)
+      const streamKey = `${state.selectedChatId}/${task.task_id}`;
+      const snapshot = state.streamSnapshots.get(streamKey);
+      const chunks = state.streamChunks.get(streamKey);
+      if (task.status === 'running' && (chunks || snapshot)) {
+        html += `<div class="detail-section">
+          <div class="detail-section-label"><span class="stream-dot"></span> Live Output</div>`;
+
+        if (chunks && chunks.length > 0) {
+          let streamHtml = '';
+          // Show last 50 chunks
+          const recent = chunks.slice(-50);
+          for (const c of recent) {
+            if (c.type === 'text') {
+              streamHtml += esc(c.content);
+            } else if (c.type === 'tool_use') {
+              streamHtml += `<span class="chunk-tool">[${esc(c.content)}]</span>\n`;
+            } else if (c.type === 'tool_result') {
+              streamHtml += `<span class="chunk-tool">  → ${esc(truncate(c.content, 150))}</span>\n`;
+            } else if (c.type === 'error') {
+              streamHtml += `<span class="chunk-error">[ERROR: ${esc(c.content)}]</span>\n`;
+            }
+          }
+          html += `<div class="detail-stream-output">${streamHtml}</div>`;
+        }
+
+        if (snapshot) {
+          html += `<div class="detail-stream-meta">
+            <span>Elapsed: <span class="val">${snapshot.elapsed_s.toFixed(0)}s</span></span>
+            <span>Tool calls: <span class="val">${snapshot.tool_calls}</span></span>
+            <span>Errors: <span class="val">${snapshot.errors}</span></span>
+            <span>Chunks: <span class="val">${snapshot.seq}</span></span>
+          </div>`;
+        }
+
+        html += `</div>`;
+      }
 
       // Result
       if (result) {
@@ -1246,6 +1600,66 @@
       renderKanban();
       renderDetail();
     }
+
+    /* ═══════════════════════════════════════════
+       Compose — Submit Requests
+       ═══════════════════════════════════════════ */
+    function generateChatId() {
+      return 'dash-' + crypto.randomUUID().slice(0, 8);
+    }
+
+    function sendMessage(text) {
+      text = text.trim();
+      if (!text || !mqttClient || !state.connected) return;
+
+      // Reuse active session's chat_id, or generate new
+      let chatId = null;
+      if (state.selectedChatId) {
+        const job = state.jobs.get(state.selectedChatId);
+        if (job && jobIsActive(job)) {
+          chatId = state.selectedChatId;
+        }
+      }
+      if (!chatId) chatId = generateChatId();
+
+      const payload = JSON.stringify({
+        text,
+        sender: 'dashboard',
+        chat_id: chatId,
+        timestamp: Date.now() / 1000,
+      });
+
+      mqttClient.publish(`skitter/inbound/${chatId}`, payload, { qos: 1 });
+
+      // Select this session and clear input
+      state.selectedChatId = chatId;
+      document.getElementById('compose-input').value = '';
+      renderAll();
+    }
+
+    function updateComposeState() {
+      const bar = document.getElementById('compose-bar');
+      bar.classList.toggle('disabled', !state.connected);
+    }
+
+    // Wire up compose UI
+    document.getElementById('compose-send').addEventListener('click', () => {
+      sendMessage(document.getElementById('compose-input').value);
+    });
+
+    document.getElementById('compose-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage(e.target.value);
+      }
+    });
+
+    document.getElementById('new-session-btn').addEventListener('click', () => {
+      state.selectedChatId = null;
+      state.selectedTaskId = null;
+      document.getElementById('compose-input').focus();
+      renderAll();
+    });
 
     /* ═══════════════════════════════════════════
        Init

@@ -117,6 +117,145 @@ class TaskResultMessage:
 
 
 @dataclass
+class StreamChunk:
+    task_id: str
+    chat_id: str
+    seq: int
+    type: str  # "text", "tool_use", "tool_result", "thinking", "error"
+    content: str
+    timestamp: float = field(default_factory=time.time)
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "task_id": self.task_id,
+                "chat_id": self.chat_id,
+                "seq": self.seq,
+                "type": self.type,
+                "content": self.content,
+                "timestamp": self.timestamp,
+            }
+        )
+
+    @classmethod
+    def from_json(cls, data: str) -> "StreamChunk":
+        d = json.loads(data)
+        return cls(
+            task_id=d["task_id"],
+            chat_id=d["chat_id"],
+            seq=d["seq"],
+            type=d["type"],
+            content=d["content"],
+            timestamp=d.get("timestamp", time.time()),
+        )
+
+
+@dataclass
+class StreamSnapshot:
+    task_id: str
+    chat_id: str
+    seq: int
+    text: str
+    tool_log: list[str]
+    tool_calls: int
+    errors: int
+    started_at: float
+    elapsed_s: float
+    timestamp: float = field(default_factory=time.time)
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "task_id": self.task_id,
+                "chat_id": self.chat_id,
+                "seq": self.seq,
+                "text": self.text,
+                "tool_log": self.tool_log,
+                "tool_calls": self.tool_calls,
+                "errors": self.errors,
+                "started_at": self.started_at,
+                "elapsed_s": self.elapsed_s,
+                "timestamp": self.timestamp,
+            }
+        )
+
+    @classmethod
+    def from_json(cls, data: str) -> "StreamSnapshot":
+        d = json.loads(data)
+        return cls(
+            task_id=d["task_id"],
+            chat_id=d["chat_id"],
+            seq=d["seq"],
+            text=d["text"],
+            tool_log=d.get("tool_log", []),
+            tool_calls=d.get("tool_calls", 0),
+            errors=d.get("errors", 0),
+            started_at=d["started_at"],
+            elapsed_s=d["elapsed_s"],
+            timestamp=d.get("timestamp", time.time()),
+        )
+
+
+@dataclass
+class FeedbackSignal:
+    task_id: str
+    chat_id: str
+    feedback: str
+    attempt: int
+    timestamp: float = field(default_factory=time.time)
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "task_id": self.task_id,
+                "chat_id": self.chat_id,
+                "feedback": self.feedback,
+                "attempt": self.attempt,
+                "timestamp": self.timestamp,
+            }
+        )
+
+    @classmethod
+    def from_json(cls, data: str) -> "FeedbackSignal":
+        d = json.loads(data)
+        return cls(
+            task_id=d["task_id"],
+            chat_id=d["chat_id"],
+            feedback=d["feedback"],
+            attempt=d["attempt"],
+            timestamp=d.get("timestamp", time.time()),
+        )
+
+
+@dataclass
+class CancelSignal:
+    task_id: str
+    chat_id: str
+    reason: str
+    timestamp: float = field(default_factory=time.time)
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "task_id": self.task_id,
+                "chat_id": self.chat_id,
+                "reason": self.reason,
+                "timestamp": self.timestamp,
+            }
+        )
+
+    @classmethod
+    def from_json(cls, data: str) -> "CancelSignal":
+        d = json.loads(data)
+        return cls(
+            task_id=d["task_id"],
+            chat_id=d["chat_id"],
+            reason=d["reason"],
+            timestamp=d.get("timestamp", time.time()),
+        )
+
+
+@dataclass
 class JobTask:
     logical_id: str
     task_id: str
@@ -131,6 +270,7 @@ class JobTask:
     qa: str = ""
     retries: int = 0
     max_retries: int = 2
+    early_qa_interval: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -147,6 +287,7 @@ class JobTask:
             "qa": self.qa,
             "retries": self.retries,
             "max_retries": self.max_retries,
+            "early_qa_interval": self.early_qa_interval,
         }
 
     @classmethod
@@ -165,6 +306,7 @@ class JobTask:
             qa=d.get("qa", ""),
             retries=d.get("retries", 0),
             max_retries=d.get("max_retries", 2),
+            early_qa_interval=d.get("early_qa_interval", 0),
         )
 
 

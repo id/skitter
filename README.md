@@ -69,7 +69,7 @@ Skitter relies on a pure graph executor. Planning and synthesis are just standar
                             │          │             │
                             │          ▼             │        ┌──────────────┐
                             │   ┌─────────────┐      │        │   Planner    │
-                            │   │ Coordinator │──────────────▶│  (sonnet)    │
+                            │   │ Coordinator │──────────────▶│  (opus)      │
                             │   │  (no LLM)   │◀──────────────│  returns     │
                             │   └──────┬──────┘      │        │  JSON plan   │
                             │          │             │        └──────────────┘
@@ -116,7 +116,9 @@ Copy `.env.example` to `.env` to override defaults:
 |---|---|---|
 | `MQTT_HOST` | `localhost` | Broker hostname |
 | `MQTT_PORT` | `1883` | Broker port |
-| `SKITTER_PLANNER_MODEL` | `sonnet` | Model used for the planner worker |
+| `SKITTER_PLANNER_MODEL` | `opus` | Model used for the planner worker |
+| `SKITTER_QA_MODEL` | `sonnet` | Model used for QA agents |
+| `SKITTER_SYNTH_MODEL` | `sonnet` | Model used for the synthesizer |
 | `SKITTER_MODELS` | `haiku:...|sonnet:...` | Available models for workers (see [docs/architecture.md](docs/architecture.md)) |
 
 ## Roadmap & Known Limitations

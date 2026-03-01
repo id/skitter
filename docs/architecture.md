@@ -157,13 +157,17 @@ flowchart TD
   "agent": "researcher",
   "model": "sonnet",
   "description": "Research the topic thoroughly",
+  "soul": "You are a research specialist. Cite sources.",
+  "skills": "Search broadly, then write a structured summary.",
+  "max_turns": 15,
   "qa": "Verify all claims have citations and sources are reputable",
   "max_retries": 3,
+  "early_qa_interval": 10,
   "depends_on": []
 }
 ```
 
-The `qa` and `max_retries` fields are optional. Tasks without `qa` behave exactly as before.
+Optional fields: `soul`, `skills`, `max_turns` (default 10), `qa`, `max_retries` (default 2), `early_qa_interval` (default 0, disabled). Tasks without `qa` behave exactly as before.
 
 ## Worker Lifecycle
 
@@ -213,11 +217,15 @@ The planner picks a model for each delegated task from a configurable list.
 ### Configuration
 
 ```bash
-# Available models (pipe-separated name=description pairs)
-SKITTER_MODELS="haiku=Fast and cheap|sonnet=Balanced|opus=Most capable"
+# Available models (pipe-separated name:description pairs)
+SKITTER_MODELS="haiku:Fast and cheap|sonnet:Balanced|opus:Most capable"
 
 # Model for the planner itself
-SKITTER_PLANNER_MODEL=sonnet
+SKITTER_PLANNER_MODEL=opus
+
+# Models for QA and synthesizer
+SKITTER_QA_MODEL=sonnet
+SKITTER_SYNTH_MODEL=sonnet
 ```
 
 The model list and descriptions are injected into the planner's system prompt. The planner includes a `"model"` field per task. The coordinator validates the choice against the known list (falls back to the first model if unknown) and passes it through to the worker.
@@ -226,21 +234,27 @@ The model list and descriptions are injected into the planner's system prompt. T
 
 | Task Type | Typical Model | Why |
 |-----------|--------------|-----|
-| Planner | sonnet | Routing decisions shape everything downstream |
+| Planner | opus | Routing decisions shape everything downstream — worth the best model |
 | Simple file read / summarize | haiku | Fast, cheap, sufficient for extraction |
 | Code analysis / complex reasoning | sonnet or opus | Needs stronger capabilities |
-| Synthesize | haiku | Combining text, no deep reasoning needed |
+| QA | sonnet | Evaluating output quality, moderate reasoning |
+| Synthesize | sonnet | Combining and rewriting results coherently |
 
 ## Topic Scheme
 
 ```
 skitter/
 ├── inbound/{chat_id}                          # User → coordinator
-├── outbound/{chat_id}                         # Coordinator → user
+├── outbound/{chat_id}                         # Coordinator → user (retained)
 ├── jobs/{chat_id}                             # Retained job spec (DAG + results)
 ├── tasks/{agent}/{chat_id}/{task_id}          # Retained task for worker
 ├── results/{chat_id}/{task_id}                # Worker result → coordinator
-└── workers/{chat_id}/{task_id}/status         # Worker liveness (LWT)
+├── workers/{chat_id}/{task_id}/status         # Worker liveness (LWT)
+├── usage/{chat_id}/{task_id}                  # Token usage and cost per task
+├── stream/{chat_id}/{task_id}                 # Live text/tool chunks from worker
+├── stream/{chat_id}/{task_id}/snapshot        # Periodic progress snapshot (retained)
+├── feedback/{chat_id}/{task_id}               # QA feedback injected mid-run (retained)
+└── cancel/{chat_id}/{task_id}                 # Cancel signal for running worker (retained)
 ```
 
-The coordinator subscribes at startup to: `skitter/inbound/+`, `skitter/results/+/+`, `skitter/workers/+/+/status`.
+The coordinator subscribes at startup to: `skitter/inbound/+`, `skitter/results/+/+`, `skitter/workers/+/+/status`, `skitter/stream/+/+/snapshot`.

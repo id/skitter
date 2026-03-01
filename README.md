@@ -38,6 +38,8 @@ The whole system is ~1,000 lines of Python.
    uv run python -m skitter chat --chat-id my-session
    ```
 
+4. **Watch it work** — open `dashboard.html` in a browser to see jobs, tasks, and DAG execution in real time. Connects to the broker's WebSocket endpoint (`ws://localhost:8083/mqtt`), no backend required.
+
 *You can also use any MQTT client directly (`mqttx`, `mosquitto_pub`/`mosquitto_sub`, custom Telegram/Slack bots, etc).*
 
 ## Why MQTT?

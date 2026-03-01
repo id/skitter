@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skitter Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+  <style>
+    /* ═══════════════════════════════════════════
+       Variables
+       ═══════════════════════════════════════════ */
+    :root {
+      --bg-deep: #060a10;
+      --bg-base: #0a1018;
+      --bg-surface: #101822;
+      --bg-elevated: #16202e;
+      --bg-card: #1a2536;
+      --bg-card-hover: #1f2d42;
+      --border-subtle: #1a2536;
+      --border-default: #263348;
+      --border-strong: #3a4d66;
+      --text-primary: #e8edf4;
+      --text-secondary: #8a99b0;
+      --text-muted: #556378;
+      --status-pending: #556378;
+      --status-running: #3b82f6;
+      --status-done: #0fd492;
+      --status-retry: #f59e0b;
+      --status-error: #ef4444;
+      --accent-cyan: #22d3ee;
+      --accent-amber: #f59e0b;
+      --font-display: 'Chakra Petch', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --sidebar-w: 280px;
+      --header-h: 56px;
+    }
+
+    /* ═══════════════════════════════════════════
+       Reset & Base
+       ═══════════════════════════════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-primary);
+      background: var(--bg-deep);
+      background-image: radial-gradient(circle, rgba(255,255,255,0.018) 1px, transparent 1px);
+      background-size: 20px 20px;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+    /* ═══════════════════════════════════════════
+       Layout
+       ═══════════════════════════════════════════ */
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #main { display: flex; flex: 1; overflow: hidden; }
+    #sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      background: var(--bg-base);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ═══════════════════════════════════════════
+       Accent Line
+       ═══════════════════════════════════════════ */
+    #accent-line {
+      height: 2px;
+      flex-shrink: 0;
+      background: linear-gradient(90deg, var(--bg-deep), var(--accent-cyan), var(--status-running), var(--accent-cyan), var(--bg-deep));
+      background-size: 200% 100%;
+      animation: gradient-shift 6s linear infinite;
+    }
+    @keyframes gradient-shift {
+      0% { background-position: 0% 50%; }
+      100% { background-position: 200% 50%; }
+    }
+
+    /* ═══════════════════════════════════════════
+       Header
+       ═══════════════════════════════════════════ */
+    header {
+      height: var(--header-h);
+      background: var(--bg-base);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: baseline; gap: 12px; }
+    .header-left h1 {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 20px;
+      letter-spacing: 0.12em;
+      color: var(--text-primary);
+    }
+    .header-left .mark {
+      color: var(--accent-cyan);
+      font-size: 14px;
+      margin-right: 2px;
+    }
+    .header-left .subtitle {
+      font-family: var(--font-display);
+      font-size: 11px;
+      font-weight: 300;
+      color: var(--text-muted);
+      letter-spacing: 0.06em;
+    }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    #clock {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+    .conn-status { display: flex; align-items: center; gap: 8px; }
+    #conn-label {
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--status-error);
+      transition: color 0.3s;
+    }
+    #conn-label.connected { color: var(--status-done); }
+    #conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--status-error);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    #conn-dot.connected {
+      background: var(--status-done);
+      box-shadow: 0 0 6px var(--status-done), 0 0 14px rgba(15, 212, 146, 0.25);
+      animation: conn-pulse 2.5s ease-in-out infinite;
+    }
+    @keyframes conn-pulse {
+      0%, 100% { box-shadow: 0 0 6px var(--status-done), 0 0 14px rgba(15, 212, 146, 0.25); }
+      50% { box-shadow: 0 0 8px var(--status-done), 0 0 20px rgba(15, 212, 146, 0.35); }
+    }
+
+    /* ═══════════════════════════════════════════
+       Sidebar — Session List
+       ═══════════════════════════════════════════ */
+    .sidebar-section { display: flex; flex-direction: column; overflow: hidden; }
+    .sidebar-section:first-child { flex-shrink: 0; max-height: 40%; }
+    .sidebar-section:last-child { flex: 1; }
+    .sidebar-header {
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 14px 16px 8px;
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .session-list { overflow-y: auto; flex: 1; padding: 4px 0; }
+    .session-entry {
+      padding: 10px 16px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: all 0.15s;
+    }
+    .session-entry:hover { background: var(--bg-surface); }
+    .session-entry.active {
+      background: var(--bg-surface);
+      border-left-color: var(--accent-cyan);
+    }
+    .session-id {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 3px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .session-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .session-status-dot.active { background: var(--status-running); animation: session-dot-pulse 2s ease-in-out infinite; }
+    .session-status-dot.done { background: var(--status-done); }
+    @keyframes session-dot-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .session-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ═══════════════════════════════════════════
+       Sidebar — Chat Messages
+       ═══════════════════════════════════════════ */
+    #chat-log { overflow-y: auto; flex: 1; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+    .chat-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      font-size: 11px;
+      font-style: italic;
+    }
+    .chat-msg {
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.5;
+      max-width: 92%;
+      word-wrap: break-word;
+    }
+    .chat-msg.in {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      align-self: flex-start;
+      border-bottom-left-radius: 2px;
+    }
+    .chat-msg.out {
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.15);
+      align-self: flex-end;
+      border-bottom-right-radius: 2px;
+    }
+    .chat-msg .msg-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+    }
+    .chat-msg .msg-text { color: var(--text-primary); white-space: pre-wrap; }
+
+    /* ═══════════════════════════════════════════
+       Kanban
+       ═══════════════════════════════════════════ */
+    #kanban-wrapper {
+      position: relative;
+      flex: 1;
+      overflow: auto;
+      padding: 16px 20px;
+    }
+    #dag-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 5;
+    }
+    #kanban {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      min-height: 100%;
+      position: relative;
+      z-index: 1;
+    }
+    .kanban-column {
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      min-height: 200px;
+    }
+    .column-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .column-header h3 {
+      font-family: var(--font-display);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      color: var(--text-secondary);
+      flex: 1;
+    }
+    .column-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .column-dot.pending { background: var(--status-pending); }
+    .column-dot.running { background: var(--status-running); }
+    .column-dot.done { background: var(--status-done); }
+    .column-count {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: var(--bg-surface);
+      padding: 1px 7px;
+      border-radius: 10px;
+    }
+    .column-body { padding: 8px; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+
+    /* ═══════════════════════════════════════════
+       Task Cards
+       ═══════════════════════════════════════════ */
+    .task-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-left: 3px solid var(--status-pending);
+      border-radius: 6px;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      position: relative;
+    }
+    .task-card:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-default);
+    }
+    .task-card.selected {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 1px var(--accent-cyan), 0 0 12px rgba(34, 211, 238, 0.08);
+    }
+    .task-card.status-running {
+      border-left-color: var(--status-running);
+      animation: card-glow 2.5s ease-in-out infinite;
+    }
+    .task-card.status-done { border-left-color: var(--status-done); }
+    .task-card.status-retry { border-left-color: var(--status-retry); }
+    @keyframes card-glow {
+      0%, 100% { box-shadow: none; }
+      50% { box-shadow: inset 0 0 12px rgba(59, 130, 246, 0.06); }
+    }
+    .card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+    .card-logical-id {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card-model {
+      font-family: var(--font-display);
+      font-size: 9px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(34, 211, 238, 0.1);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(34, 211, 238, 0.15);
+      flex-shrink: 0;
+    }
+    .card-agent {
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .worker-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+    }
+    .worker-dot.alive { background: var(--status-done); animation: worker-pulse 1.5s ease-in-out infinite; }
+    .worker-dot.dead { background: var(--status-error); }
+    .worker-dot.wdone { background: var(--text-muted); }
+    @keyframes worker-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .card-desc {
+      font-size: 11px;
+      line-height: 1.45;
+      color: var(--text-secondary);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .card-retry {
+      margin-top: 5px;
+      font-size: 10px;
+      color: var(--status-retry);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* ═══════════════════════════════════════════
+       Kanban Empty State
+       ═══════════════════════════════════════════ */
+    .kanban-empty {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 300px;
+      color: var(--text-muted);
+      gap: 10px;
+    }
+    .kanban-empty .empty-icon { font-size: 28px; opacity: 0.3; }
+    .kanban-empty .empty-text {
+      font-family: var(--font-display);
+      font-size: 13px;
+      letter-spacing: 0.06em;
+    }
+    .kanban-empty .empty-hint { font-size: 11px; opacity: 0.6; }
+
+    /* ═══════════════════════════════════════════
+       Detail Panel
+       ═══════════════════════════════════════════ */
+    #detail-panel {
+      border-top: 1px solid var(--border-subtle);
+      background: var(--bg-base);
+      overflow-y: auto;
+      flex-shrink: 0;
+      max-height: 45vh;
+      transition: max-height 0.25s ease;
+    }
+    #detail-panel.hidden { max-height: 0; border-top-color: transparent; }
+    #detail-inner { padding: 16px 20px; }
+    .detail-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .detail-header h2 {
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--text-primary);
+    }
+    .detail-badge {
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+    .detail-badge.agent { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border-default); }
+    .detail-badge.model { background: rgba(34, 211, 238, 0.1); color: var(--accent-cyan); border: 1px solid rgba(34, 211, 238, 0.15); }
+    .detail-badge.status-pending { background: rgba(85, 99, 120, 0.15); color: var(--status-pending); border: 1px solid rgba(85, 99, 120, 0.2); }
+    .detail-badge.status-running { background: rgba(59, 130, 246, 0.12); color: var(--status-running); border: 1px solid rgba(59, 130, 246, 0.2); }
+    .detail-badge.status-done { background: rgba(15, 212, 146, 0.1); color: var(--status-done); border: 1px solid rgba(15, 212, 146, 0.15); }
+    .detail-close {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border-default);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      transition: all 0.15s;
+    }
+    .detail-close:hover { background: var(--bg-elevated); color: var(--text-secondary); }
+    .detail-section { margin-bottom: 14px; }
+    .detail-section-label {
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .detail-text {
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .detail-result-box {
+      background: var(--bg-deep);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 12px 14px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .detail-deps { display: flex; flex-wrap: wrap; gap: 6px; }
+    .detail-dep-tag {
+      font-size: 11px;
+      padding: 3px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .detail-dep-tag:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+    .detail-meta {
+      display: flex;
+      gap: 20px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .detail-qa-item {
+      background: rgba(245, 158, 11, 0.06);
+      border: 1px solid rgba(245, 158, 11, 0.12);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin-bottom: 6px;
+    }
+    .detail-qa-item .qa-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--status-retry);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .detail-qa-item .qa-text { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
+    /* ═══════════════════════════════════════════
+       Responsive
+       ═══════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      #sidebar { display: none; }
+      :root { --sidebar-w: 0px; }
+      #kanban { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="accent-line"></div>
+    <header>
+      <div class="header-left">
+        <h1><span class="mark">&#9670;</span>SKITTER</h1>
+        <span class="subtitle">MQTT Agent Orchestrator</span>
+      </div>
+      <div class="header-right">
+        <span id="clock"></span>
+        <div class="conn-status">
+          <span id="conn-label">DISCONNECTED</span>
+          <span id="conn-dot"></span>
+        </div>
+      </div>
+    </header>
+
+    <div id="main">
+      <aside id="sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-header">Sessions</div>
+          <div class="session-list" id="session-list"></div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-header">Messages</div>
+          <div id="chat-log"></div>
+        </div>
+      </aside>
+
+      <div id="content">
+        <div id="kanban-wrapper">
+          <svg id="dag-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div id="kanban"></div>
+        </div>
+        <div id="detail-panel" class="hidden">
+          <div id="detail-inner"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ═══════════════════════════════════════════
+       Constants
+       ═══════════════════════════════════════════ */
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const BROKER_URL = 'ws://localhost:8083/mqtt';
+
+    /* ═══════════════════════════════════════════
+       State
+       ═══════════════════════════════════════════ */
+    const state = {
+      connected: false,
+      jobs: new Map(),
+      taskResults: new Map(),
+      workerStatus: new Map(),
+      chatMessages: [],
+      selectedChatId: null,
+      selectedTaskId: null,
+    };
+    let mqttClient = null;
+
+    /* ═══════════════════════════════════════════
+       Utilities
+       ═══════════════════════════════════════════ */
+    function esc(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function truncate(str, n) {
+      if (!str) return '';
+      return str.length > n ? str.slice(0, n) + '\u2026' : str;
+    }
+
+    function formatTime(ts) {
+      const d = new Date(ts * 1000);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function extractQAFeedback(desc) {
+      const parts = desc.split(/\n\n\[QA feedback, attempt \d+\]: /);
+      return { original: parts[0], feedbacks: parts.slice(1) };
+    }
+
+    function getResultForTask(chatId, task) {
+      const job = state.jobs.get(chatId);
+      if (job && job.results && job.results[task.logical_id]) {
+        return job.results[task.logical_id];
+      }
+      return state.taskResults.get(`${chatId}/${task.task_id}`) || null;
+    }
+
+    function jobIsActive(job) {
+      return Object.values(job.tasks).some(t => t.status !== 'done');
+    }
+
+    /* ═══════════════════════════════════════════
+       MQTT
+       ═══════════════════════════════════════════ */
+    function connect() {
+      mqttClient = mqtt.connect(BROKER_URL, {
+        reconnectPeriod: 3000,
+        connectTimeout: 5000,
+        clean: true,
+      });
+
+      mqttClient.on('connect', () => {
+        state.connected = true;
+        renderConnectionStatus();
+        mqttClient.subscribe('skitter/#', { qos: 1 });
+      });
+
+      mqttClient.on('close', () => {
+        state.connected = false;
+        renderConnectionStatus();
+      });
+
+      mqttClient.on('error', (err) => console.error('MQTT:', err));
+      mqttClient.on('message', onMessage);
+    }
+
+    function onMessage(topic, payload) {
+      const raw = payload.toString();
+      const parts = topic.split('/');
+
+      // skitter/jobs/{chat_id}
+      if (parts[1] === 'jobs' && parts.length === 3) {
+        const chatId = parts[2];
+        if (!raw) {
+          state.jobs.delete(chatId);
+          if (state.selectedChatId === chatId) {
+            state.selectedTaskId = null;
+          }
+        } else {
+          try { state.jobs.set(chatId, JSON.parse(raw)); } catch(e) { return; }
+          if (!state.selectedChatId) state.selectedChatId = chatId;
+        }
+        renderAll();
+        return;
+      }
+
+      // skitter/results/{chat_id}/{task_id}
+      if (parts[1] === 'results' && parts.length === 4) {
+        if (raw) {
+          try {
+            const msg = JSON.parse(raw);
+            state.taskResults.set(`${parts[2]}/${parts[3]}`, msg.result);
+          } catch(e) {}
+        }
+        renderDetail();
+        return;
+      }
+
+      // skitter/workers/{chat_id}/{task_id}/status
+      if (parts[1] === 'workers' && parts.length === 5 && parts[4] === 'status') {
+        if (raw) {
+          try {
+            const s = JSON.parse(raw);
+            state.workerStatus.set(`${parts[2]}/${parts[3]}`, s.status);
+          } catch(e) {}
+        }
+        renderKanban();
+        return;
+      }
+
+      // skitter/inbound/{chat_id}
+      if (parts[1] === 'inbound' && parts.length === 3 && raw) {
+        try {
+          const msg = JSON.parse(raw);
+          state.chatMessages.push({ direction: 'in', chat_id: msg.chat_id, text: msg.text, timestamp: msg.timestamp || Date.now()/1000 });
+          if (!state.selectedChatId) state.selectedChatId = msg.chat_id;
+        } catch(e) {}
+        renderChatPanel();
+        renderSessionList();
+        return;
+      }
+
+      // skitter/outbound/{chat_id}
+      if (parts[1] === 'outbound' && parts.length === 3 && raw) {
+        try {
+          const msg = JSON.parse(raw);
+          state.chatMessages.push({ direction: 'out', chat_id: msg.chat_id, text: msg.text, timestamp: Date.now()/1000 });
+        } catch(e) {}
+        renderChatPanel();
+        return;
+      }
+    }
+
+    /* ═══════════════════════════════════════════
+       Render — Connection & Clock
+       ═══════════════════════════════════════════ */
+    function renderConnectionStatus() {
+      const dot = document.getElementById('conn-dot');
+      const label = document.getElementById('conn-label');
+      if (state.connected) {
+        dot.className = 'connected';
+        label.className = 'connected';
+        label.textContent = 'CONNECTED';
+      } else {
+        dot.className = '';
+        label.className = '';
+        label.textContent = 'DISCONNECTED';
+      }
+    }
+
+    function renderClock() {
+      const now = new Date();
+      document.getElementById('clock').textContent = now.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    }
+
+    /* ═══════════════════════════════════════════
+       Render — Session List
+       ═══════════════════════════════════════════ */
+    function renderSessionList() {
+      const el = document.getElementById('session-list');
+      const chatIds = new Set();
+      for (const id of state.jobs.keys()) chatIds.add(id);
+      for (const m of state.chatMessages) chatIds.add(m.chat_id);
+
+      if (chatIds.size === 0) {
+        el.innerHTML = '<div class="chat-empty">No sessions</div>';
+        return;
+      }
+
+      let html = '';
+      for (const cid of chatIds) {
+        const job = state.jobs.get(cid);
+        const active = job && jobIsActive(job);
+        const selected = cid === state.selectedChatId;
+        const text = job ? job.original_text : '';
+        html += `<div class="session-entry${selected ? ' active' : ''}" data-chat-id="${esc(cid)}">
+          <div class="session-id">
+            <span class="session-status-dot ${active ? 'active' : 'done'}"></span>
+            ${esc(cid.slice(0, 10))}
+          </div>
+          <div class="session-text">${esc(truncate(text, 50))}</div>
+        </div>`;
+      }
+      el.innerHTML = html;
+
+      el.querySelectorAll('.session-entry').forEach(entry => {
+        entry.addEventListener('click', () => {
+          state.selectedChatId = entry.dataset.chatId;
+          state.selectedTaskId = null;
+          renderAll();
+        });
+      });
+    }
+
+    /* ═══════════════════════════════════════════
+       Render — Chat Messages
+       ═══════════════════════════════════════════ */
+    function renderChatPanel() {
+      const el = document.getElementById('chat-log');
+      const msgs = state.chatMessages.filter(m => m.chat_id === state.selectedChatId);
+
+      if (msgs.length === 0) {
+        el.innerHTML = '<div class="chat-empty">No messages yet</div>';
+        return;
+      }
+
+      let html = '';
+      for (const m of msgs) {
+        const dir = m.direction === 'in' ? 'in' : 'out';
+        const label = m.direction === 'in' ? 'USER' : 'SKITTER';
+        html += `<div class="chat-msg ${dir}">
+          <div class="msg-meta">${label} &middot; ${formatTime(m.timestamp)}</div>
+          <div class="msg-text">${esc(truncate(m.text, 500))}</div>
+        </div>`;
+      }
+      el.innerHTML = html;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    /* ═══════════════════════════════════════════
+       Render — Kanban Board
+       ═══════════════════════════════════════════ */
+    function renderKanban() {
+      const kanban = document.getElementById('kanban');
+      const job = state.jobs.get(state.selectedChatId);
+
+      if (!job) {
+        kanban.innerHTML = `<div class="kanban-empty">
+          <div class="empty-icon">&#9670;</div>
+          <div class="empty-text">${state.jobs.size === 0 ? 'Waiting for jobs' : 'Select a session'}</div>
+          <div class="empty-hint">${state.jobs.size === 0 ? 'Start a chat with: uv run python -m skitter chat' : ''}</div>
+        </div>`;
+        clearEdges();
+        return;
+      }
+
+      const tasks = Object.values(job.tasks);
+      const pending = tasks.filter(t => t.status === 'pending');
+      const running = tasks.filter(t => t.status === 'running');
+      const done = tasks.filter(t => t.status === 'done');
+
+      kanban.innerHTML = `
+        <div class="kanban-column">
+          <div class="column-header"><span class="column-dot pending"></span><h3>PENDING</h3><span class="column-count">${pending.length}</span></div>
+          <div class="column-body">${pending.map(t => renderCard(t, job)).join('')}</div>
+        </div>
+        <div class="kanban-column">
+          <div class="column-header"><span class="column-dot running"></span><h3>RUNNING</h3><span class="column-count">${running.length}</span></div>
+          <div class="column-body">${running.map(t => renderCard(t, job)).join('')}</div>
+        </div>
+        <div class="kanban-column">
+          <div class="column-header"><span class="column-dot done"></span><h3>DONE</h3><span class="column-count">${done.length}</span></div>
+          <div class="column-body">${done.map(t => renderCard(t, job)).join('')}</div>
+        </div>
+      `;
+
+      kanban.querySelectorAll('.task-card').forEach(card => {
+        card.addEventListener('click', () => {
+          state.selectedTaskId = card.dataset.logicalId;
+          renderKanbanSelection();
+          renderDetail();
+        });
+      });
+
+      renderKanbanSelection();
+      scheduleEdgeDraw();
+    }
+
+    function renderCard(task, job) {
+      const chatId = job.chat_id;
+      const isRetry = task.retries > 0;
+      let statusClass = 'status-' + task.status;
+      if (isRetry && task.status !== 'done') statusClass = 'status-retry';
+      const selected = task.logical_id === state.selectedTaskId;
+
+      // Worker status for running tasks
+      let workerDot = '';
+      if (task.status === 'running') {
+        const ws = state.workerStatus.get(`${chatId}/${task.task_id}`);
+        if (ws === 'alive') workerDot = '<span class="worker-dot alive"></span>';
+        else if (ws === 'dead') workerDot = '<span class="worker-dot dead"></span>';
+        else if (ws === 'done') workerDot = '<span class="worker-dot wdone"></span>';
+      }
+
+      const { original } = extractQAFeedback(task.description);
+      const desc = truncate(original, 100);
+
+      return `<div class="task-card ${statusClass}${selected ? ' selected' : ''}" data-logical-id="${esc(task.logical_id)}">
+        <div class="card-top">
+          <span class="card-logical-id">${esc(task.logical_id)}</span>
+          ${task.model ? `<span class="card-model">${esc(task.model)}</span>` : ''}
+        </div>
+        <div class="card-agent">${workerDot}${esc(task.agent)}</div>
+        <div class="card-desc">${esc(desc)}</div>
+        ${isRetry ? `<div class="card-retry">&#x21bb; retry ${task.retries}/${task.max_retries}</div>` : ''}
+      </div>`;
+    }
+
+    function renderKanbanSelection() {
+      document.querySelectorAll('.task-card').forEach(card => {
+        card.classList.toggle('selected', card.dataset.logicalId === state.selectedTaskId);
+      });
+    }
+
+    /* ═══════════════════════════════════════════
+       Render — DAG Edges
+       ═══════════════════════════════════════════ */
+    let edgeDrawPending = false;
+    function scheduleEdgeDraw() {
+      if (!edgeDrawPending) {
+        edgeDrawPending = true;
+        requestAnimationFrame(() => { drawEdges(); edgeDrawPending = false; });
+      }
+    }
+
+    function clearEdges() {
+      const svg = document.getElementById('dag-svg');
+      svg.innerHTML = '';
+    }
+
+    function drawEdges() {
+      const svg = document.getElementById('dag-svg');
+      const container = document.getElementById('kanban-wrapper');
+      svg.innerHTML = '';
+
+      const job = state.jobs.get(state.selectedChatId);
+      if (!job) return;
+
+      const containerRect = container.getBoundingClientRect();
+      svg.setAttribute('width', container.scrollWidth);
+      svg.setAttribute('height', container.scrollHeight);
+      svg.style.width = container.scrollWidth + 'px';
+      svg.style.height = container.scrollHeight + 'px';
+
+      // Arrowhead marker
+      const defs = document.createElementNS(SVG_NS, 'defs');
+      const marker = document.createElementNS(SVG_NS, 'marker');
+      marker.setAttribute('id', 'arrow');
+      marker.setAttribute('markerWidth', '7');
+      marker.setAttribute('markerHeight', '5');
+      marker.setAttribute('refX', '7');
+      marker.setAttribute('refY', '2.5');
+      marker.setAttribute('orient', 'auto');
+      const poly = document.createElementNS(SVG_NS, 'polygon');
+      poly.setAttribute('points', '0 0, 7 2.5, 0 5');
+      poly.setAttribute('fill', 'rgba(100, 116, 139, 0.45)');
+      marker.appendChild(poly);
+      defs.appendChild(marker);
+      svg.appendChild(defs);
+
+      for (const [logicalId, task] of Object.entries(job.tasks)) {
+        for (const depId of (task.depends_on || [])) {
+          const srcEl = document.querySelector(`.task-card[data-logical-id="${CSS.escape(depId)}"]`);
+          const tgtEl = document.querySelector(`.task-card[data-logical-id="${CSS.escape(logicalId)}"]`);
+          if (!srcEl || !tgtEl) continue;
+
+          const srcRect = srcEl.getBoundingClientRect();
+          const tgtRect = tgtEl.getBoundingClientRect();
+
+          const x1 = srcRect.right - containerRect.left + container.scrollLeft;
+          const y1 = srcRect.top + srcRect.height / 2 - containerRect.top + container.scrollTop;
+          const x2 = tgtRect.left - containerRect.left + container.scrollLeft;
+          const y2 = tgtRect.top + tgtRect.height / 2 - containerRect.top + container.scrollTop;
+
+          const path = document.createElementNS(SVG_NS, 'path');
+
+          if (x2 - x1 < 20) {
+            // Same or nearby column — route around
+            const offset = 50;
+            const midX = Math.max(x1, x2) + offset;
+            path.setAttribute('d', `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`);
+          } else {
+            const dx = (x2 - x1) * 0.4;
+            path.setAttribute('d', `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
+          }
+
+          path.setAttribute('stroke', 'rgba(100, 116, 139, 0.3)');
+          path.setAttribute('stroke-width', '1.5');
+          path.setAttribute('fill', 'none');
+          path.setAttribute('stroke-dasharray', '4 3');
+          path.setAttribute('marker-end', 'url(#arrow)');
+          svg.appendChild(path);
+        }
+      }
+    }
+
+    /* ═══════════════════════════════════════════
+       Render — Detail Panel
+       ═══════════════════════════════════════════ */
+    function renderDetail() {
+      const panel = document.getElementById('detail-panel');
+      const inner = document.getElementById('detail-inner');
+      const job = state.jobs.get(state.selectedChatId);
+
+      if (!job || !state.selectedTaskId) {
+        panel.classList.add('hidden');
+        return;
+      }
+
+      const task = job.tasks[state.selectedTaskId];
+      if (!task) {
+        panel.classList.add('hidden');
+        return;
+      }
+
+      panel.classList.remove('hidden');
+      const { original, feedbacks } = extractQAFeedback(task.description);
+      const result = getResultForTask(state.selectedChatId, task);
+
+      let statusClass = 'status-' + task.status;
+
+      let html = `<div class="detail-header">
+        <h2>${esc(task.logical_id)}</h2>
+        <span class="detail-badge agent">${esc(task.agent)}</span>
+        ${task.model ? `<span class="detail-badge model">${esc(task.model)}</span>` : ''}
+        <span class="detail-badge ${statusClass}">${esc(task.status)}</span>
+        <button class="detail-close" onclick="closeDetail()">&times; close</button>
+      </div>`;
+
+      // Description
+      html += `<div class="detail-section">
+        <div class="detail-section-label">Description</div>
+        <div class="detail-text">${esc(original)}</div>
+      </div>`;
+
+      // Result
+      if (result) {
+        html += `<div class="detail-section">
+          <div class="detail-section-label">Result</div>
+          <div class="detail-result-box"><div class="detail-text">${esc(result)}</div></div>
+        </div>`;
+      }
+
+      // QA Feedback
+      if (feedbacks.length > 0) {
+        html += `<div class="detail-section"><div class="detail-section-label">QA Feedback</div>`;
+        feedbacks.forEach((fb, i) => {
+          html += `<div class="detail-qa-item">
+            <div class="qa-label">Attempt ${i + 1}</div>
+            <div class="qa-text">${esc(fb)}</div>
+          </div>`;
+        });
+        html += '</div>';
+      }
+
+      // Dependencies
+      if (task.depends_on && task.depends_on.length > 0) {
+        html += `<div class="detail-section">
+          <div class="detail-section-label">Dependencies</div>
+          <div class="detail-deps">${task.depends_on.map(d =>
+            `<span class="detail-dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`
+          ).join('')}</div>
+        </div>`;
+      }
+
+      // Meta
+      html += `<div class="detail-section">
+        <div class="detail-meta">
+          <span>task_id: ${esc(task.task_id)}</span>
+          <span>max_turns: ${task.max_turns}</span>
+          ${task.retries > 0 ? `<span>retries: ${task.retries}/${task.max_retries}</span>` : ''}
+        </div>
+      </div>`;
+
+      inner.innerHTML = html;
+
+      // Wire up dependency tag clicks
+      inner.querySelectorAll('.detail-dep-tag').forEach(tag => {
+        tag.addEventListener('click', () => {
+          state.selectedTaskId = tag.dataset.dep;
+          renderKanbanSelection();
+          renderDetail();
+        });
+      });
+    }
+
+    function closeDetail() {
+      state.selectedTaskId = null;
+      document.getElementById('detail-panel').classList.add('hidden');
+      renderKanbanSelection();
+    }
+
+    /* ═══════════════════════════════════════════
+       Render — All
+       ═══════════════════════════════════════════ */
+    function renderAll() {
+      renderSessionList();
+      renderChatPanel();
+      renderKanban();
+      renderDetail();
+    }
+
+    /* ═══════════════════════════════════════════
+       Init
+       ═══════════════════════════════════════════ */
+    renderClock();
+    setInterval(renderClock, 1000);
+    renderAll();
+    connect();
+
+    window.addEventListener('resize', scheduleEdgeDraw);
+  </script>
+</body>
+</html>

@@ -11,6 +11,7 @@ from skitter.mqtt import (
     MQTT_PORT,
     TOPIC_TASKS,
     TOPIC_RESULTS,
+    TOPIC_USAGE,
     TOPIC_WORKER_STATUS,
 )
 from skitter.types import TaskMessage, TaskResultMessage
@@ -83,6 +84,8 @@ async def run(agent: str, chat_id: str, task_id: str) -> None:
         system_prompt = "\n\n".join(system_parts) if system_parts else None
 
         # Run Claude agent
+        usage: dict | None = None
+        cost_usd: float | None = None
         try:
             texts: list[str] = []
             options = claude_agent_sdk.ClaudeAgentOptions(
@@ -106,12 +109,15 @@ async def run(agent: str, chat_id: str, task_id: str) -> None:
                         if isinstance(block, claude_agent_sdk.TextBlock):
                             texts.append(block.text)
                 elif isinstance(message, claude_agent_sdk.ResultMessage):
+                    usage = message.usage
+                    cost_usd = message.total_cost_usd
                     log.info(
-                        "[worker:%s:%s] Result: is_error=%s, turns=%s",
+                        "[worker:%s:%s] Result: is_error=%s, turns=%s, cost=$%s",
                         agent,
                         task_id,
                         message.is_error,
                         message.num_turns,
+                        f"{cost_usd:.4f}" if cost_usd else "?",
                     )
 
             response_text = "\n".join(texts) if texts else "(no response)"
@@ -127,6 +133,18 @@ async def run(agent: str, chat_id: str, task_id: str) -> None:
         )
         await client.publish(result_topic, result_msg.to_json(), qos=1)
         log.info("[worker:%s:%s] Published result to %s", agent, task_id, result_topic)
+
+        # Publish usage
+        if usage or cost_usd is not None:
+            usage_topic = TOPIC_USAGE.format(chat_id=chat_id, task_id=task_id)
+            usage_payload = json.dumps({
+                "task_id": task_id,
+                "chat_id": chat_id,
+                "usage": usage,
+                "cost_usd": cost_usd,
+            })
+            await client.publish(usage_topic, usage_payload, qos=1)
+            log.info("[worker:%s:%s] Published usage to %s", agent, task_id, usage_topic)
 
         # Clear retained task message
         await client.publish(task_topic, b"", qos=1, retain=True)

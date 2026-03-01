@@ -414,13 +414,25 @@
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
-    .card-retry {
+    .card-footer {
       margin-top: 5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-size: 10px;
+    }
+    .card-retry {
       color: var(--status-retry);
       display: flex;
       align-items: center;
       gap: 4px;
+    }
+    .card-tokens {
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+    .card-cost {
+      color: var(--accent-amber);
     }
 
     /* ═══════════════════════════════════════════
@@ -557,6 +569,41 @@
       margin-bottom: 4px;
     }
     .detail-qa-item .qa-text { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+    .detail-usage {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 8px;
+    }
+    .usage-stat {
+      background: var(--bg-deep);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .usage-stat .stat-label {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+    }
+    .usage-stat .stat-value {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .usage-stat .stat-value.cost { color: var(--accent-amber); }
+    .job-usage-bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 20px 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .job-usage-bar span { display: flex; align-items: center; gap: 4px; }
+    .job-usage-bar .val { color: var(--text-secondary); font-weight: 500; }
 
     /* ═══════════════════════════════════════════
        Responsive
@@ -624,6 +671,7 @@
       jobs: new Map(),
       taskResults: new Map(),
       workerStatus: new Map(),
+      taskUsage: new Map(),    // "chat_id/task_id" -> {usage, cost_usd}
       chatMessages: [],
       selectedChatId: null,
       selectedTaskId: null,
@@ -664,6 +712,32 @@
 
     function jobIsActive(job) {
       return Object.values(job.tasks).some(t => t.status !== 'done');
+    }
+
+    function fmtTokens(n) {
+      if (n == null) return '?';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+      return String(n);
+    }
+
+    function getUsageForTask(chatId, task) {
+      return state.taskUsage.get(`${chatId}/${task.task_id}`) || null;
+    }
+
+    function getJobUsageTotals(chatId) {
+      const job = state.jobs.get(chatId);
+      if (!job) return null;
+      let totalIn = 0, totalOut = 0, totalCost = 0, count = 0;
+      for (const task of Object.values(job.tasks)) {
+        const u = state.taskUsage.get(`${chatId}/${task.task_id}`);
+        if (u && u.usage) {
+          totalIn += (u.usage.input_tokens || 0);
+          totalOut += (u.usage.output_tokens || 0);
+          if (u.cost_usd != null) totalCost += u.cost_usd;
+          count++;
+        }
+      }
+      return count ? { input_tokens: totalIn, output_tokens: totalOut, cost_usd: totalCost } : null;
     }
 
     /* ═══════════════════════════════════════════
@@ -732,6 +806,17 @@
           } catch(e) {}
         }
         renderKanban();
+        return;
+      }
+
+      // skitter/usage/{chat_id}/{task_id}
+      if (parts[1] === 'usage' && parts.length === 4 && raw) {
+        try {
+          const msg = JSON.parse(raw);
+          state.taskUsage.set(`${parts[2]}/${parts[3]}`, { usage: msg.usage, cost_usd: msg.cost_usd });
+        } catch(e) {}
+        renderKanban();
+        renderDetail();
         return;
       }
 
@@ -866,6 +951,20 @@
       const running = tasks.filter(t => t.status === 'running');
       const done = tasks.filter(t => t.status === 'done');
 
+      // Job-level usage summary
+      const jobTotals = getJobUsageTotals(state.selectedChatId);
+      const usageBar = document.querySelector('.job-usage-bar');
+      if (usageBar) usageBar.remove();
+      if (jobTotals) {
+        const bar = document.createElement('div');
+        bar.className = 'job-usage-bar';
+        bar.innerHTML = `<span>IN <span class="val">${fmtTokens(jobTotals.input_tokens)}</span></span>`
+          + `<span>OUT <span class="val">${fmtTokens(jobTotals.output_tokens)}</span></span>`
+          + `<span>TOTAL <span class="val">${fmtTokens(jobTotals.input_tokens + jobTotals.output_tokens)}</span></span>`
+          + `<span>COST <span class="val" style="color:var(--accent-amber)">$${jobTotals.cost_usd.toFixed(4)}</span></span>`;
+        kanban.parentElement.insertBefore(bar, kanban);
+      }
+
       kanban.innerHTML = `
         <div class="kanban-column">
           <div class="column-header"><span class="column-dot pending"></span><h3>PENDING</h3><span class="column-count">${pending.length}</span></div>
@@ -912,6 +1011,21 @@
       const { original } = extractQAFeedback(task.description);
       const desc = truncate(original, 100);
 
+      const usage = getUsageForTask(chatId, task);
+      let footerHtml = '';
+      if (isRetry || usage) {
+        footerHtml = '<div class="card-footer">';
+        if (isRetry) footerHtml += `<span class="card-retry">&#x21bb; ${task.retries}/${task.max_retries}</span>`;
+        if (usage && usage.usage) {
+          const total = (usage.usage.input_tokens || 0) + (usage.usage.output_tokens || 0);
+          footerHtml += `<span class="card-tokens">${fmtTokens(total)} tok</span>`;
+        }
+        if (usage && usage.cost_usd != null) {
+          footerHtml += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
+        }
+        footerHtml += '</div>';
+      }
+
       return `<div class="task-card ${statusClass}${selected ? ' selected' : ''}" data-logical-id="${esc(task.logical_id)}">
         <div class="card-top">
           <span class="card-logical-id">${esc(task.logical_id)}</span>
@@ -919,7 +1033,7 @@
         </div>
         <div class="card-agent">${workerDot}${esc(task.agent)}</div>
         <div class="card-desc">${esc(desc)}</div>
-        ${isRetry ? `<div class="card-retry">&#x21bb; retry ${task.retries}/${task.max_retries}</div>` : ''}
+        ${footerHtml}
       </div>`;
     }
 
@@ -1077,6 +1191,22 @@
           <div class="detail-deps">${task.depends_on.map(d =>
             `<span class="detail-dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`
           ).join('')}</div>
+        </div>`;
+      }
+
+      // Usage
+      const usage = getUsageForTask(state.selectedChatId, task);
+      if (usage && usage.usage) {
+        const u = usage.usage;
+        html += `<div class="detail-section">
+          <div class="detail-section-label">Token Usage</div>
+          <div class="detail-usage">
+            <div class="usage-stat"><div class="stat-label">Input</div><div class="stat-value">${fmtTokens(u.input_tokens)}</div></div>
+            <div class="usage-stat"><div class="stat-label">Output</div><div class="stat-value">${fmtTokens(u.output_tokens)}</div></div>
+            <div class="usage-stat"><div class="stat-label">Cache Read</div><div class="stat-value">${fmtTokens(u.cache_read_input_tokens)}</div></div>
+            <div class="usage-stat"><div class="stat-label">Cache Write</div><div class="stat-value">${fmtTokens(u.cache_creation_input_tokens)}</div></div>
+            ${usage.cost_usd != null ? `<div class="usage-stat"><div class="stat-label">Cost</div><div class="stat-value cost">$${usage.cost_usd.toFixed(4)}</div></div>` : ''}
+          </div>
         </div>`;
       }
 

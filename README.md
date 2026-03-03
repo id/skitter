@@ -159,7 +159,7 @@ The coordinator is a pure DAG executor — it never calls an LLM. It dispatches 
  (CLI, dashboard,                (Docker, port 1883)            (claude-agent-sdk)
   Telegram bot, etc.)
                             ┌──────────────────────────┐
-   ① A2A JSON-RPC request   │                          │
+   A2A JSON-RPC request     │                          │
   ──────────────────────────▶  request/.../coordinator │
    (v5 Response Topic +     │          │               │
     Correlation Data)       │          ▼               │
@@ -168,24 +168,24 @@ The coordinator is a pure DAG executor — it never calls an LLM. It dispatches 
                             │   │  (no LLM)   │        │     │  Worker A    │
                             │   └──────┬──────┘        │  ┌─▶│  (sonnet)    │──┐
                             │          │               │  │  └──────────────┘  │
-                            │  ② Build job: agent_id   │  │  ┌──────────────┐  │
+                            │    Build job: agent_id   │  │  ┌──────────────┐  │
                             │     → single task;       │  └─▶│  Worker B    │──┤
                             │     pipeline_id → DAG    │     │  (haiku)     │  │
                             │          │               │     └──────────────┘  │
-                            │  ③       │  alive ◀──────────────────────────────┤
+                            │          │  alive ◀──────────────────────────────┤
                             │          │  (handshake)  │                       │
                             │          ├──────────────────▶ dispatch task      │
                             │          │               │   (v5 properties)     │
-                            │  ④       │               │                       │
+                            │          │               │                       │
                             │          │  stream items ◀───────────────────────┤
                             │          │  (QoS 0)      │     token-by-token    │
-                            │  ⑤       │               │                       │
+                            │          │               │                       │
                             │          │  result ◀─────────────────────────────┘
                             │          ▼  (QoS 1)      │
                             │   ┌─────────────┐        │
                             │   │ Advance DAG │        │
                             │   └──────┬──────┘        │
-                            │  ⑥       │               │
+                            │          │               │
                             │     all tasks done       │
         reply on            │          │               │
         Response Topic      │          ▼               │

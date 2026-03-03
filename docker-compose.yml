@@ -14,3 +14,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - skitter
+
+networks:
+  skitter:
+    name: skitter
+    driver: bridge

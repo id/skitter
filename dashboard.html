@@ -28,7 +28,6 @@
       --status-pending: #556378;
       --status-running: #3b82f6;
       --status-done: #0fd492;
-      --status-retry: #f59e0b;
       --status-error: #ef4444;
       --accent-cyan: #22d3ee;
       --accent-amber: #f59e0b;
@@ -320,6 +319,21 @@
       color: var(--accent-cyan);
       border-color: var(--accent-cyan);
     }
+    #compose-target {
+      width: 100%;
+      background: var(--bg-deep);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 5px 8px;
+      outline: none;
+      cursor: pointer;
+      margin-bottom: 4px;
+      transition: border-color 0.15s;
+    }
+    #compose-target:focus { border-color: var(--accent-cyan); }
     .compose-input-wrap {
       display: flex;
       gap: 6px;
@@ -458,7 +472,6 @@
       animation: card-glow 2.5s ease-in-out infinite;
     }
     .task-card.status-done { border-left-color: var(--status-done); }
-    .task-card.status-retry { border-left-color: var(--status-retry); }
     @keyframes card-glow {
       0%, 100% { box-shadow: none; }
       50% { box-shadow: inset 0 0 12px rgba(59, 130, 246, 0.06); }
@@ -617,12 +630,6 @@
       gap: 8px;
       font-size: 10px;
     }
-    .card-retry {
-      color: var(--status-retry);
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
     .card-tokens {
       color: var(--text-muted);
       margin-left: auto;
@@ -749,22 +756,6 @@
       font-size: 11px;
       color: var(--text-muted);
     }
-    .detail-qa-item {
-      background: rgba(245, 158, 11, 0.06);
-      border: 1px solid rgba(245, 158, 11, 0.12);
-      border-radius: 6px;
-      padding: 8px 12px;
-      margin-bottom: 6px;
-    }
-    .detail-qa-item .qa-label {
-      font-size: 10px;
-      font-weight: 600;
-      color: var(--status-retry);
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      margin-bottom: 4px;
-    }
-    .detail-qa-item .qa-text { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
     .detail-usage {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -843,8 +834,9 @@
             <span>New Request</span>
             <button id="new-session-btn" title="Start new session">+</button>
           </div>
+          <select id="compose-target"></select>
           <div class="compose-input-wrap">
-            <textarea id="compose-input" placeholder="Ask Skitter..." rows="2"></textarea>
+            <textarea id="compose-input" placeholder="Prompt... (or /agent id prompt, /pipeline id --var k=v)" rows="2"></textarea>
             <button id="compose-send" title="Send (Enter)">&#9654;</button>
           </div>
         </div>
@@ -879,7 +871,7 @@
       workerStatus: new Map(),
       taskUsage: new Map(),    // "chat_id/task_id" -> {usage, cost_usd}
       streamChunks: new Map(), // "chat_id/task_id" -> [{seq, type, content}]
-      streamSnapshots: new Map(), // "chat_id/task_id" -> snapshot object
+      agentCards: new Map(),   // agent_id -> {name, description, model, ...}
       chatMessages: [],
       selectedChatId: null,
       selectedTaskId: null,
@@ -904,11 +896,6 @@
     function formatTime(ts) {
       const d = new Date(ts * 1000);
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    }
-
-    function extractQAFeedback(desc) {
-      const parts = desc.split(/\n\n\[QA feedback, attempt \d+\]: /);
-      return { original: parts[0], feedbacks: parts.slice(1) };
     }
 
     function getResultForTask(chatId, task) {
@@ -958,13 +945,20 @@
 
     function publishCancel(chatId, taskId, reason) {
       if (!mqttClient || !state.connected) return;
-      const topic = `skitter/cancel/${chatId}/${taskId}`;
+      // Look up the agent for this task from the job spec
+      const job = state.jobs.get(chatId);
+      if (!job) return;
+      const task = Object.values(job.tasks).find(t => t.task_id === taskId);
+      if (!task) return;
+      const org = 'skitter', unit = 'default';
+      const topic = `$a2a/v1/request/${org}/${unit}/${task.agent}/cancel`;
       const payload = JSON.stringify({
-        task_id: taskId, chat_id: chatId,
-        reason: reason || 'User cancelled from dashboard',
-        timestamp: Date.now() / 1000,
+        jsonrpc: '2.0',
+        method: 'tasks/cancel',
+        params: { task_id: taskId, reason: reason || 'User cancelled from dashboard' },
+        id: crypto.randomUUID(),
       });
-      mqttClient.publish(topic, payload, { qos: 1, retain: true });
+      mqttClient.publish(topic, payload, { qos: 1 });
     }
 
     function publishCancelAll(chatId) {
@@ -998,6 +992,7 @@
        ═══════════════════════════════════════════ */
     function connect() {
       mqttClient = mqtt.connect(BROKER_URL, {
+        protocolVersion: 5,
         reconnectPeriod: 3000,
         connectTimeout: 5000,
         clean: true,
@@ -1006,7 +1001,7 @@
       mqttClient.on('connect', () => {
         state.connected = true;
         renderConnectionStatus();
-        mqttClient.subscribe('skitter/#', { qos: 1 });
+        mqttClient.subscribe('$a2a/v1/#', { qos: 1 });
       });
 
       mqttClient.on('close', () => {
@@ -1021,10 +1016,11 @@
     function onMessage(topic, payload) {
       const raw = payload.toString();
       const parts = topic.split('/');
+      // A2A topics: $a2a/v1/{category}/{org}/{unit}/...
 
-      // skitter/jobs/{chat_id}
-      if (parts[1] === 'jobs' && parts.length === 3) {
-        const chatId = parts[2];
+      // $a2a/v1/state/{org}/{unit}/jobs/{chat_id}
+      if (parts[2] === 'state' && parts[5] === 'jobs' && parts.length === 7) {
+        const chatId = parts[6];
         if (!raw) {
           state.jobs.delete(chatId);
           if (state.selectedChatId === chatId) {
@@ -1038,87 +1034,106 @@
         return;
       }
 
-      // skitter/results/{chat_id}/{task_id}
-      if (parts[1] === 'results' && parts.length === 4) {
-        if (raw) {
-          try {
-            const msg = JSON.parse(raw);
-            state.taskResults.set(`${parts[2]}/${parts[3]}`, msg.result);
-          } catch(e) {}
-        }
-        renderDetail();
-        return;
-      }
-
-      // skitter/workers/{chat_id}/{task_id}/status
-      if (parts[1] === 'workers' && parts.length === 5 && parts[4] === 'status') {
+      // $a2a/v1/event/{org}/{unit}/workers/{task_id}
+      if (parts[2] === 'event' && parts[5] === 'workers' && parts.length === 7) {
         if (raw) {
           try {
             const s = JSON.parse(raw);
-            state.workerStatus.set(`${parts[2]}/${parts[3]}`, s.status);
+            // Find chat_id from jobs
+            let chatIdForTask = null;
+            for (const [cid, job] of state.jobs) {
+              for (const t of Object.values(job.tasks)) {
+                if (t.task_id === parts[6]) { chatIdForTask = cid; break; }
+              }
+              if (chatIdForTask) break;
+            }
+            if (chatIdForTask) {
+              state.workerStatus.set(`${chatIdForTask}/${parts[6]}`, s.status);
+            }
           } catch(e) {}
         }
         renderKanban();
         return;
       }
 
-      // skitter/usage/{chat_id}/{task_id}
-      if (parts[1] === 'usage' && parts.length === 4 && raw) {
+      // $a2a/v1/state/{org}/{unit}/usage/{chat_id}/{task_id}
+      if (parts[2] === 'state' && parts[5] === 'usage' && parts.length === 8 && raw) {
         try {
           const msg = JSON.parse(raw);
-          state.taskUsage.set(`${parts[2]}/${parts[3]}`, { usage: msg.usage, cost_usd: msg.cost_usd });
+          state.taskUsage.set(`${parts[6]}/${parts[7]}`, { usage: msg.usage, cost_usd: msg.cost_usd });
         } catch(e) {}
         renderKanban();
         renderDetail();
         return;
       }
 
-      // skitter/stream/{chat_id}/{task_id} — live stream chunks
-      if (parts[1] === 'stream' && parts.length === 4 && raw) {
-        try {
-          const chunk = JSON.parse(raw);
-          const key = `${parts[2]}/${parts[3]}`;
-          if (!state.streamChunks.has(key)) state.streamChunks.set(key, []);
-          const chunks = state.streamChunks.get(key);
-          chunks.push(chunk);
-          // Cap at 200 chunks to avoid memory issues
-          if (chunks.length > 200) chunks.splice(0, chunks.length - 200);
-        } catch(e) {}
-        scheduleStreamRender();
-        return;
-      }
-
-      // skitter/stream/{chat_id}/{task_id}/snapshot — retained snapshots
-      if (parts[1] === 'stream' && parts.length === 5 && parts[4] === 'snapshot') {
-        const key = `${parts[2]}/${parts[3]}`;
-        if (!raw) {
-          state.streamSnapshots.delete(key);
-        } else {
-          try { state.streamSnapshots.set(key, JSON.parse(raw)); } catch(e) {}
-        }
-        scheduleStreamRender();
-        return;
-      }
-
-      // skitter/inbound/{chat_id}
-      if (parts[1] === 'inbound' && parts.length === 3 && raw) {
+      // $a2a/v1/reply/{org}/{unit}/{agent_id}/{suffix} — stream items and results
+      if (parts[2] === 'reply' && raw) {
         try {
           const msg = JSON.parse(raw);
-          state.chatMessages.push({ direction: 'in', chat_id: msg.chat_id, text: msg.text, timestamp: msg.timestamp || Date.now()/1000 });
-          if (!state.selectedChatId) state.selectedChatId = msg.chat_id;
+          // StreamItem (has seq + type)
+          if (msg.seq != null && msg.type) {
+            const taskId = msg.task_id;
+            // Find chat_id from jobs
+            let chatIdForTask = null;
+            for (const [cid, job] of state.jobs) {
+              for (const t of Object.values(job.tasks)) {
+                if (t.task_id === taskId) { chatIdForTask = cid; break; }
+              }
+              if (chatIdForTask) break;
+            }
+            if (chatIdForTask) {
+              const key = `${chatIdForTask}/${taskId}`;
+              if (!state.streamChunks.has(key)) state.streamChunks.set(key, []);
+              const chunks = state.streamChunks.get(key);
+              chunks.push(msg);
+              if (chunks.length > 200) chunks.splice(0, chunks.length - 200);
+            }
+            scheduleStreamRender();
+            return;
+          }
+          // TaskStatusUpdate (has state + task_id)
+          if (msg.state && msg.task_id) {
+            let chatIdForTask = null;
+            for (const [cid, job] of state.jobs) {
+              for (const t of Object.values(job.tasks)) {
+                if (t.task_id === msg.task_id) { chatIdForTask = cid; break; }
+              }
+              if (chatIdForTask) break;
+            }
+            if (chatIdForTask) {
+              state.taskResults.set(`${chatIdForTask}/${msg.task_id}`, msg.result);
+            }
+            renderDetail();
+            return;
+          }
+        } catch(e) {}
+        return;
+      }
+
+      // $a2a/v1/discovery/{org}/{unit}/{agent_id} — Agent Cards
+      if (parts[2] === 'discovery' && raw) {
+        try {
+          const card = JSON.parse(raw);
+          if (card.agent_id && card.agent_id !== 'coordinator') {
+            state.agentCards.set(card.agent_id, card);
+            renderComposeSelector();
+          }
+        } catch(e) {}
+        return;
+      }
+
+      // $a2a/v1/request/{org}/{unit}/coordinator — inbound requests
+      if (parts[2] === 'request' && parts[5] === 'coordinator' && parts.length === 6 && raw) {
+        try {
+          const msg = JSON.parse(raw);
+          if (msg.chat_id && msg.text) {
+            state.chatMessages.push({ direction: 'in', chat_id: msg.chat_id, text: msg.text, timestamp: msg.timestamp || Date.now()/1000 });
+            if (!state.selectedChatId) state.selectedChatId = msg.chat_id;
+          }
         } catch(e) {}
         renderChatPanel();
         renderSessionList();
-        return;
-      }
-
-      // skitter/outbound/{chat_id}
-      if (parts[1] === 'outbound' && parts.length === 3 && raw) {
-        try {
-          const msg = JSON.parse(raw);
-          state.chatMessages.push({ direction: 'out', chat_id: msg.chat_id, text: msg.text, timestamp: Date.now()/1000 });
-        } catch(e) {}
-        renderChatPanel();
         return;
       }
     }
@@ -1292,9 +1307,7 @@
 
     function renderCard(task, job) {
       const chatId = job.chat_id;
-      const isRetry = task.retries > 0;
       let statusClass = 'status-' + task.status;
-      if (isRetry && task.status !== 'done') statusClass = 'status-retry';
       const selected = task.logical_id === state.selectedTaskId;
 
       // Worker status for running tasks
@@ -1318,12 +1331,10 @@
         }
       }
 
-      const { original } = extractQAFeedback(task.description);
-      const desc = truncate(original, 100);
+      const desc = truncate(task.description, 100);
 
       const usage = getUsageForTask(chatId, task);
       let footerHtml = '<div class="card-footer">';
-      if (isRetry) footerHtml += `<span class="card-retry">&#x21bb; ${task.retries}/${task.max_retries}</span>`;
       if (usage && usage.usage) {
         const total = (usage.usage.input_tokens || 0) + (usage.usage.output_tokens || 0);
         footerHtml += `<span class="card-tokens">${fmtTokens(total)} tok</span>`;
@@ -1456,7 +1467,6 @@
       }
 
       panel.classList.remove('hidden');
-      const { original, feedbacks } = extractQAFeedback(task.description);
       const result = getResultForTask(state.selectedChatId, task);
 
       let statusClass = 'status-' + task.status;
@@ -1477,14 +1487,13 @@
       // Description
       html += `<div class="detail-section">
         <div class="detail-section-label">Description</div>
-        <div class="detail-text">${esc(original)}</div>
+        <div class="detail-text">${esc(task.description)}</div>
       </div>`;
 
       // Live streaming output (for running tasks)
       const streamKey = `${state.selectedChatId}/${task.task_id}`;
-      const snapshot = state.streamSnapshots.get(streamKey);
       const chunks = state.streamChunks.get(streamKey);
-      if (task.status === 'running' && (chunks || snapshot)) {
+      if (task.status === 'running' && chunks) {
         html += `<div class="detail-section">
           <div class="detail-section-label"><span class="stream-dot"></span> Live Output</div>`;
 
@@ -1506,15 +1515,6 @@
           html += `<div class="detail-stream-output">${streamHtml}</div>`;
         }
 
-        if (snapshot) {
-          html += `<div class="detail-stream-meta">
-            <span>Elapsed: <span class="val">${snapshot.elapsed_s.toFixed(0)}s</span></span>
-            <span>Tool calls: <span class="val">${snapshot.tool_calls}</span></span>
-            <span>Errors: <span class="val">${snapshot.errors}</span></span>
-            <span>Chunks: <span class="val">${snapshot.seq}</span></span>
-          </div>`;
-        }
-
         html += `</div>`;
       }
 
@@ -1524,18 +1524,6 @@
           <div class="detail-section-label">Result</div>
           <div class="detail-result-box"><div class="detail-text">${esc(result)}</div></div>
         </div>`;
-      }
-
-      // QA Feedback
-      if (feedbacks.length > 0) {
-        html += `<div class="detail-section"><div class="detail-section-label">QA Feedback</div>`;
-        feedbacks.forEach((fb, i) => {
-          html += `<div class="detail-qa-item">
-            <div class="qa-label">Attempt ${i + 1}</div>
-            <div class="qa-text">${esc(fb)}</div>
-          </div>`;
-        });
-        html += '</div>';
       }
 
       // Dependencies
@@ -1569,7 +1557,6 @@
         <div class="detail-meta">
           <span>task_id: ${esc(task.task_id)}</span>
           <span>max_turns: ${task.max_turns}</span>
-          ${task.retries > 0 ? `<span>retries: ${task.retries}/${task.max_retries}</span>` : ''}
         </div>
       </div>`;
 
@@ -1612,6 +1599,37 @@
       text = text.trim();
       if (!text || !mqttClient || !state.connected) return;
 
+      let agentId = '';
+      let pipelineId = '';
+      let pipelineVars = {};
+
+      // Slash commands override dropdown
+      if (text.startsWith('/agent ')) {
+        const parts = text.split(/\s+/, 2);
+        agentId = parts[1] || '';
+        text = text.slice(('/agent ' + agentId).length).trim();
+        if (!agentId || !text) return;
+      } else if (text.startsWith('/pipeline ')) {
+        const parts = text.split(/\s+/);
+        pipelineId = parts[1] || '';
+        for (let i = 2; i < parts.length; i++) {
+          if (parts[i] === '--var' && i + 1 < parts.length) {
+            const kv = parts[++i];
+            const eq = kv.indexOf('=');
+            if (eq > 0) pipelineVars[kv.slice(0, eq)] = kv.slice(eq + 1);
+          }
+        }
+        if (!pipelineId) return;
+        if (!text) text = `Pipeline '${pipelineId}'`;
+      } else {
+        // Use dropdown selection
+        const target = document.getElementById('compose-target').value;
+        if (target.startsWith('agent:')) agentId = target.slice(6);
+        else if (target.startsWith('pipeline:')) pipelineId = target.slice(9);
+      }
+
+      if (!agentId && !pipelineId) return;
+
       // Reuse active session's chat_id, or generate new
       let chatId = null;
       if (state.selectedChatId) {
@@ -1622,19 +1640,50 @@
       }
       if (!chatId) chatId = generateChatId();
 
-      const payload = JSON.stringify({
+      const org = 'skitter', unit = 'default';
+      const sessionId = crypto.randomUUID().slice(0, 8);
+      const replyTopic = `$a2a/v1/reply/${org}/${unit}/dashboard/${sessionId}`;
+      const msg = {
         text,
         sender: 'dashboard',
         chat_id: chatId,
         timestamp: Date.now() / 1000,
-      });
+      };
+      if (agentId) msg.agent_id = agentId;
+      if (pipelineId) {
+        msg.pipeline_id = pipelineId;
+        msg.pipeline_vars = pipelineVars;
+      }
 
-      mqttClient.publish(`skitter/inbound/${chatId}`, payload, { qos: 1 });
+      mqttClient.publish(`$a2a/v1/request/${org}/${unit}/coordinator`, JSON.stringify(msg), {
+        qos: 1,
+        properties: {
+          responseTopic: replyTopic,
+          correlationData: Buffer.from(chatId),
+        },
+      });
 
       // Select this session and clear input
       state.selectedChatId = chatId;
       document.getElementById('compose-input').value = '';
       renderAll();
+    }
+
+    function renderComposeSelector() {
+      const sel = document.getElementById('compose-target');
+      const prev = sel.value;
+      sel.innerHTML = '';
+      // Agents
+      for (const [id, card] of state.agentCards) {
+        const opt = document.createElement('option');
+        opt.value = `agent:${id}`;
+        opt.textContent = `agent: ${id}` + (card.name ? ` — ${card.name}` : '');
+        sel.appendChild(opt);
+      }
+      // Restore previous selection if still valid
+      if (prev && sel.querySelector(`option[value="${prev}"]`)) {
+        sel.value = prev;
+      }
     }
 
     function updateComposeState() {

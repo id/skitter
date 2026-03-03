@@ -1,0 +1,21 @@
+name: Deep Research
+description: Multi-source research with fact-checking
+variables:
+  - topic
+tasks:
+  - logical_id: research_web
+    agent: researcher
+    description: "Research '{topic}' using web sources."
+    depends_on: []
+  - logical_id: research_academic
+    agent: researcher
+    description: "Research '{topic}' focusing on academic papers and technical docs."
+    depends_on: []
+  - logical_id: fact_check
+    agent: reviewer
+    description: "Cross-reference findings about '{topic}'. Flag contradictions."
+    depends_on: [research_web, research_academic]
+  - logical_id: synthesize
+    agent: writer
+    description: "Combine all research findings about '{topic}' into a clear, coherent response."
+    depends_on: [fact_check]

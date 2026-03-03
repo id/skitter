@@ -6,28 +6,38 @@ def dispatch() -> None:
 
     Routes to the appropriate sub-module based on the first positional arg:
 
-        skitter              → coordinator (default)
-        skitter setup [...]  → interactive setup wizard
-        skitter chat  [...]  → interactive MQTT chat client
+        skitter                → coordinator (default)
+        skitter chat  [...]    → interactive MQTT chat client
+        skitter agents [...]   → manage predefined agents
+        skitter pipeline [...] → manage and run pipelines
+        skitter init           → create ~/.skitter/ with example files
     """
-    if len(sys.argv) > 1 and sys.argv[1] == "setup":
-        # Strip 'setup' from argv so Typer only sees its own flags.
-        sys.argv = [sys.argv[0]] + sys.argv[2:]
-        try:
-            from skitter.setup import main
-        except ImportError as exc:
-            print(
-                f"Error: Missing setup dependencies: {exc}\n"
-                "Fix:  pip install typer rich paho-mqtt\n"
-                " or:  pip install -e '.[all]'",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        main()
-    elif len(sys.argv) > 1 and sys.argv[1] == "chat":
+    subcmd = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    if subcmd == "chat":
         from skitter.cli import main
 
         main()
+    elif subcmd == "agents":
+        from skitter.agents_cli import main
+
+        main()
+    elif subcmd == "pipeline":
+        from skitter.pipeline_cli import main
+
+        main()
+    elif subcmd == "init":
+        from skitter.config import write_examples
+
+        agents_written, pipelines_written = write_examples()
+        if agents_written:
+            print(f"Created agents: {', '.join(agents_written)}")
+        if pipelines_written:
+            print(f"Created pipelines: {', '.join(pipelines_written)}")
+        if not agents_written and not pipelines_written:
+            print("All example files already exist. Nothing to do.")
+        else:
+            print("Done. Files are in ~/.skitter/")
     else:
         from skitter.coordinator import main
 

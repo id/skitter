@@ -1,6 +1,6 @@
-"""E2E tests for skitter coordinator with mocked workers.
+"""E2E tests for skitter coordinator with A2A-over-MQTT.
 
-Requires a running MQTT broker on localhost:1883.
+Requires a running MQTT broker on localhost:1883 with MQTT v5 support.
 Start one with: docker compose up -d
 """
 
@@ -14,20 +14,28 @@ import aiomqtt
 import pytest
 import pytest_asyncio
 
+from skitter.config import AgentDef, PipelineDef, PipelineTask
 from skitter.coordinator import (
     build_context,
-    build_job_from_plan,
+    build_job_from_agent,
+    build_job_from_pipeline,
     extract_json,
     get_ready_tasks,
     run,
 )
-from skitter.mqtt import MQTT_HOST, MQTT_PORT
+from skitter.mqtt import (
+    MQTT_HOST,
+    MQTT_PORT,
+    make_properties,
+    topic_reply,
+    topic_request,
+    topic_state_job_wildcard,
+)
 from skitter.types import (
     InboundMessage,
     JobSpec,
     JobTask,
-    OutboundMessage,
-    TaskResultMessage,
+    TaskStatusUpdate,
 )
 
 
@@ -204,67 +212,139 @@ class TestBuildContext:
         assert build_context(job, job.tasks["a"]) == ""
 
 
-class TestBuildJobFromPlan:
-    def test_synthesize_added(self):
-        models = {"haiku": "fast", "sonnet": "balanced"}
-        plan = {
-            "tasks": [
-                {
-                    "logical_id": "research",
-                    "agent": "researcher",
-                    "model": "haiku",
-                    "description": "Do research",
-                    "depends_on": [],
-                },
-            ]
-        }
-        job = build_job_from_plan("c1", "original", plan, models)
-        assert "synthesize" in job.tasks
-        assert "research" in job.tasks["synthesize"].depends_on
+class TestBuildJobFromPipeline:
+    """Verify pipeline building with variable interpolation and agent defaults."""
 
-    def test_unknown_model_falls_back(self):
-        models = {"haiku": "fast", "sonnet": "balanced"}
-        plan = {
-            "tasks": [
-                {
-                    "logical_id": "t1",
-                    "agent": "worker",
-                    "model": "gpt-5",
-                    "description": "Do stuff",
-                    "depends_on": [],
-                },
-            ]
-        }
-        job = build_job_from_plan("c1", "original", plan, models)
-        assert job.tasks["t1"].model == "haiku"  # first key = default
+    MODELS = {"haiku": "fast", "sonnet": "balanced"}
+    AGENTS = {
+        "researcher": AgentDef(
+            id="researcher",
+            name="Research Specialist",
+            soul="Be thorough.",
+            skills="Cite sources.",
+            model="sonnet",
+            max_turns=15,
+        ),
+    }
 
-    def test_qa_field_preserved(self):
-        models = {"haiku": "fast"}
-        plan = {
-            "tasks": [
-                {
-                    "logical_id": "research",
-                    "agent": "researcher",
-                    "model": "haiku",
-                    "description": "Do research",
-                    "qa": "Verify all claims have citations",
-                    "max_retries": 3,
-                    "depends_on": [],
-                },
-                {
-                    "logical_id": "simple",
-                    "agent": "worker",
-                    "model": "haiku",
-                    "description": "Simple task",
-                    "depends_on": [],
-                },
-            ]
-        }
-        job = build_job_from_plan("c1", "original", plan, models)
-        assert job.tasks["research"].qa == "Verify all claims have citations"
-        assert job.tasks["research"].max_retries == 3
-        assert job.tasks["simple"].qa == ""
-        assert job.tasks["simple"].max_retries == 2  # default
+    def test_variable_interpolation(self):
+        pipeline = PipelineDef(
+            id="test",
+            name="Test",
+            variables=["topic"],
+            tasks=[
+                PipelineTask(
+                    logical_id="r1",
+                    agent="researcher",
+                    description="Research '{topic}' in depth.",
+                ),
+            ],
+        )
+        job = build_job_from_pipeline(
+            "c1", "test", pipeline, {"topic": "MQTT"}, self.MODELS, self.AGENTS
+        )
+        assert job.tasks["r1"].description == "Research 'MQTT' in depth."
+
+    def test_agent_defaults_applied(self):
+        pipeline = PipelineDef(
+            id="test",
+            name="Test",
+            tasks=[
+                PipelineTask(logical_id="r1", agent="researcher", description="Go"),
+            ],
+        )
+        job = build_job_from_pipeline(
+            "c1", "test", pipeline, {}, self.MODELS, self.AGENTS
+        )
+        t = job.tasks["r1"]
+        assert t.soul == "Be thorough."
+        assert t.model == "sonnet"
+        assert t.max_turns == 15
+
+    def test_pipeline_task_override_beats_agent(self):
+        pipeline = PipelineDef(
+            id="test",
+            name="Test",
+            tasks=[
+                PipelineTask(
+                    logical_id="r1",
+                    agent="researcher",
+                    description="Quick check",
+                    model="haiku",
+                    max_turns=3,
+                ),
+            ],
+        )
+        job = build_job_from_pipeline(
+            "c1", "test", pipeline, {}, self.MODELS, self.AGENTS
+        )
+        t = job.tasks["r1"]
+        assert t.model == "haiku"
+        assert t.max_turns == 3
+        assert t.soul == "Be thorough."  # not overridden, falls to agent
+
+    def test_unknown_vars_left_intact(self):
+        """Variables not in the vars dict are left as {placeholder}."""
+        pipeline = PipelineDef(
+            id="test",
+            name="Test",
+            variables=["topic"],
+            tasks=[
+                PipelineTask(
+                    logical_id="r1",
+                    agent="researcher",
+                    description="Research {topic}, output as {format}.",
+                ),
+            ],
+        )
+        job = build_job_from_pipeline(
+            "c1", "test", pipeline, {"topic": "AI"}, self.MODELS
+        )
+        assert job.tasks["r1"].description == "Research AI, output as {format}."
+
+
+class TestBuildJobFromAgent:
+    """Verify direct agent job building."""
+
+    MODELS = {"haiku": "fast", "sonnet": "balanced"}
+    AGENTS = {
+        "researcher": AgentDef(
+            id="researcher",
+            name="Research Specialist",
+            soul="Be thorough.",
+            skills="Cite sources.",
+            model="sonnet",
+            max_turns=15,
+        ),
+    }
+
+    def test_single_task_created(self):
+        job = build_job_from_agent(
+            "c1", "What is MQTT?", "researcher", self.AGENTS, self.MODELS
+        )
+        assert len(job.tasks) == 1
+        assert "researcher" in job.tasks
+        assert "synthesize" not in job.tasks
+
+    def test_agent_defaults_applied(self):
+        job = build_job_from_agent(
+            "c1", "What is MQTT?", "researcher", self.AGENTS, self.MODELS
+        )
+        t = job.tasks["researcher"]
+        assert t.agent == "researcher"
+        assert t.description == "What is MQTT?"
+        assert t.soul == "Be thorough."
+        assert t.skills == "Cite sources."
+        assert t.model == "sonnet"
+        assert t.max_turns == 15
+
+    def test_unknown_agent_uses_defaults(self):
+        job = build_job_from_agent(
+            "c1", "Do something", "unknown_agent", {}, self.MODELS
+        )
+        t = job.tasks["unknown_agent"]
+        assert t.model == "haiku"  # first model
+        assert t.max_turns == 10
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +354,12 @@ class TestBuildJobFromPlan:
 
 @pytest_asyncio.fixture
 async def mqtt_client():
-    """Async MQTT client for the test driver."""
+    """Async MQTT v5 client for the test driver."""
     async with aiomqtt.Client(
-        MQTT_HOST, MQTT_PORT, identifier=f"skitter-test-{uuid.uuid4().hex[:8]}"
+        MQTT_HOST,
+        MQTT_PORT,
+        identifier=f"skitter-test-{uuid.uuid4().hex[:8]}",
+        protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
         yield client
 
@@ -285,36 +368,76 @@ async def mqtt_client():
 def mock_worker_factory():
     """Return a factory that creates a mock spawn_worker function.
 
-    The mock publishes canned results to MQTT when the coordinator calls spawn_worker.
+    The mock uses alive-triggered dispatch: publishes alive event on the
+    worker liveness topic, then waits for the task dispatch on the reply
+    topic, and publishes a TaskStatusUpdate result.
     """
 
     def _factory(responses: dict[str, str], delay: float = 0.05):
-        """
-        responses: mapping of agent name (or logical_id) -> result text.
-        When spawn_worker is called for a matching agent, publishes the result.
-        """
         spawned: list[tuple[str, str, str]] = []
 
-        async def _publish_result(chat_id: str, task_id: str, result_text: str):
+        async def _simulate_worker(
+            agent: str, chat_id: str, task_id: str, result_text: str
+        ):
+            """Simulate the alive → dispatch → result cycle."""
             await asyncio.sleep(delay)
-            result_msg = TaskResultMessage(
-                task_id=task_id, chat_id=chat_id, result=result_text
-            )
+            from skitter.mqtt import topic_event_worker, topic_request as tr
+
             async with aiomqtt.Client(
-                MQTT_HOST, MQTT_PORT, identifier=f"mock-worker-{task_id[:8]}"
+                MQTT_HOST,
+                MQTT_PORT,
+                identifier=f"mock-worker-{task_id[:8]}",
+                protocol=aiomqtt.ProtocolVersion.V5,
             ) as c:
+                # Subscribe to agent's request topic to receive the dispatched task
+                await c.subscribe(tr(agent), qos=1)
+
+                # Publish alive
                 await c.publish(
-                    f"skitter/results/{chat_id}/{task_id}",
-                    result_msg.to_json(),
+                    topic_event_worker(task_id),
+                    json.dumps({"status": "alive", "task_id": task_id}),
                     qos=1,
+                )
+
+                # Wait for task dispatch with v5 properties
+                response_topic = None
+                correlation_data = None
+                try:
+                    async with asyncio.timeout(5.0):
+                        async for msg in c.messages:
+                            from skitter.mqtt import (
+                                get_correlation_data as gcd,
+                                get_response_topic as grt,
+                            )
+
+                            response_topic = grt(msg)
+                            correlation_data = gcd(msg)
+                            break
+                except TimeoutError:
+                    return
+
+                if not response_topic:
+                    return
+
+                # Publish result as TaskStatusUpdate with correlation data
+                status = TaskStatusUpdate(
+                    task_id=task_id,
+                    state="completed",
+                    result=result_text,
+                )
+                props = make_properties(correlation_data=correlation_data)
+                await c.publish(
+                    response_topic,
+                    status.to_json(),
+                    qos=1,
+                    properties=props,
                 )
 
         def mock_spawn(agent: str, chat_id: str, task_id: str):
             spawned.append((agent, chat_id, task_id))
-            # Look up response by agent name
             if agent in responses:
                 asyncio.get_running_loop().create_task(
-                    _publish_result(chat_id, task_id, responses[agent])
+                    _simulate_worker(agent, chat_id, task_id, responses[agent])
                 )
 
         mock_spawn.spawned = spawned
@@ -325,7 +448,7 @@ def mock_worker_factory():
 
 async def _drain_retained(client: aiomqtt.Client):
     """Subscribe to retained topics and clear them."""
-    for pattern in ["skitter/jobs/+", "skitter/tasks/+/+/+"]:
+    for pattern in [topic_state_job_wildcard()]:
         await client.subscribe(pattern, qos=1)
         try:
             async with asyncio.timeout(0.5):
@@ -345,31 +468,66 @@ async def clear_retained(mqtt_client):
     await _drain_retained(mqtt_client)
 
 
-async def wait_for_outbound(chat_id: str, timeout: float = 10.0) -> str:
-    """Subscribe to outbound topic and wait for a message."""
+async def wait_for_result(reply_topic: str, timeout: float = 10.0) -> str:
+    """Subscribe to a reply topic and wait for a TaskStatusUpdate."""
     async with aiomqtt.Client(
-        MQTT_HOST, MQTT_PORT, identifier=f"test-outbound-{uuid.uuid4().hex[:8]}"
+        MQTT_HOST,
+        MQTT_PORT,
+        identifier=f"test-result-{uuid.uuid4().hex[:8]}",
+        protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
-        await client.subscribe(f"skitter/outbound/{chat_id}", qos=1)
+        await client.subscribe(reply_topic, qos=1)
         try:
             async with asyncio.timeout(timeout):
                 async for msg in client.messages:
                     payload = msg.payload.decode() if msg.payload else ""
                     if not payload:
                         continue
-                    out = OutboundMessage.from_json(payload)
-                    return out.text
+                    data = json.loads(payload)
+                    if "state" in data and "task_id" in data:
+                        status = TaskStatusUpdate.from_json(payload)
+                        return status.result
+                    if "error" in data:
+                        return (
+                            f"Error: {data['error'].get('message', str(data['error']))}"
+                        )
         except TimeoutError:
-            pytest.fail(f"Timed out waiting for outbound message on chat {chat_id}")
+            pytest.fail(f"Timed out waiting for result on {reply_topic}")
 
 
-async def send_inbound(chat_id: str, text: str):
-    """Publish an inbound user message."""
-    msg = InboundMessage(text=text, sender="test-user", chat_id=chat_id)
+async def send_inbound(
+    chat_id: str,
+    text: str,
+    pipeline_id: str = "",
+    pipeline_vars: dict | None = None,
+    agent_id: str = "",
+    reply_topic: str = "",
+) -> None:
+    """Publish an inbound request to the coordinator's A2A request topic."""
+    msg = InboundMessage(
+        text=text,
+        sender="test-user",
+        chat_id=chat_id,
+        pipeline_id=pipeline_id,
+        pipeline_vars=pipeline_vars or {},
+        agent_id=agent_id,
+    )
     async with aiomqtt.Client(
-        MQTT_HOST, MQTT_PORT, identifier=f"test-inbound-{uuid.uuid4().hex[:8]}"
+        MQTT_HOST,
+        MQTT_PORT,
+        identifier=f"test-inbound-{uuid.uuid4().hex[:8]}",
+        protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
-        await client.publish(f"skitter/inbound/{chat_id}", msg.to_json(), qos=1)
+        props = make_properties(
+            response_topic=reply_topic,
+            correlation_data=chat_id,
+        )
+        await client.publish(
+            topic_request("coordinator"),
+            msg.to_json(),
+            qos=1,
+            properties=props,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -387,35 +545,46 @@ class TestE2E:
         monkeypatch,
         mock_spawn,
         chat_id: str,
-        inbound_text: str,
+        pipeline_id: str = "",
+        pipeline_vars: dict | None = None,
+        agent_id: str = "",
+        text: str = "Pipeline request",
+        agents: dict | None = None,
         timeout: float = 10.0,
     ) -> str:
-        """Start coordinator, send inbound, wait for outbound, return result text."""
+        """Start coordinator, send inbound request, wait for result."""
         monkeypatch.setattr("skitter.coordinator.spawn_worker", mock_spawn)
 
-        # Patch recover_jobs to return immediately (no stale jobs in test)
         async def _fast_recover(client):
             return {}
 
         monkeypatch.setattr("skitter.coordinator.recover_jobs", _fast_recover)
+        monkeypatch.setattr("skitter.coordinator.load_agents", lambda: agents or {})
 
-        # Start outbound listener BEFORE coordinator so we don't miss messages
-        outbound_future = asyncio.ensure_future(wait_for_outbound(chat_id, timeout))
+        # Set up a reply topic for the test
+        session_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", session_id)
 
-        # Small delay to let the subscriber connect
+        # Start result listener BEFORE coordinator
+        result_future = asyncio.ensure_future(wait_for_result(reply_t, timeout))
         await asyncio.sleep(0.1)
 
-        # Start coordinator as background task
+        # Start coordinator
         coord_task = asyncio.create_task(run())
-
-        # Let coordinator subscribe to topics
         await asyncio.sleep(0.3)
 
-        # Send inbound message
-        await send_inbound(chat_id, inbound_text)
+        # Send inbound
+        await send_inbound(
+            chat_id,
+            text,
+            pipeline_id=pipeline_id,
+            pipeline_vars=pipeline_vars or {},
+            agent_id=agent_id,
+            reply_topic=reply_t,
+        )
 
         try:
-            result = await outbound_future
+            result = await result_future
         finally:
             coord_task.cancel()
             try:
@@ -425,50 +594,39 @@ class TestE2E:
 
         return result
 
-    async def test_direct_response(
+    async def test_pipeline_parallel(
         self, monkeypatch, mock_worker_factory, clear_retained
     ):
-        """Planner returns direct respond action — coordinator publishes outbound."""
-        chat_id = f"test-direct-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {"action": "respond", "text": "Hello! How can I help?"}
-        )
-        mock_spawn = mock_worker_factory({"planner": planner_response})
-
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Hi there"
-        )
-        assert result == "Hello! How can I help?"
-
-    async def test_delegate_parallel(
-        self, monkeypatch, mock_worker_factory, clear_retained
-    ):
-        """Planner delegates 2 independent tasks, then synthesize combines them."""
+        """Pipeline with 2 independent tasks + explicit synthesize task."""
         chat_id = f"test-parallel-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {
-                "action": "delegate",
-                "tasks": [
-                    {
-                        "logical_id": "research",
-                        "agent": "researcher",
-                        "model": "haiku",
-                        "description": "Research topic",
-                        "depends_on": [],
-                    },
-                    {
-                        "logical_id": "analyze",
-                        "agent": "analyst",
-                        "model": "haiku",
-                        "description": "Analyze data",
-                        "depends_on": [],
-                    },
-                ],
-            }
+        pipeline = PipelineDef(
+            id="test-par",
+            name="Test Parallel",
+            tasks=[
+                PipelineTask(
+                    logical_id="research",
+                    agent="researcher",
+                    description="Research topic",
+                ),
+                PipelineTask(
+                    logical_id="analyze",
+                    agent="analyst",
+                    description="Analyze data",
+                ),
+                PipelineTask(
+                    logical_id="synthesize",
+                    agent="writer",
+                    description="Combine results",
+                    depends_on=["research", "analyze"],
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            "skitter.coordinator.load_pipelines",
+            lambda: {"test-par": pipeline},
         )
         mock_spawn = mock_worker_factory(
             {
-                "planner": planner_response,
                 "researcher": "Research findings: X is true",
                 "analyst": "Analysis: Y correlates with Z",
                 "writer": "Combined: X is true and Y correlates with Z",
@@ -476,408 +634,279 @@ class TestE2E:
         )
 
         result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Research and analyze topic X"
+            monkeypatch, mock_spawn, chat_id, "test-par"
         )
         assert result == "Combined: X is true and Y correlates with Z"
 
-    async def test_delegate_sequential(
+    async def test_pipeline_sequential(
         self, monkeypatch, mock_worker_factory, clear_retained
     ):
-        """Planner delegates tasks where B depends on A, then synthesize."""
+        """Pipeline with sequential dependency chain."""
         chat_id = f"test-seq-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {
-                "action": "delegate",
-                "tasks": [
-                    {
-                        "logical_id": "step_a",
-                        "agent": "researcher",
-                        "model": "haiku",
-                        "description": "Step A",
-                        "depends_on": [],
-                    },
-                    {
-                        "logical_id": "step_b",
-                        "agent": "analyst",
-                        "model": "haiku",
-                        "description": "Step B",
-                        "depends_on": ["step_a"],
-                    },
-                ],
-            }
+        pipeline = PipelineDef(
+            id="test-seq",
+            name="Test Sequential",
+            tasks=[
+                PipelineTask(
+                    logical_id="step_a",
+                    agent="researcher",
+                    description="Step A",
+                ),
+                PipelineTask(
+                    logical_id="step_b",
+                    agent="analyst",
+                    description="Step B",
+                    depends_on=["step_a"],
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            "skitter.coordinator.load_pipelines",
+            lambda: {"test-seq": pipeline},
         )
         mock_spawn = mock_worker_factory(
             {
-                "planner": planner_response,
                 "researcher": "Step A result",
                 "analyst": "Step B used A's result",
-                "writer": "Final: A then B",
             }
         )
 
         result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Do A then B"
+            monkeypatch, mock_spawn, chat_id, "test-seq"
         )
-        assert result == "Final: A then B"
+        assert "Step B used A's result" in result
 
-    async def test_planner_returns_prose(
+    async def test_direct_agent_call(
         self, monkeypatch, mock_worker_factory, clear_retained
     ):
-        """Planner returns plain text — coordinator publishes planning error."""
-        chat_id = f"test-prose-{uuid.uuid4().hex[:8]}"
+        """Direct agent call creates single-task job and returns result."""
+        chat_id = f"test-agent-{uuid.uuid4().hex[:8]}"
+        test_agents = {
+            "researcher": AgentDef(
+                id="researcher",
+                name="Research Specialist",
+                soul="Be thorough.",
+                skills="Cite sources.",
+                model="sonnet",
+                max_turns=15,
+            ),
+        }
+        monkeypatch.setattr("skitter.coordinator.load_pipelines", lambda: {})
         mock_spawn = mock_worker_factory(
-            {
-                "planner": "I think we should research this topic first and then analyze it."
-            }
+            {"researcher": "MQTT v5 adds shared subscriptions and flow control."}
         )
 
         result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Do something complex"
+            monkeypatch,
+            mock_spawn,
+            chat_id,
+            agent_id="researcher",
+            text="What is MQTT v5?",
+            agents=test_agents,
         )
-        assert "Planning error" in result
+        assert result == "MQTT v5 adds shared subscriptions and flow control."
 
-    async def test_planner_returns_json_in_code_fence(
+    async def test_no_agent_or_pipeline_rejected(
         self, monkeypatch, mock_worker_factory, clear_retained
     ):
-        """Planner wraps JSON in code fences — coordinator handles via extract_json."""
-        chat_id = f"test-fence-{uuid.uuid4().hex[:8]}"
-        planner_response = '```json\n{"action":"respond","text":"Fenced response"}\n```'
-        mock_spawn = mock_worker_factory({"planner": planner_response})
+        """Request without agent_id or pipeline_id is rejected."""
+        chat_id = f"test-nopipe-{uuid.uuid4().hex[:8]}"
+        monkeypatch.setattr("skitter.coordinator.spawn_worker", mock_worker_factory({}))
 
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Hello"
-        )
-        assert result == "Fenced response"
+        async def _fast_recover(client):
+            return {}
 
-    async def test_planner_unknown_action(
+        monkeypatch.setattr("skitter.coordinator.recover_jobs", _fast_recover)
+        monkeypatch.setattr("skitter.coordinator.load_agents", lambda: {})
+        monkeypatch.setattr("skitter.coordinator.load_pipelines", lambda: {})
+
+        session_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", session_id)
+
+        result_future = asyncio.ensure_future(wait_for_result(reply_t, 5.0))
+        await asyncio.sleep(0.1)
+
+        coord_task = asyncio.create_task(run())
+        await asyncio.sleep(0.3)
+
+        await send_inbound(chat_id, "hello", reply_topic=reply_t)
+
+        try:
+            result = await result_future
+            assert "agent_id or pipeline_id" in result
+        finally:
+            coord_task.cancel()
+            try:
+                await coord_task
+            except asyncio.CancelledError:
+                pass
+
+    async def test_unknown_pipeline_rejected(
         self, monkeypatch, mock_worker_factory, clear_retained
     ):
-        """Planner returns unknown action — coordinator publishes error."""
+        """Request with unknown pipeline_id returns error."""
         chat_id = f"test-unknown-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps({"action": "frobnicate", "data": "stuff"})
-        mock_spawn = mock_worker_factory({"planner": planner_response})
+        monkeypatch.setattr("skitter.coordinator.spawn_worker", mock_worker_factory({}))
 
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Do something weird"
+        async def _fast_recover(client):
+            return {}
+
+        monkeypatch.setattr("skitter.coordinator.recover_jobs", _fast_recover)
+        monkeypatch.setattr("skitter.coordinator.load_agents", lambda: {})
+        monkeypatch.setattr("skitter.coordinator.load_pipelines", lambda: {})
+
+        session_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", session_id)
+
+        result_future = asyncio.ensure_future(wait_for_result(reply_t, 5.0))
+        await asyncio.sleep(0.1)
+
+        coord_task = asyncio.create_task(run())
+        await asyncio.sleep(0.3)
+
+        await send_inbound(
+            chat_id, "go", pipeline_id="nonexistent", reply_topic=reply_t
         )
-        assert "Unknown planner action" in result
 
-    async def test_planner_delegate_empty_tasks(
-        self, monkeypatch, mock_worker_factory, clear_retained
-    ):
-        """Planner delegates with empty tasks list — coordinator publishes error."""
-        chat_id = f"test-empty-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps({"action": "delegate", "tasks": []})
-        mock_spawn = mock_worker_factory({"planner": planner_response})
-
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Do nothing"
-        )
-        assert "No tasks generated" in result
+        try:
+            result = await result_future
+            assert "Unknown pipeline" in result
+        finally:
+            coord_task.cancel()
+            try:
+                await coord_task
+            except asyncio.CancelledError:
+                pass
 
     async def test_worker_crash_lwt(
         self, monkeypatch, mock_worker_factory, clear_retained
     ):
-        """After delegation, a worker LWT triggers respawn."""
+        """Worker LWT triggers respawn."""
         chat_id = f"test-lwt-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {
-                "action": "delegate",
-                "tasks": [
-                    {
-                        "logical_id": "work",
-                        "agent": "researcher",
-                        "model": "haiku",
-                        "description": "Do work",
-                        "depends_on": [],
-                    },
-                ],
-            }
+        pipeline = PipelineDef(
+            id="test-lwt",
+            name="Test LWT",
+            tasks=[
+                PipelineTask(
+                    logical_id="work",
+                    agent="researcher",
+                    description="Do work",
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            "skitter.coordinator.load_pipelines",
+            lambda: {"test-lwt": pipeline},
         )
 
-        # First spawn of researcher: don't auto-respond (simulate crash)
-        # Second spawn: respond normally
         spawn_count = {"researcher": 0}
-        real_responses = {
-            "planner": planner_response,
-            "writer": "Synthesized result",
-        }
         spawned_tasks: list[tuple[str, str, str]] = []
 
-        async def _delayed_result(chat_id_: str, task_id_: str, text: str):
+        async def _simulate_worker(
+            agent: str, chat_id_: str, task_id_: str, result_text: str
+        ):
             await asyncio.sleep(0.05)
-            result_msg = TaskResultMessage(
-                task_id=task_id_, chat_id=chat_id_, result=text
-            )
+            from skitter.mqtt import topic_event_worker, topic_request as tr
+
             async with aiomqtt.Client(
-                MQTT_HOST, MQTT_PORT, identifier=f"mock-{task_id_[:8]}"
+                MQTT_HOST,
+                MQTT_PORT,
+                identifier=f"mock-{task_id_[:8]}",
+                protocol=aiomqtt.ProtocolVersion.V5,
             ) as c:
+                await c.subscribe(tr(agent), qos=1)
                 await c.publish(
-                    f"skitter/results/{chat_id_}/{task_id_}",
-                    result_msg.to_json(),
+                    topic_event_worker(task_id_),
+                    json.dumps({"status": "alive", "task_id": task_id_}),
                     qos=1,
                 )
+                response_topic = None
+                correlation_data = None
+                try:
+                    async with asyncio.timeout(5.0):
+                        async for msg in c.messages:
+                            from skitter.mqtt import (
+                                get_correlation_data as gcd,
+                                get_response_topic as grt,
+                            )
 
-        async def _send_lwt(chat_id_: str, task_id_: str):
+                            response_topic = grt(msg)
+                            correlation_data = gcd(msg)
+                            break
+                except TimeoutError:
+                    return
+                if not response_topic:
+                    return
+                status = TaskStatusUpdate(
+                    task_id=task_id_, state="completed", result=result_text
+                )
+                props = make_properties(correlation_data=correlation_data)
+                await c.publish(
+                    response_topic, status.to_json(), qos=1, properties=props
+                )
+
+        async def _send_lwt(task_id_: str):
             await asyncio.sleep(0.15)
-            lwt = json.dumps({"status": "dead", "task_id": task_id_})
+            from skitter.mqtt import topic_event_worker
+
             async with aiomqtt.Client(
-                MQTT_HOST, MQTT_PORT, identifier=f"lwt-{task_id_[:8]}"
+                MQTT_HOST,
+                MQTT_PORT,
+                identifier=f"lwt-{task_id_[:8]}",
+                protocol=aiomqtt.ProtocolVersion.V5,
             ) as c:
                 await c.publish(
-                    f"skitter/workers/{chat_id_}/{task_id_}/status", lwt, qos=1
+                    topic_event_worker(task_id_),
+                    json.dumps({"status": "dead", "task_id": task_id_}),
+                    qos=1,
                 )
 
         def mock_spawn(agent: str, chat_id_: str, task_id_: str):
             spawned_tasks.append((agent, chat_id_, task_id_))
-            if agent in real_responses:
-                asyncio.get_running_loop().create_task(
-                    _delayed_result(chat_id_, task_id_, real_responses[agent])
-                )
-            elif agent == "researcher":
+            if agent == "researcher":
                 spawn_count["researcher"] += 1
                 if spawn_count["researcher"] == 1:
-                    # First spawn: simulate crash via LWT
-                    asyncio.get_running_loop().create_task(
-                        _send_lwt(chat_id_, task_id_)
-                    )
-                else:
-                    # Second spawn (after respawn): succeed
-                    asyncio.get_running_loop().create_task(
-                        _delayed_result(
-                            chat_id_, task_id_, "Research done after respawn"
+                    # First spawn: publish alive (to trigger dispatch) then send LWT
+                    async def alive_then_lwt():
+                        await asyncio.sleep(0.05)
+                        from skitter.mqtt import (
+                            topic_event_worker,
                         )
-                    )
 
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Research something"
-        )
-        assert result == "Synthesized result"
-        # Researcher should have been spawned twice (initial + respawn)
-        researcher_spawns = [s for s in spawned_tasks if s[0] == "researcher"]
-        assert len(researcher_spawns) == 2
+                        async with aiomqtt.Client(
+                            MQTT_HOST,
+                            MQTT_PORT,
+                            identifier=f"mock-alive-{task_id_[:8]}",
+                            protocol=aiomqtt.ProtocolVersion.V5,
+                        ) as c:
+                            # Publish alive to trigger dispatch
+                            await c.publish(
+                                topic_event_worker(task_id_),
+                                json.dumps({"status": "alive", "task_id": task_id_}),
+                                qos=1,
+                            )
+                            # Then simulate crash
+                            await asyncio.sleep(0.15)
+                            await c.publish(
+                                topic_event_worker(task_id_),
+                                json.dumps({"status": "dead", "task_id": task_id_}),
+                                qos=1,
+                            )
 
-    async def test_unknown_model_falls_back(
-        self, monkeypatch, mock_worker_factory, clear_retained
-    ):
-        """Planner assigns unknown model — build_job_from_plan uses default."""
-        chat_id = f"test-model-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {
-                "action": "delegate",
-                "tasks": [
-                    {
-                        "logical_id": "work",
-                        "agent": "researcher",
-                        "model": "gpt-5",
-                        "description": "Do work",
-                        "depends_on": [],
-                    },
-                ],
-            }
-        )
-        mock_spawn = mock_worker_factory(
-            {
-                "planner": planner_response,
-                "researcher": "Research result",
-                "writer": "Final answer",
-            }
-        )
-
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Research something"
-        )
-        assert result == "Final answer"
-
-    async def test_qa_pass(self, monkeypatch, mock_worker_factory, clear_retained):
-        """Task with qa field — QA passes, graph advances normally."""
-        chat_id = f"test-qa-pass-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {
-                "action": "delegate",
-                "tasks": [
-                    {
-                        "logical_id": "research",
-                        "agent": "researcher",
-                        "model": "haiku",
-                        "description": "Do research",
-                        "qa": "Verify claims have citations",
-                        "depends_on": [],
-                    },
-                ],
-            }
-        )
-        mock_spawn = mock_worker_factory(
-            {
-                "planner": planner_response,
-                "researcher": "Research with [citation]",
-                "qa": '{"pass":true}',
-                "writer": "Final QA-passed answer",
-            }
-        )
-
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Research with QA"
-        )
-        assert result == "Final QA-passed answer"
-
-    async def test_qa_fail_then_pass(
-        self, monkeypatch, mock_worker_factory, clear_retained
-    ):
-        """QA fails first time, worker retried with feedback, QA passes on retry."""
-        chat_id = f"test-qa-retry-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {
-                "action": "delegate",
-                "tasks": [
-                    {
-                        "logical_id": "research",
-                        "agent": "researcher",
-                        "model": "haiku",
-                        "description": "Do research",
-                        "qa": "Verify claims have citations",
-                        "depends_on": [],
-                    },
-                ],
-            }
-        )
-
-        # Track spawn counts to vary responses
-        spawn_counts: dict[str, int] = {}
-        spawned_tasks: list[tuple[str, str, str]] = []
-
-        async def _delayed_result(chat_id_: str, task_id_: str, text: str):
-            await asyncio.sleep(0.05)
-            result_msg = TaskResultMessage(
-                task_id=task_id_, chat_id=chat_id_, result=text
-            )
-            async with aiomqtt.Client(
-                MQTT_HOST, MQTT_PORT, identifier=f"mock-{task_id_[:8]}"
-            ) as c:
-                await c.publish(
-                    f"skitter/results/{chat_id_}/{task_id_}",
-                    result_msg.to_json(),
-                    qos=1,
-                )
-
-        def mock_spawn(agent: str, chat_id_: str, task_id_: str):
-            spawned_tasks.append((agent, chat_id_, task_id_))
-            spawn_counts[agent] = spawn_counts.get(agent, 0) + 1
-
-            if agent == "planner":
-                asyncio.get_running_loop().create_task(
-                    _delayed_result(chat_id_, task_id_, planner_response)
-                )
-            elif agent == "researcher":
-                if spawn_counts["researcher"] == 1:
-                    asyncio.get_running_loop().create_task(
-                        _delayed_result(chat_id_, task_id_, "No citations here")
-                    )
+                    asyncio.get_running_loop().create_task(alive_then_lwt())
                 else:
                     asyncio.get_running_loop().create_task(
-                        _delayed_result(chat_id_, task_id_, "Research with [citation]")
-                    )
-            elif agent == "qa":
-                if spawn_counts["qa"] == 1:
-                    asyncio.get_running_loop().create_task(
-                        _delayed_result(
+                        _simulate_worker(
+                            agent,
                             chat_id_,
                             task_id_,
-                            '{"pass":false,"feedback":"Missing citations"}',
+                            "Research done after respawn",
                         )
                     )
-                else:
-                    asyncio.get_running_loop().create_task(
-                        _delayed_result(chat_id_, task_id_, '{"pass":true}')
-                    )
-            elif agent == "writer":
-                asyncio.get_running_loop().create_task(
-                    _delayed_result(chat_id_, task_id_, "Final after retry")
-                )
 
         result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Research with QA"
+            monkeypatch, mock_spawn, chat_id, "test-lwt"
         )
-        assert result == "Final after retry"
-        # Researcher spawned twice (original + retry)
+        assert result == "Research done after respawn"
         researcher_spawns = [s for s in spawned_tasks if s[0] == "researcher"]
         assert len(researcher_spawns) == 2
-        # QA spawned twice (fail + pass)
-        qa_spawns = [s for s in spawned_tasks if s[0] == "qa"]
-        assert len(qa_spawns) == 2
-
-    async def test_qa_fail_exhausted(
-        self, monkeypatch, mock_worker_factory, clear_retained
-    ):
-        """QA fails past max_retries — coordinator advances anyway."""
-        chat_id = f"test-qa-exhaust-{uuid.uuid4().hex[:8]}"
-        planner_response = json.dumps(
-            {
-                "action": "delegate",
-                "tasks": [
-                    {
-                        "logical_id": "research",
-                        "agent": "researcher",
-                        "model": "haiku",
-                        "description": "Do research",
-                        "qa": "Verify claims have citations",
-                        "max_retries": 1,
-                        "depends_on": [],
-                    },
-                ],
-            }
-        )
-
-        spawn_counts: dict[str, int] = {}
-        spawned_tasks: list[tuple[str, str, str]] = []
-
-        async def _delayed_result(chat_id_: str, task_id_: str, text: str):
-            await asyncio.sleep(0.05)
-            result_msg = TaskResultMessage(
-                task_id=task_id_, chat_id=chat_id_, result=text
-            )
-            async with aiomqtt.Client(
-                MQTT_HOST, MQTT_PORT, identifier=f"mock-{task_id_[:8]}"
-            ) as c:
-                await c.publish(
-                    f"skitter/results/{chat_id_}/{task_id_}",
-                    result_msg.to_json(),
-                    qos=1,
-                )
-
-        def mock_spawn(agent: str, chat_id_: str, task_id_: str):
-            spawned_tasks.append((agent, chat_id_, task_id_))
-            spawn_counts[agent] = spawn_counts.get(agent, 0) + 1
-
-            if agent == "planner":
-                asyncio.get_running_loop().create_task(
-                    _delayed_result(chat_id_, task_id_, planner_response)
-                )
-            elif agent == "researcher":
-                asyncio.get_running_loop().create_task(
-                    _delayed_result(chat_id_, task_id_, "Bad research no citations")
-                )
-            elif agent == "qa":
-                # Always fail
-                asyncio.get_running_loop().create_task(
-                    _delayed_result(
-                        chat_id_,
-                        task_id_,
-                        '{"pass":false,"feedback":"Still no citations"}',
-                    )
-                )
-            elif agent == "writer":
-                asyncio.get_running_loop().create_task(
-                    _delayed_result(chat_id_, task_id_, "Final despite QA failure")
-                )
-
-        result = await self._run_with_coordinator(
-            monkeypatch, mock_spawn, chat_id, "Research with QA"
-        )
-        assert result == "Final despite QA failure"
-        # Researcher: 1 original + 1 retry (max_retries=1)
-        researcher_spawns = [s for s in spawned_tasks if s[0] == "researcher"]
-        assert len(researcher_spawns) == 2
-        # QA: 2 times (fail, then fail again = exhausted)
-        qa_spawns = [s for s in spawned_tasks if s[0] == "qa"]
-        assert len(qa_spawns) == 2

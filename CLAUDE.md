@@ -1,17 +1,26 @@
 # Skitter
 
-~1,000 lines of Python. MQTT-based personal AI assistant. Stateless coordinator manages task DAGs via an MQTT broker; independent workers handle AI reasoning via `claude-agent-sdk`.
+~1,500 lines of Python. MQTT-based personal AI assistant. Stateless coordinator manages task DAGs via an MQTT broker; independent workers handle AI reasoning via `claude-agent-sdk`.
 
-Key files: `skitter/coordinator.py`, `skitter/worker.py`, `skitter/types.py`, `skitter/cli.py`, `SOUL.md`, `docs/architecture.md`.
+Key files: `skitter/coordinator.py`, `skitter/worker.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `SOUL.md`, `docs/architecture.md`.
 
 ## Architecture Essentials
 
-- **Zero-LLM coordinator** — never calls an LLM. Planning and synthesis are worker tasks.
+- **Zero-LLM coordinator** — never calls an LLM. It is a pure DAG executor: build graph, dispatch tasks, collect results, advance.
+- **A2A-over-MQTT** — all topics follow the A2A draft v0.1 scheme. MQTT v5 properties (Response Topic, Correlation Data) enable request/reply. Agents are discoverable via retained Agent Cards.
 - **MQTT as backbone** — retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
 - **Stateless recovery** — coordinator rebuilds from retained MQTT messages on restart.
-- **DAG execution** — planner returns task graph, coordinator spawns workers for ready tasks in parallel, advances graph as results arrive.
-- **QA loop** — optional per-task QA criteria, ephemeral QA agent validates output, auto-retry with feedback (default 2 retries).
-- **Workers are subprocesses** — each `subprocess.Popen` spawns a new Python process that connects to MQTT, runs `claude_agent_sdk.query()`, publishes result, exits.
+- **DAG execution** — pipeline templates define task graphs, coordinator spawns workers for ready tasks in parallel, advances graph as results arrive.
+- **QA is a pipeline concern** — coordinator has no built-in QA logic. Add reviewer/fact-checker nodes to your pipeline YAML with dependencies on work tasks.
+- **Predefined agents** — YAML definitions in `~/.skitter/agents/`. Pipeline tasks reference agents by ID; coordinator resolves defaults.
+- **Pipeline templates** — YAML DAGs in `~/.skitter/pipelines/`. Every request must include `pipeline_id`. Variables interpolated with `SafeFormatter`.
+- **Workers are subprocesses or Docker containers** — controlled by `SKITTER_WORKER_MODE` env var. Subprocess mode (default) uses `subprocess.Popen`; Docker mode runs containers on the `skitter` network.
+
+## Key Modules
+
+- `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`PipelineDef`/`PipelineTask` dataclasses, `SafeFormatter`, `write_examples()` for `skitter init`.
+- `skitter/agents_cli.py` — `skitter agents list/show` subcommands.
+- `skitter/pipeline_cli.py` — `skitter pipeline list/show/run` subcommands.
 
 ## Current Limitations
 
@@ -163,7 +172,7 @@ Python library. 100+ LLM providers. 37k+ GitHub stars. MIT license.
 - Stability concerns: OOM after upgrades, memory leaks over time (#12685), perf regression v1.80→v1.81 (#19921).
 - Multiple daily releases, breaking changes without migration guides, 5500-line main handler.
 
-**Critical distinction:** litellm is a completion API, not an agent runtime. `claude-agent-sdk` provides the agent loop (multi-turn tool calling, file ops, command execution). They're not interchangeable. Realistic integration: use litellm for non-agentic tasks only (planner, QA, synthesizer — already `max_turns=0`, no tools).
+**Critical distinction:** litellm is a completion API, not an agent runtime. `claude-agent-sdk` provides the agent loop (multi-turn tool calling, file ops, command execution). They're not interchangeable. Realistic integration: use litellm for non-agentic simple tasks (single-turn, no tools) while keeping `claude-agent-sdk` for agentic workers.
 
 **Alternative:** Thin adapter over native `anthropic` + `openai` + `google-genai` SDKs (~100-200 lines) avoids the dependency weight and import-time penalty but means maintaining your own quirk handling.
 

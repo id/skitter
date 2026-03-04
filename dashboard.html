@@ -3,1102 +3,319 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Skitter Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <title>Skitter</title>
   <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
   <style>
-    /* ═══════════════════════════════════════════
-       Variables
-       ═══════════════════════════════════════════ */
     :root {
-      --bg-deep: #060a10;
-      --bg-base: #0a1018;
-      --bg-surface: #101822;
-      --bg-elevated: #16202e;
-      --bg-card: #1a2536;
-      --bg-card-hover: #1f2d42;
-      --border-subtle: #1a2536;
-      --border-default: #263348;
-      --border-strong: #3a4d66;
-      --text-primary: #e8edf4;
-      --text-secondary: #8a99b0;
-      --text-muted: #556378;
-      --status-pending: #556378;
-      --status-running: #3b82f6;
-      --status-done: #0fd492;
-      --status-error: #ef4444;
-      --accent-cyan: #22d3ee;
-      --accent-amber: #f59e0b;
-      --font-display: 'Chakra Petch', sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
-      --sidebar-w: 280px;
-      --header-h: 56px;
+      --bg: #ffffff;
+      --bg-alt: #f7f8fa;
+      --bg-hover: #f0f1f4;
+      --border: #e2e4e9;
+      --border-light: #eef0f3;
+      --text: #1a1d23;
+      --text-sec: #5f6672;
+      --text-dim: #9ba3b0;
+      --blue: #2563eb;
+      --green: #16a34a;
+      --amber: #d97706;
+      --red: #dc2626;
+      --mono: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+      --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     }
 
-    /* ═══════════════════════════════════════════
-       Reset & Base
-       ═══════════════════════════════════════════ */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; overflow: hidden; }
-    body {
-      font-family: var(--font-mono);
-      font-size: 13px;
-      color: var(--text-primary);
-      background: var(--bg-deep);
-      background-image: radial-gradient(circle, rgba(255,255,255,0.018) 1px, transparent 1px);
-      background-size: 20px 20px;
-      -webkit-font-smoothing: antialiased;
-    }
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    html, body { height: 100%; }
+    body { font-family: var(--sans); font-size: 13px; color: var(--text); background: var(--bg); }
+    ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-    /* ═══════════════════════════════════════════
-       Layout
-       ═══════════════════════════════════════════ */
-    #app { display: flex; flex-direction: column; height: 100vh; }
-    #main { display: flex; flex: 1; overflow: hidden; }
-    #sidebar {
-      width: var(--sidebar-w);
-      min-width: var(--sidebar-w);
-      background: var(--bg-base);
-      border-right: 1px solid var(--border-subtle);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    #content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
+    /* Layout */
+    #app { display: flex; height: 100vh; }
+    #sidebar { width: 260px; min-width: 260px; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-alt); }
+    #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
-    /* ═══════════════════════════════════════════
-       Accent Line
-       ═══════════════════════════════════════════ */
-    #accent-line {
-      height: 2px;
-      flex-shrink: 0;
-      background: linear-gradient(90deg, var(--bg-deep), var(--accent-cyan), var(--status-running), var(--accent-cyan), var(--bg-deep));
-      background-size: 200% 100%;
-      animation: gradient-shift 6s linear infinite;
-    }
-    @keyframes gradient-shift {
-      0% { background-position: 0% 50%; }
-      100% { background-position: 200% 50%; }
-    }
+    /* Sidebar header */
+    .side-hdr { padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .side-hdr h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+    .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
+    .conn-dot.on { background: var(--green); }
 
-    /* ═══════════════════════════════════════════
-       Header
-       ═══════════════════════════════════════════ */
-    header {
-      height: var(--header-h);
-      background: var(--bg-base);
-      border-bottom: 1px solid var(--border-subtle);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 20px;
-      flex-shrink: 0;
-    }
-    .header-left { display: flex; align-items: baseline; gap: 12px; }
-    .header-left h1 {
-      font-family: var(--font-display);
-      font-weight: 700;
-      font-size: 20px;
-      letter-spacing: 0.12em;
-      color: var(--text-primary);
-    }
-    .header-left .mark {
-      color: var(--accent-cyan);
-      font-size: 14px;
-      margin-right: 2px;
-    }
-    .header-left .subtitle {
-      font-family: var(--font-display);
-      font-size: 11px;
-      font-weight: 300;
-      color: var(--text-muted);
-      letter-spacing: 0.06em;
-    }
-    .header-right { display: flex; align-items: center; gap: 16px; }
-    #clock {
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-muted);
-      letter-spacing: 0.04em;
-    }
-    .conn-status { display: flex; align-items: center; gap: 8px; }
-    #conn-label {
-      font-family: var(--font-display);
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--status-error);
-      transition: color 0.3s;
-    }
-    #conn-label.connected { color: var(--status-done); }
-    #conn-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--status-error);
-      transition: background 0.3s, box-shadow 0.3s;
-    }
-    #conn-dot.connected {
-      background: var(--status-done);
-      box-shadow: 0 0 6px var(--status-done), 0 0 14px rgba(15, 212, 146, 0.25);
-      animation: conn-pulse 2.5s ease-in-out infinite;
-    }
-    @keyframes conn-pulse {
-      0%, 100% { box-shadow: 0 0 6px var(--status-done), 0 0 14px rgba(15, 212, 146, 0.25); }
-      50% { box-shadow: 0 0 8px var(--status-done), 0 0 20px rgba(15, 212, 146, 0.35); }
-    }
+    /* Sidebar tabs */
+    .side-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .side-tab { flex: 1; padding: 8px; font-size: 11px; font-weight: 500; text-align: center; color: var(--text-dim); cursor: pointer; border-bottom: 2px solid transparent; transition: all .15s; }
+    .side-tab:hover { color: var(--text-sec); }
+    .side-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
 
-    /* ═══════════════════════════════════════════
-       Sidebar — Session List
-       ═══════════════════════════════════════════ */
-    .sidebar-section { display: flex; flex-direction: column; overflow: hidden; }
-    .sidebar-section:first-child { flex-shrink: 0; max-height: 40%; }
-    .sidebar-section:last-child { flex: 1; }
-    .sidebar-header {
-      font-family: var(--font-display);
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      padding: 14px 16px 8px;
-      border-bottom: 1px solid var(--border-subtle);
-      flex-shrink: 0;
-    }
-    .session-list { overflow-y: auto; flex: 1; padding: 4px 0; }
-    .session-entry {
-      padding: 10px 16px;
-      cursor: pointer;
-      border-left: 3px solid transparent;
-      transition: all 0.15s;
-    }
-    .session-entry:hover { background: var(--bg-surface); }
-    .session-entry.active {
-      background: var(--bg-surface);
-      border-left-color: var(--accent-cyan);
-    }
-    .session-id {
-      font-size: 11px;
-      font-weight: 500;
-      color: var(--text-secondary);
-      margin-bottom: 3px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .session-status-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .session-status-dot.active { background: var(--status-running); animation: session-dot-pulse 2s ease-in-out infinite; }
-    .session-status-dot.done { background: var(--status-done); }
-    @keyframes session-dot-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-    .session-text {
-      font-size: 11px;
-      color: var(--text-muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+    /* Sidebar panels */
+    .side-panel { flex: 1; overflow-y: auto; display: none; }
+    .side-panel.active { display: block; }
 
-    /* ═══════════════════════════════════════════
-       Sidebar — Chat Messages
-       ═══════════════════════════════════════════ */
-    #chat-log { overflow-y: auto; flex: 1; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
-    .chat-empty {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      color: var(--text-muted);
-      font-size: 11px;
-      font-style: italic;
-    }
-    .chat-msg {
-      padding: 8px 10px;
-      border-radius: 6px;
-      font-size: 12px;
-      line-height: 1.5;
-      max-width: 92%;
-      word-wrap: break-word;
-    }
-    .chat-msg.in {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
-      align-self: flex-start;
-      border-bottom-left-radius: 2px;
-    }
-    .chat-msg.out {
-      background: rgba(59, 130, 246, 0.1);
-      border: 1px solid rgba(59, 130, 246, 0.15);
-      align-self: flex-end;
-      border-bottom-right-radius: 2px;
-    }
-    .chat-msg .msg-meta {
-      font-size: 10px;
-      color: var(--text-muted);
-      margin-bottom: 3px;
-    }
-    .chat-msg .msg-meta { display: flex; align-items: center; gap: 6px; }
-    .chat-msg .msg-text { color: var(--text-primary); white-space: pre-wrap; }
-    .msg-download {
-      background: none;
-      border: 1px solid var(--border-default);
-      color: var(--text-muted);
-      cursor: pointer;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      padding: 1px 6px;
-      border-radius: 3px;
-      transition: all 0.15s;
-      margin-left: auto;
-    }
-    .msg-download:hover { background: var(--bg-elevated); color: var(--text-secondary); }
+    /* Session list */
+    .sess-item { padding: 10px 16px; cursor: pointer; border-left: 3px solid transparent; transition: all .1s; }
+    .sess-item:hover { background: var(--bg-hover); }
+    .sess-item.active { background: var(--bg); border-left-color: var(--blue); }
+    .sess-id { font-size: 11px; font-family: var(--mono); color: var(--text-sec); display: flex; align-items: center; gap: 6px; }
+    .sess-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .sess-dot.running { background: var(--blue); animation: pulse 2s ease-in-out infinite; }
+    .sess-dot.done { background: var(--green); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+    .sess-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 
-    /* ═══════════════════════════════════════════
-       Sidebar — Compose
-       ═══════════════════════════════════════════ */
-    .sidebar-compose {
-      flex-shrink: 0;
-      border-top: 1px solid var(--border-default);
-      padding: 10px 12px;
-      background: var(--bg-surface);
-    }
-    .sidebar-compose.disabled {
-      opacity: 0.4;
-      pointer-events: none;
-    }
-    .compose-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 8px;
-    }
-    .compose-header span {
-      font-family: var(--font-display);
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-    }
-    #new-session-btn {
-      background: none;
-      border: 1px solid var(--border-default);
-      color: var(--text-muted);
-      font-family: var(--font-mono);
-      font-size: 13px;
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.15s;
-    }
-    #new-session-btn:hover {
-      background: var(--bg-elevated);
-      color: var(--accent-cyan);
-      border-color: var(--accent-cyan);
-    }
-    #compose-target {
-      width: 100%;
-      background: var(--bg-deep);
-      border: 1px solid var(--border-default);
-      border-radius: 6px;
-      color: var(--text-primary);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      padding: 5px 8px;
-      outline: none;
-      cursor: pointer;
-      margin-bottom: 4px;
-      transition: border-color 0.15s;
-    }
-    #compose-target:focus { border-color: var(--accent-cyan); }
-    .compose-input-wrap {
-      display: flex;
-      gap: 6px;
-      align-items: flex-end;
-    }
-    #compose-input {
-      flex: 1;
-      background: var(--bg-deep);
-      border: 1px solid var(--border-default);
-      border-radius: 6px;
-      color: var(--text-primary);
-      font-family: var(--font-mono);
-      font-size: 12px;
-      line-height: 1.4;
-      padding: 8px 10px;
-      resize: vertical;
-      min-height: 36px;
-      max-height: 120px;
-      outline: none;
-      transition: border-color 0.15s;
-    }
-    #compose-input::placeholder { color: var(--text-muted); }
-    #compose-input:focus { border-color: var(--accent-cyan); }
-    #compose-send {
-      background: rgba(34, 211, 238, 0.12);
-      border: 1px solid rgba(34, 211, 238, 0.25);
-      color: var(--accent-cyan);
-      font-size: 14px;
-      width: 36px;
-      height: 36px;
-      border-radius: 6px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: all 0.15s;
-    }
-    #compose-send:hover {
-      background: rgba(34, 211, 238, 0.22);
-      border-color: var(--accent-cyan);
-    }
+    /* Agent/pipeline list */
+    .config-item { padding: 10px 16px; border-bottom: 1px solid var(--border-light); }
+    .config-item:last-child { border-bottom: none; }
+    .config-name { font-size: 12px; font-weight: 600; }
+    .config-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+    .config-badge { display: inline-block; font-size: 10px; font-family: var(--mono); padding: 1px 5px; border-radius: 3px; background: var(--bg-hover); color: var(--text-sec); margin-left: 6px; }
 
-    /* ═══════════════════════════════════════════
-       Kanban
-       ═══════════════════════════════════════════ */
-    #kanban-wrapper {
-      position: relative;
-      flex: 1;
-      overflow: auto;
-      padding: 16px 20px;
-    }
-    #dag-svg {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-      z-index: 5;
-    }
-    #kanban {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
-      min-height: 100%;
-      position: relative;
-      z-index: 1;
-    }
-    .kanban-column {
-      background: var(--bg-base);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      display: flex;
-      flex-direction: column;
-      min-height: 200px;
-    }
-    .column-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--border-subtle);
-      flex-shrink: 0;
-    }
-    .column-header h3 {
-      font-family: var(--font-display);
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.1em;
-      color: var(--text-secondary);
-      flex: 1;
-    }
-    .column-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .column-dot.pending { background: var(--status-pending); }
-    .column-dot.running { background: var(--status-running); }
-    .column-dot.done { background: var(--status-done); }
-    .column-count {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-muted);
-      background: var(--bg-surface);
-      padding: 1px 7px;
-      border-radius: 10px;
-    }
-    .column-body { padding: 8px; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    /* Compose */
+    .compose { flex-shrink: 0; border-top: 1px solid var(--border); padding: 12px; background: var(--bg); }
+    .compose.disabled { opacity: .4; pointer-events: none; }
+    .compose select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; font-family: var(--sans); background: var(--bg); color: var(--text); margin-bottom: 6px; outline: none; }
+    .compose select:focus { border-color: var(--blue); }
+    .compose-row { display: flex; gap: 6px; }
+    .compose textarea { flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; font-family: var(--sans); resize: none; min-height: 36px; max-height: 100px; outline: none; color: var(--text); }
+    .compose textarea::placeholder { color: var(--text-dim); }
+    .compose textarea:focus { border-color: var(--blue); }
+    .compose button { width: 36px; height: 36px; border: 1px solid var(--blue); background: var(--blue); color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; flex-shrink: 0; }
+    .compose button:hover { opacity: .9; }
 
-    /* ═══════════════════════════════════════════
-       Task Cards
-       ═══════════════════════════════════════════ */
-    .task-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-subtle);
-      border-left: 3px solid var(--status-pending);
-      border-radius: 6px;
-      padding: 10px 12px;
-      cursor: pointer;
-      transition: all 0.15s;
-      position: relative;
-    }
-    .task-card:hover {
-      background: var(--bg-card-hover);
-      border-color: var(--border-default);
-    }
-    .task-card.selected {
-      border-color: var(--accent-cyan);
-      box-shadow: 0 0 0 1px var(--accent-cyan), 0 0 12px rgba(34, 211, 238, 0.08);
-    }
-    .task-card.status-running {
-      border-left-color: var(--status-running);
-      animation: card-glow 2.5s ease-in-out infinite;
-    }
-    .task-card.status-done { border-left-color: var(--status-done); }
-    @keyframes card-glow {
-      0%, 100% { box-shadow: none; }
-      50% { box-shadow: inset 0 0 12px rgba(59, 130, 246, 0.06); }
-    }
-    .card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
-    .card-task-id {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-primary);
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .card-model {
-      font-family: var(--font-display);
-      font-size: 9px;
-      font-weight: 500;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      padding: 2px 6px;
-      border-radius: 3px;
-      background: rgba(34, 211, 238, 0.1);
-      color: var(--accent-cyan);
-      border: 1px solid rgba(34, 211, 238, 0.15);
-      flex-shrink: 0;
-    }
-    .card-agent {
-      font-family: var(--font-display);
-      font-size: 10px;
-      font-weight: 400;
-      color: var(--text-muted);
-      letter-spacing: 0.04em;
-      margin-bottom: 6px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .worker-dot {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-    }
-    .worker-dot.alive { background: var(--status-done); animation: worker-pulse 1.5s ease-in-out infinite; }
-    .worker-dot.dead { background: var(--status-error); }
-    .worker-dot.wdone { background: var(--text-muted); }
-    @keyframes worker-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
-    }
-    .stream-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--status-running);
-      animation: stream-pulse 1s ease-in-out infinite;
-      display: inline-block;
-    }
-    @keyframes stream-pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.3; transform: scale(0.7); }
-    }
-    .card-stream-preview {
-      font-size: 10px;
-      line-height: 1.35;
-      color: var(--text-muted);
-      font-family: var(--font-mono);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      margin-top: 3px;
-      padding: 2px 6px;
-      background: var(--bg-deep);
-      border-radius: 3px;
-      border: 1px solid var(--border-subtle);
-    }
-    .stop-btn {
-      background: rgba(239, 68, 68, 0.1);
-      border: 1px solid rgba(239, 68, 68, 0.25);
-      color: var(--status-error);
-      font-family: var(--font-display);
-      font-size: 9px;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      padding: 3px 8px;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .stop-btn:hover {
-      background: rgba(239, 68, 68, 0.2);
-      border-color: rgba(239, 68, 68, 0.4);
-    }
-    .stop-all-btn {
-      background: rgba(239, 68, 68, 0.08);
-      border: 1px solid rgba(239, 68, 68, 0.2);
-      color: var(--status-error);
-      font-family: var(--font-display);
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      padding: 4px 12px;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.15s;
-      margin-left: auto;
-    }
-    .stop-all-btn:hover {
-      background: rgba(239, 68, 68, 0.15);
-      border-color: rgba(239, 68, 68, 0.35);
-    }
-    .detail-stream-output {
-      background: var(--bg-deep);
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
-      padding: 12px 14px;
-      max-height: 250px;
-      overflow-y: auto;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      line-height: 1.5;
-      color: var(--text-secondary);
-      white-space: pre-wrap;
-      word-wrap: break-word;
-    }
-    .detail-stream-output .chunk-tool {
-      color: var(--accent-cyan);
-      opacity: 0.8;
-    }
-    .detail-stream-output .chunk-error {
-      color: var(--status-error);
-    }
-    .detail-stream-meta {
-      display: flex;
-      gap: 12px;
-      font-size: 10px;
-      color: var(--text-muted);
-      margin-top: 6px;
-    }
-    .detail-stream-meta .val { color: var(--text-secondary); font-weight: 500; }
-    .card-desc {
-      font-size: 11px;
-      line-height: 1.45;
-      color: var(--text-secondary);
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }
-    .card-footer {
-      margin-top: 5px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 10px;
-    }
-    .card-tokens {
-      color: var(--text-muted);
-      margin-left: auto;
-    }
-    .card-cost {
-      color: var(--accent-amber);
-    }
+    /* Main header */
+    .main-hdr { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-shrink: 0; background: var(--bg); }
+    .main-hdr h2 { font-size: 14px; font-weight: 600; }
+    .main-hdr .badge { font-size: 10px; font-family: var(--mono); padding: 2px 8px; border-radius: 4px; }
+    .badge-pipeline { background: #eff6ff; color: var(--blue); }
+    .badge-agent { background: #f0fdf4; color: var(--green); }
+    .usage-bar { margin-left: auto; display: flex; gap: 14px; font-size: 11px; color: var(--text-dim); }
+    .usage-bar .val { font-weight: 600; color: var(--text-sec); }
+    .usage-bar .cost { color: var(--amber); font-weight: 600; }
 
-    /* ═══════════════════════════════════════════
-       Kanban Empty State
-       ═══════════════════════════════════════════ */
-    .kanban-empty {
-      grid-column: 1 / -1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 300px;
-      color: var(--text-muted);
-      gap: 10px;
-    }
-    .kanban-empty .empty-icon { font-size: 28px; opacity: 0.3; }
-    .kanban-empty .empty-text {
-      font-family: var(--font-display);
-      font-size: 13px;
-      letter-spacing: 0.06em;
-    }
-    .kanban-empty .empty-hint { font-size: 11px; opacity: 0.6; }
+    /* Task grid */
+    #task-area { flex: 1; overflow: auto; padding: 16px 20px; }
+    .task-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .col-hdr { display: flex; align-items: center; gap: 6px; padding: 0 0 8px; }
+    .col-hdr h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+    .col-hdr .cnt { font-size: 10px; font-weight: 600; color: var(--text-dim); background: var(--bg-hover); padding: 1px 7px; border-radius: 10px; }
+    .col-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .col-dot.pending { background: var(--text-dim); }
+    .col-dot.running { background: var(--blue); }
+    .col-dot.done { background: var(--green); }
 
-    /* ═══════════════════════════════════════════
-       Detail Panel
-       ═══════════════════════════════════════════ */
-    #detail-panel {
-      border-top: 1px solid var(--border-subtle);
-      background: var(--bg-base);
-      overflow-y: auto;
-      flex-shrink: 0;
-      max-height: 45vh;
-      transition: max-height 0.25s ease;
-    }
-    #detail-panel.hidden { max-height: 0; border-top-color: transparent; }
+    .task-col { display: flex; flex-direction: column; gap: 8px; }
+
+    /* Task cards */
+    .card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: all .1s; border-left: 3px solid var(--text-dim); }
+    .card:hover { border-color: var(--border); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+    .card.selected { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+    .card.running { border-left-color: var(--blue); }
+    .card.done { border-left-color: var(--green); }
+    .card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .card-id { font-size: 12px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card-model { font-size: 10px; font-family: var(--mono); color: var(--blue); background: #eff6ff; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; }
+    .card-agent { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; display: flex; align-items: center; gap: 5px; }
+    .card-desc { font-size: 11px; color: var(--text-sec); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .card-preview { font-size: 10px; font-family: var(--mono); color: var(--text-dim); background: var(--bg-alt); border-radius: 4px; padding: 3px 6px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 10px; }
+    .card-tokens { color: var(--text-dim); }
+    .card-cost { color: var(--amber); font-weight: 500; }
+    .stop-btn { font-size: 10px; font-weight: 500; color: var(--red); background: #fef2f2; border: 1px solid #fecaca; padding: 2px 8px; border-radius: 4px; cursor: pointer; margin-left: auto; }
+    .stop-btn:hover { background: #fee2e2; }
+
+    .stream-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); display: inline-block; animation: pulse 1s ease-in-out infinite; }
+    .worker-dot { width: 5px; height: 5px; border-radius: 50%; }
+    .worker-dot.alive { background: var(--green); animation: pulse 1.5s ease-in-out infinite; }
+    .worker-dot.dead { background: var(--red); }
+
+    /* Empty state */
+    .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); gap: 6px; }
+    .empty-title { font-size: 14px; font-weight: 500; }
+    .empty-hint { font-size: 12px; }
+
+    /* Detail panel */
+    #detail { border-top: 1px solid var(--border); background: var(--bg-alt); overflow-y: auto; flex-shrink: 0; max-height: 0; transition: max-height .2s ease; }
+    #detail.open { max-height: 45vh; }
     #detail-inner { padding: 16px 20px; }
-    .detail-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 14px;
-      flex-wrap: wrap;
-    }
-    .detail-header h2 {
-      font-family: var(--font-display);
-      font-size: 16px;
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      color: var(--text-primary);
-    }
-    .detail-badge {
-      font-family: var(--font-display);
-      font-size: 10px;
-      font-weight: 500;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      padding: 3px 8px;
-      border-radius: 4px;
-    }
-    .detail-badge.agent { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border-default); }
-    .detail-badge.model { background: rgba(34, 211, 238, 0.1); color: var(--accent-cyan); border: 1px solid rgba(34, 211, 238, 0.15); }
-    .detail-badge.status-pending { background: rgba(85, 99, 120, 0.15); color: var(--status-pending); border: 1px solid rgba(85, 99, 120, 0.2); }
-    .detail-badge.status-running { background: rgba(59, 130, 246, 0.12); color: var(--status-running); border: 1px solid rgba(59, 130, 246, 0.2); }
-    .detail-badge.status-done { background: rgba(15, 212, 146, 0.1); color: var(--status-done); border: 1px solid rgba(15, 212, 146, 0.15); }
-    .detail-close {
-      margin-left: auto;
-      background: none;
-      border: 1px solid var(--border-default);
-      color: var(--text-muted);
-      cursor: pointer;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      padding: 4px 10px;
-      border-radius: 4px;
-      transition: all 0.15s;
-    }
-    .detail-close:hover { background: var(--bg-elevated); color: var(--text-secondary); }
-    .detail-section { margin-bottom: 14px; }
-    .detail-section-label {
-      font-family: var(--font-display);
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      margin-bottom: 6px;
-    }
-    .detail-text {
-      font-size: 12px;
-      line-height: 1.6;
-      color: var(--text-secondary);
-      white-space: pre-wrap;
-      word-wrap: break-word;
-    }
-    .detail-result-box {
-      background: var(--bg-deep);
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
-      padding: 12px 14px;
-      max-height: 200px;
-      overflow-y: auto;
-    }
-    .detail-deps { display: flex; flex-wrap: wrap; gap: 6px; }
-    .detail-dep-tag {
-      font-size: 11px;
-      padding: 3px 8px;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: 4px;
-      color: var(--text-secondary);
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .detail-dep-tag:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
-    .detail-meta {
-      display: flex;
-      gap: 20px;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-    .detail-usage {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-      gap: 8px;
-    }
-    .usage-stat {
-      background: var(--bg-deep);
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
-      padding: 8px 10px;
-    }
-    .usage-stat .stat-label {
-      font-size: 9px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      margin-bottom: 3px;
-    }
-    .usage-stat .stat-value {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-    .usage-stat .stat-value.cost { color: var(--accent-amber); }
-    .job-usage-bar {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 0 20px 8px;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-    .job-usage-bar span { display: flex; align-items: center; gap: 4px; }
-    .job-usage-bar .val { color: var(--text-secondary); font-weight: 500; }
+    .det-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .det-hdr h2 { font-size: 15px; font-weight: 600; }
+    .det-close { margin-left: auto; background: none; border: 1px solid var(--border); color: var(--text-dim); cursor: pointer; font-size: 11px; padding: 3px 10px; border-radius: 4px; }
+    .det-close:hover { background: var(--bg-hover); color: var(--text); }
+    .det-section { margin-bottom: 12px; }
+    .det-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); margin-bottom: 4px; }
+    .det-text { font-size: 12px; line-height: 1.6; color: var(--text-sec); white-space: pre-wrap; word-wrap: break-word; }
+    .det-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; max-height: 200px; overflow-y: auto; }
+    .det-stream { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; max-height: 250px; overflow-y: auto; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--text-sec); white-space: pre-wrap; word-wrap: break-word; }
+    .det-stream .tool { color: var(--blue); }
+    .det-stream .err { color: var(--red); }
+    .det-deps { display: flex; flex-wrap: wrap; gap: 4px; }
+    .dep-tag { font-size: 11px; padding: 2px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text-sec); cursor: pointer; }
+    .dep-tag:hover { border-color: var(--blue); color: var(--blue); }
+    .det-usage { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
+    .ustat { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+    .ustat-label { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+    .ustat-val { font-size: 14px; font-weight: 600; color: var(--text); margin-top: 2px; }
+    .ustat-val.cost { color: var(--amber); }
+    .det-meta { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
 
-    /* ═══════════════════════════════════════════
-       Responsive
-       ═══════════════════════════════════════════ */
+    .badge-status { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 4px; }
+    .badge-status.pending { background: #f3f4f6; color: var(--text-dim); }
+    .badge-status.running { background: #eff6ff; color: var(--blue); }
+    .badge-status.done { background: #f0fdf4; color: var(--green); }
+
+    /* Responsive */
     @media (max-width: 768px) {
       #sidebar { display: none; }
-      :root { --sidebar-w: 0px; }
-      #kanban { grid-template-columns: 1fr; }
+      .task-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div id="app">
-    <div id="accent-line"></div>
-    <header>
-      <div class="header-left">
-        <h1><span class="mark">&#9670;</span>SKITTER</h1>
-        <span class="subtitle">MQTT Agent Orchestrator</span>
+    <aside id="sidebar">
+      <div class="side-hdr">
+        <h1>Skitter</h1>
+        <span class="conn-dot" id="conn-dot" title="Disconnected"></span>
       </div>
-      <div class="header-right">
-        <span id="clock"></span>
-        <div class="conn-status">
-          <span id="conn-label">DISCONNECTED</span>
-          <span id="conn-dot"></span>
+      <div class="side-tabs">
+        <div class="side-tab active" data-tab="sessions">Sessions</div>
+        <div class="side-tab" data-tab="agents">Agents</div>
+        <div class="side-tab" data-tab="pipelines">Pipelines</div>
+      </div>
+      <div class="side-panel active" id="panel-sessions"></div>
+      <div class="side-panel" id="panel-agents"></div>
+      <div class="side-panel" id="panel-pipelines"></div>
+      <div class="compose disabled" id="compose">
+        <select id="compose-target"></select>
+        <div class="compose-row">
+          <textarea id="compose-input" placeholder="Enter prompt..." rows="1"></textarea>
+          <button id="compose-send" title="Send">&#9654;</button>
         </div>
       </div>
-    </header>
-
+    </aside>
     <div id="main">
-      <aside id="sidebar">
-        <div class="sidebar-section">
-          <div class="sidebar-header">Sessions</div>
-          <div class="session-list" id="session-list"></div>
-        </div>
-        <div class="sidebar-section">
-          <div class="sidebar-header">Messages</div>
-          <div id="chat-log"></div>
-        </div>
-        <div class="sidebar-compose disabled" id="compose-bar">
-          <div class="compose-header">
-            <span>New Request</span>
-            <button id="new-session-btn" title="Start new session">+</button>
-          </div>
-          <select id="compose-target"></select>
-          <div class="compose-input-wrap">
-            <textarea id="compose-input" placeholder="Prompt... (or /agent id prompt, /pipeline id --var k=v)" rows="2"></textarea>
-            <button id="compose-send" title="Send (Enter)">&#9654;</button>
-          </div>
-        </div>
-      </aside>
-
-      <div id="content">
-        <div id="kanban-wrapper">
-          <svg id="dag-svg" xmlns="http://www.w3.org/2000/svg"></svg>
-          <div id="kanban"></div>
-        </div>
-        <div id="detail-panel" class="hidden">
-          <div id="detail-inner"></div>
-        </div>
+      <div class="main-hdr" id="main-hdr">
+        <h2 id="hdr-title">No session selected</h2>
       </div>
+      <div id="task-area"></div>
+      <div id="detail"><div id="detail-inner"></div></div>
     </div>
   </div>
 
   <script>
-    /* ═══════════════════════════════════════════
-       Constants
-       ═══════════════════════════════════════════ */
-    const SVG_NS = 'http://www.w3.org/2000/svg';
     const BROKER_URL = 'ws://localhost:8083/mqtt';
 
-    /* ═══════════════════════════════════════════
-       State
-       ═══════════════════════════════════════════ */
     const state = {
       connected: false,
-      jobs: new Map(),
+      sessions: new Map(),
       taskResults: new Map(),
       workerStatus: new Map(),
-      taskUsage: new Map(),    // "session_id/task_id" -> {usage, cost_usd}
-      streamChunks: new Map(), // "session_id/task_id" -> [{seq, type, content}]
-      agentCards: new Map(),   // agent_id -> {name, description, model, ...}
-      chatMessages: [],
+      taskUsage: new Map(),
+      streamChunks: new Map(),
+      agentCards: new Map(),
+      pipelineCards: new Map(),
       selectedSessionId: null,
       selectedTaskId: null,
     };
     let mqttClient = null;
     let streamRenderPending = false;
 
-    /* ═══════════════════════════════════════════
-       Utilities
-       ═══════════════════════════════════════════ */
-    function esc(str) {
-      const d = document.createElement('div');
-      d.textContent = str;
-      return d.innerHTML;
+    // --- Utilities ---
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '\u2026' : s; }
+    function fmtTok(n) { return n == null ? '?' : n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
+    function isActive(s) { return Object.values(s.tasks).some(t => t.status !== 'done'); }
+
+    function sessionUsage(sid) {
+      const s = state.sessions.get(sid);
+      if (!s) return null;
+      let ti = 0, to = 0, tc = 0, n = 0;
+      for (const t of Object.values(s.tasks)) {
+        const u = state.taskUsage.get(`${sid}/${t.task_id}`);
+        if (u && u.usage) { ti += u.usage.input_tokens || 0; to += u.usage.output_tokens || 0; if (u.cost_usd != null) tc += u.cost_usd; n++; }
+      }
+      return n ? { input: ti, output: to, cost: tc } : null;
     }
 
-    function truncate(str, n) {
-      if (!str) return '';
-      return str.length > n ? str.slice(0, n) + '\u2026' : str;
+    function latestStream(sid, task) {
+      const ch = state.streamChunks.get(`${sid}/${task.task_id}`);
+      if (!ch || !ch.length) return null;
+      for (let i = ch.length - 1; i >= 0; i--) if (ch[i].type === 'text') return ch[i].content;
+      return ch[ch.length - 1].content;
     }
 
-    function formatTime(ts) {
-      const d = new Date(ts * 1000);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    }
-
-    function getResultForTask(sessionId, task) {
-      return state.taskResults.get(`${sessionId}/${task.task_id}`) || null;
-    }
-
-    function jobIsActive(job) {
-      return Object.values(job.tasks).some(t => t.status !== 'done');
-    }
-
-    function fmtTokens(n) {
-      if (n == null) return '?';
-      if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
-      return String(n);
-    }
-
-    function getUsageForTask(sessionId, task) {
-      return state.taskUsage.get(`${sessionId}/${task.task_id}`) || null;
+    function findSessionForTask(taskId) {
+      for (const [sid, s] of state.sessions) for (const t of Object.values(s.tasks)) if (t.task_id === taskId) return sid;
+      return null;
     }
 
     function scheduleStreamRender() {
-      if (!streamRenderPending) {
-        streamRenderPending = true;
-        setTimeout(() => {
-          renderKanban();
-          renderDetail();
-          streamRenderPending = false;
-        }, 500);
-      }
+      if (!streamRenderPending) { streamRenderPending = true; setTimeout(() => { renderTasks(); renderDetail(); streamRenderPending = false; }, 400); }
     }
 
-    function getLatestStreamText(sessionId, task) {
-      const key = `${sessionId}/${task.task_id}`;
-      const chunks = state.streamChunks.get(key);
-      if (!chunks || chunks.length === 0) return null;
-      // Find last text chunk
-      for (let i = chunks.length - 1; i >= 0; i--) {
-        if (chunks[i].type === 'text') return chunks[i].content;
-      }
-      // Fall back to last chunk of any type
-      return chunks[chunks.length - 1].content;
-    }
-
-    function publishCancel(sessionId, taskId, reason) {
-      if (!mqttClient || !state.connected) return;
-      const session = state.jobs.get(sessionId);
-      if (!session) return;
-      const task = Object.values(session.tasks).find(t => t.task_id === taskId);
-      if (!task) return;
-      const org = 'skitter', unit = 'default';
-      const topic = `$a2a/v1/request/${org}/${unit}/${task.agent}/cancel`;
-      const payload = JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'tasks/cancel',
-        params: { task_id: taskId, reason: reason || 'User cancelled from dashboard' },
-        id: crypto.randomUUID(),
-      });
-      mqttClient.publish(topic, payload, { qos: 1 });
-    }
-
-    function publishCancelAll(sessionId) {
-      const session = state.jobs.get(sessionId);
-      if (!session) return;
-      for (const task of Object.values(session.tasks)) {
-        if (task.status === 'running') {
-          publishCancel(sessionId, task.task_id, 'User stopped all tasks');
-        }
-      }
-    }
-
-    function getJobUsageTotals(sessionId) {
-      const session = state.jobs.get(sessionId);
-      if (!session) return null;
-      let totalIn = 0, totalOut = 0, totalCost = 0, count = 0;
-      for (const task of Object.values(session.tasks)) {
-        const u = state.taskUsage.get(`${sessionId}/${task.task_id}`);
-        if (u && u.usage) {
-          totalIn += (u.usage.input_tokens || 0);
-          totalOut += (u.usage.output_tokens || 0);
-          if (u.cost_usd != null) totalCost += u.cost_usd;
-          count++;
-        }
-      }
-      return count ? { input_tokens: totalIn, output_tokens: totalOut, cost_usd: totalCost } : null;
-    }
-
-    /* ═══════════════════════════════════════════
-       MQTT
-       ═══════════════════════════════════════════ */
+    // --- MQTT ---
     function connect() {
-      mqttClient = mqtt.connect(BROKER_URL, {
-        protocolVersion: 5,
-        reconnectPeriod: 3000,
-        connectTimeout: 5000,
-        clean: true,
-      });
-
-      mqttClient.on('connect', () => {
-        state.connected = true;
-        renderConnectionStatus();
-        mqttClient.subscribe('$a2a/v1/#', { qos: 1 });
-      });
-
-      mqttClient.on('close', () => {
-        state.connected = false;
-        renderConnectionStatus();
-      });
-
-      mqttClient.on('error', (err) => console.error('MQTT:', err));
+      mqttClient = mqtt.connect(BROKER_URL, { protocolVersion: 5, reconnectPeriod: 3000, connectTimeout: 5000, clean: true });
+      mqttClient.on('connect', () => { state.connected = true; renderConn(); mqttClient.subscribe('$a2a/v1/#', { qos: 1 }); });
+      mqttClient.on('close', () => { state.connected = false; renderConn(); });
+      mqttClient.on('error', e => console.error('MQTT:', e));
       mqttClient.on('message', onMessage);
     }
 
     function onMessage(topic, payload) {
       const raw = payload.toString();
-      const parts = topic.split('/');
-      // A2A topics: $a2a/v1/{category}/{org}/{unit}/...
+      const p = topic.split('/');
 
-      // $a2a/v1/state/{org}/{unit}/sessions/{session_id}
-      if (parts[2] === 'state' && parts[5] === 'sessions' && parts.length === 7) {
-        const sessionId = parts[6];
-        if (!raw) {
-          state.jobs.delete(sessionId);
-          if (state.selectedSessionId === sessionId) {
-            state.selectedTaskId = null;
-          }
-        } else {
-          try { state.jobs.set(sessionId, JSON.parse(raw)); } catch(e) { return; }
-          if (!state.selectedSessionId) state.selectedSessionId = sessionId;
-        }
+      // Session state
+      if (p[2] === 'state' && p[5] === 'sessions' && p.length === 7) {
+        const sid = p[6];
+        if (!raw) { state.sessions.delete(sid); if (state.selectedSessionId === sid) state.selectedTaskId = null; }
+        else { try { state.sessions.set(sid, JSON.parse(raw)); } catch(e) { return; } if (!state.selectedSessionId) state.selectedSessionId = sid; }
         renderAll();
         return;
       }
 
-      // $a2a/v1/event/{org}/{unit}/workers/{task_id}
-      if (parts[2] === 'event' && parts[5] === 'workers' && parts.length === 7) {
-        if (raw) {
-          try {
-            const s = JSON.parse(raw);
-            // Find session_id from sessions
-            let sidForTask = null;
-            for (const [sid, session] of state.jobs) {
-              for (const t of Object.values(session.tasks)) {
-                if (t.task_id === parts[6]) { sidForTask = sid; break; }
-              }
-              if (sidForTask) break;
-            }
-            if (sidForTask) {
-              state.workerStatus.set(`${sidForTask}/${parts[6]}`, s.status);
-            }
-          } catch(e) {}
-        }
-        renderKanban();
-        return;
-      }
-
-      // $a2a/v1/state/{org}/{unit}/usage/{session_id}/{task_id}
-      if (parts[2] === 'state' && parts[5] === 'usage' && parts.length === 8 && raw) {
+      // Worker events
+      if (p[2] === 'event' && raw) {
         try {
-          const msg = JSON.parse(raw);
-          state.taskUsage.set(`${parts[6]}/${parts[7]}`, { usage: msg.usage, cost_usd: msg.cost_usd });
+          const ev = JSON.parse(raw);
+          if (ev.task_id && ev.status) {
+            const sid = findSessionForTask(ev.task_id);
+            if (sid) state.workerStatus.set(`${sid}/${ev.task_id}`, ev.status);
+          }
         } catch(e) {}
-        renderKanban();
-        renderDetail();
+        renderTasks();
         return;
       }
 
-      // $a2a/v1/reply/{org}/{unit}/{agent_id}/{suffix} — stream items and results
-      if (parts[2] === 'reply' && raw) {
+      // Usage
+      if (p[2] === 'state' && p[5] === 'usage' && p.length === 8 && raw) {
+        try { const m = JSON.parse(raw); state.taskUsage.set(`${p[6]}/${p[7]}`, { usage: m.usage, cost_usd: m.cost_usd }); } catch(e) {}
+        renderTasks(); renderDetail();
+        return;
+      }
+
+      // Reply (stream items + results)
+      if (p[2] === 'reply' && raw) {
         try {
-          const msg = JSON.parse(raw);
-          // StreamItem (has seq + type)
-          if (msg.seq != null && msg.type) {
-            const taskId = msg.task_id;
-            // Find session_id from sessions
-            let sidForTask = null;
-            for (const [sid, session] of state.jobs) {
-              for (const t of Object.values(session.tasks)) {
-                if (t.task_id === taskId) { sidForTask = sid; break; }
+          const m = JSON.parse(raw);
+          if (m.seq != null && m.type) {
+            const sid = findSessionForTask(m.task_id);
+            if (sid) {
+              const k = `${sid}/${m.task_id}`;
+              if (!state.streamChunks.has(k)) state.streamChunks.set(k, []);
+              const ch = state.streamChunks.get(k);
+              // Dedup
+              if (!ch.some(c => c.task_id === m.task_id && c.seq === m.seq)) {
+                ch.push(m);
+                if (ch.length > 200) ch.splice(0, ch.length - 200);
               }
-              if (sidForTask) break;
-            }
-            if (sidForTask) {
-              const key = `${sidForTask}/${taskId}`;
-              if (!state.streamChunks.has(key)) state.streamChunks.set(key, []);
-              const chunks = state.streamChunks.get(key);
-              chunks.push(msg);
-              if (chunks.length > 200) chunks.splice(0, chunks.length - 200);
             }
             scheduleStreamRender();
             return;
           }
-          // TaskStatusUpdate (has state + task_id)
-          if (msg.state && msg.task_id) {
-            let sidForTask = null;
-            for (const [sid, session] of state.jobs) {
-              for (const t of Object.values(session.tasks)) {
-                if (t.task_id === msg.task_id) { sidForTask = sid; break; }
-              }
-              if (sidForTask) break;
-            }
-            if (sidForTask) {
-              state.taskResults.set(`${sidForTask}/${msg.task_id}`, msg.result);
-            }
+          if (m.state && m.task_id) {
+            const sid = findSessionForTask(m.task_id);
+            if (sid) state.taskResults.set(`${sid}/${m.task_id}`, m.result);
             renderDetail();
             return;
           }
@@ -1106,613 +323,298 @@
         return;
       }
 
-      // $a2a/v1/discovery/{org}/{unit}/{agent_id} — Agent Cards
-      if (parts[2] === 'discovery' && raw) {
+      // Discovery
+      if (p[2] === 'discovery' && raw) {
         try {
           const card = JSON.parse(raw);
           if (card.agent_id && card.agent_id !== 'coordinator') {
             state.agentCards.set(card.agent_id, card);
-            renderComposeSelector();
+            renderAgents();
+            renderSelector();
           }
         } catch(e) {}
         return;
       }
-
-      // $a2a/v1/request/{org}/{unit}/coordinator — inbound requests
-      if (parts[2] === 'request' && parts[5] === 'coordinator' && parts.length === 6 && raw) {
-        try {
-          const msg = JSON.parse(raw);
-          if (msg.session_id && msg.text) {
-            state.chatMessages.push({ direction: 'in', session_id: msg.session_id, text: msg.text, timestamp: msg.timestamp || Date.now()/1000 });
-            if (!state.selectedSessionId) state.selectedSessionId = msg.session_id;
-          }
-        } catch(e) {}
-        renderChatPanel();
-        renderSessionList();
-        return;
-      }
     }
 
-    /* ═══════════════════════════════════════════
-       Render — Connection & Clock
-       ═══════════════════════════════════════════ */
-    function renderConnectionStatus() {
-      const dot = document.getElementById('conn-dot');
-      const label = document.getElementById('conn-label');
-      if (state.connected) {
-        dot.className = 'connected';
-        label.className = 'connected';
-        label.textContent = 'CONNECTED';
-      } else {
-        dot.className = '';
-        label.className = '';
-        label.textContent = 'DISCONNECTED';
-      }
-      updateComposeState();
+    // --- Cancel ---
+    function cancelTask(sid, taskId) {
+      if (!mqttClient || !state.connected) return;
+      const s = state.sessions.get(sid);
+      if (!s) return;
+      const t = Object.values(s.tasks).find(x => x.task_id === taskId);
+      if (!t) return;
+      mqttClient.publish(`$a2a/v1/request/skitter/default/${t.agent}/cancel`, JSON.stringify({
+        jsonrpc: '2.0', method: 'tasks/cancel', params: { task_id: taskId, reason: 'Cancelled from dashboard' }, id: crypto.randomUUID(),
+      }), { qos: 1 });
+    }
+    function cancelAll(sid) {
+      const s = state.sessions.get(sid);
+      if (!s) return;
+      for (const t of Object.values(s.tasks)) if (t.status === 'running') cancelTask(sid, t.task_id);
     }
 
-    function renderClock() {
-      const now = new Date();
-      document.getElementById('clock').textContent = now.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
-    }
-
-    /* ═══════════════════════════════════════════
-       Render — Session List
-       ═══════════════════════════════════════════ */
-    function renderSessionList() {
-      const el = document.getElementById('session-list');
-      const chatIds = new Set();
-      for (const id of state.jobs.keys()) chatIds.add(id);
-      for (const m of state.chatMessages) chatIds.add(m.session_id);
-
-      if (chatIds.size === 0) {
-        el.innerHTML = '<div class="chat-empty">No sessions</div>';
-        return;
-      }
-
-      let html = '';
-      for (const cid of chatIds) {
-        const job = state.jobs.get(cid);
-        const active = job && jobIsActive(job);
-        const selected = cid === state.selectedSessionId;
-        const text = job ? (job.label || '') : '';
-        html += `<div class="session-entry${selected ? ' active' : ''}" data-session-id="${esc(cid)}">
-          <div class="session-id">
-            <span class="session-status-dot ${active ? 'active' : 'done'}"></span>
-            ${esc(cid.slice(0, 10))}
-          </div>
-          <div class="session-text">${esc(truncate(text, 50))}</div>
-        </div>`;
-      }
-      el.innerHTML = html;
-
-      el.querySelectorAll('.session-entry').forEach(entry => {
-        entry.addEventListener('click', () => {
-          state.selectedSessionId = entry.dataset.sessionId;
-          state.selectedTaskId = null;
-          renderAll();
-        });
-      });
-    }
-
-    /* ═══════════════════════════════════════════
-       Render — Chat Messages
-       ═══════════════════════════════════════════ */
-    function renderChatPanel() {
-      const el = document.getElementById('chat-log');
-      const msgs = state.chatMessages.filter(m => m.session_id === state.selectedSessionId);
-
-      if (msgs.length === 0) {
-        el.innerHTML = '<div class="chat-empty">No messages yet</div>';
-        return;
-      }
-
-      let html = '';
-      for (const m of msgs) {
-        const dir = m.direction === 'in' ? 'in' : 'out';
-        const label = m.direction === 'in' ? 'USER' : 'SKITTER';
-        const dlBtn = dir === 'out' ? `<button class="msg-download" onclick="downloadReport('${m.session_id}', this)" title="Download as Markdown">&#8615;</button>` : '';
-        html += `<div class="chat-msg ${dir}">
-          <div class="msg-meta">${label} &middot; ${formatTime(m.timestamp)}${dlBtn}</div>
-          <div class="msg-text">${esc(m.text)}</div>
-        </div>`;
-      }
-      el.innerHTML = html;
-      el.scrollTop = el.scrollHeight;
-    }
-
-    function downloadReport(chatId, btn) {
-      const textEl = btn.closest('.chat-msg').querySelector('.msg-text');
-      const text = textEl.textContent;
-      const blob = new Blob([text], { type: 'text/markdown' });
-      const ts = new Date().toISOString().replace(/[-:T]/g, m => m === 'T' ? '-' : '').slice(0, 15);
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `skitter-${chatId}-${ts}.md`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
-
-    /* ═══════════════════════════════════════════
-       Render — Kanban Board
-       ═══════════════════════════════════════════ */
-    function renderKanban() {
-      const kanban = document.getElementById('kanban');
-      const session = state.jobs.get(state.selectedSessionId);
-
-      if (!session) {
-        kanban.innerHTML = `<div class="kanban-empty">
-          <div class="empty-icon">&#9670;</div>
-          <div class="empty-text">${state.jobs.size === 0 ? 'Waiting for sessions' : 'Select a session'}</div>
-          <div class="empty-hint">${state.jobs.size === 0 ? 'Type a message in the sidebar to get started' : ''}</div>
-        </div>`;
-        clearEdges();
-        return;
-      }
-
-      const tasks = Object.values(session.tasks);
-      const pending = tasks.filter(t => t.status === 'pending');
-      const running = tasks.filter(t => t.status === 'running');
-      const done = tasks.filter(t => t.status === 'done');
-
-      // Session-level usage summary
-      const sessionTotals = getJobUsageTotals(state.selectedSessionId);
-      const usageBar = document.querySelector('.job-usage-bar');
-      if (usageBar) usageBar.remove();
-      if (sessionTotals) {
-        const bar = document.createElement('div');
-        bar.className = 'job-usage-bar';
-        bar.innerHTML = `<span>IN <span class="val">${fmtTokens(sessionTotals.input_tokens)}</span></span>`
-          + `<span>OUT <span class="val">${fmtTokens(sessionTotals.output_tokens)}</span></span>`
-          + `<span>TOTAL <span class="val">${fmtTokens(sessionTotals.input_tokens + sessionTotals.output_tokens)}</span></span>`
-          + `<span>COST <span class="val" style="color:var(--accent-amber)">$${sessionTotals.cost_usd.toFixed(4)}</span></span>`;
-        kanban.parentElement.insertBefore(bar, kanban);
-      }
-
-      const stopAllBtn = running.length > 0
-        ? `<button class="stop-all-btn" onclick="publishCancelAll('${esc(state.selectedSessionId)}')">STOP ALL</button>`
-        : '';
-
-      kanban.innerHTML = `
-        <div class="kanban-column">
-          <div class="column-header"><span class="column-dot pending"></span><h3>PENDING</h3><span class="column-count">${pending.length}</span></div>
-          <div class="column-body">${pending.map(t => renderCard(t, session)).join('')}</div>
-        </div>
-        <div class="kanban-column">
-          <div class="column-header"><span class="column-dot running"></span><h3>RUNNING</h3><span class="column-count">${running.length}</span>${stopAllBtn}</div>
-          <div class="column-body">${running.map(t => renderCard(t, session)).join('')}</div>
-        </div>
-        <div class="kanban-column">
-          <div class="column-header"><span class="column-dot done"></span><h3>DONE</h3><span class="column-count">${done.length}</span></div>
-          <div class="column-body">${done.map(t => renderCard(t, session)).join('')}</div>
-        </div>
-      `;
-
-      kanban.querySelectorAll('.task-card').forEach(card => {
-        card.addEventListener('click', () => {
-          state.selectedTaskId = card.dataset.taskId;
-          renderKanbanSelection();
-          renderDetail();
-        });
-      });
-
-      renderKanbanSelection();
-      scheduleEdgeDraw();
-    }
-
-    function renderCard(task, session) {
-      const sessionId = session.session_id;
-      let statusClass = 'status-' + task.status;
-      const selected = task.id === state.selectedTaskId;
-
-      // Worker status for running tasks
-      let workerDot = '';
-      let streamIndicator = '';
-      let streamPreview = '';
-      if (task.status === 'running') {
-        const ws = state.workerStatus.get(`${sessionId}/${task.task_id}`);
-        if (ws === 'alive') workerDot = '<span class="worker-dot alive"></span>';
-        else if (ws === 'dead') workerDot = '<span class="worker-dot dead"></span>';
-        else if (ws === 'done') workerDot = '<span class="worker-dot wdone"></span>';
-
-        // Streaming indicator
-        const hasChunks = state.streamChunks.has(`${sessionId}/${task.task_id}`);
-        if (hasChunks) {
-          streamIndicator = '<span class="stream-dot"></span>';
-          const lastText = getLatestStreamText(sessionId, task);
-          if (lastText) {
-            streamPreview = `<div class="card-stream-preview">${esc(truncate(lastText, 60))}</div>`;
-          }
-        }
-      }
-
-      const desc = truncate(task.description, 100);
-
-      const usage = getUsageForTask(sessionId, task);
-      let footerHtml = '<div class="card-footer">';
-      if (usage && usage.usage) {
-        const total = (usage.usage.input_tokens || 0) + (usage.usage.output_tokens || 0);
-        footerHtml += `<span class="card-tokens">${fmtTokens(total)} tok</span>`;
-      }
-      if (usage && usage.cost_usd != null) {
-        footerHtml += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
-      }
-      if (task.status === 'running') {
-        footerHtml += `<button class="stop-btn" data-task-id="${esc(task.task_id)}" data-session-id="${esc(sessionId)}" onclick="event.stopPropagation(); publishCancel('${esc(sessionId)}','${esc(task.task_id)}','User stopped task')">STOP</button>`;
-      }
-      footerHtml += '</div>';
-
-      return `<div class="task-card ${statusClass}${selected ? ' selected' : ''}" data-task-id="${esc(task.id)}">
-        <div class="card-top">
-          <span class="card-task-id">${streamIndicator}${esc(task.id)}</span>
-          ${task.model ? `<span class="card-model">${esc(task.model)}</span>` : ''}
-        </div>
-        <div class="card-agent">${workerDot}${esc(task.agent)}</div>
-        <div class="card-desc">${esc(desc)}</div>
-        ${streamPreview}
-        ${footerHtml}
-      </div>`;
-    }
-
-    function renderKanbanSelection() {
-      document.querySelectorAll('.task-card').forEach(card => {
-        card.classList.toggle('selected', card.dataset.taskId === state.selectedTaskId);
-      });
-    }
-
-    /* ═══════════════════════════════════════════
-       Render — DAG Edges
-       ═══════════════════════════════════════════ */
-    let edgeDrawPending = false;
-    function scheduleEdgeDraw() {
-      if (!edgeDrawPending) {
-        edgeDrawPending = true;
-        requestAnimationFrame(() => { drawEdges(); edgeDrawPending = false; });
-      }
-    }
-
-    function clearEdges() {
-      const svg = document.getElementById('dag-svg');
-      svg.innerHTML = '';
-    }
-
-    function drawEdges() {
-      const svg = document.getElementById('dag-svg');
-      const container = document.getElementById('kanban-wrapper');
-      svg.innerHTML = '';
-
-      const session = state.jobs.get(state.selectedSessionId);
-      if (!session) return;
-
-      const containerRect = container.getBoundingClientRect();
-      svg.setAttribute('width', container.scrollWidth);
-      svg.setAttribute('height', container.scrollHeight);
-      svg.style.width = container.scrollWidth + 'px';
-      svg.style.height = container.scrollHeight + 'px';
-
-      // Arrowhead marker
-      const defs = document.createElementNS(SVG_NS, 'defs');
-      const marker = document.createElementNS(SVG_NS, 'marker');
-      marker.setAttribute('id', 'arrow');
-      marker.setAttribute('markerWidth', '7');
-      marker.setAttribute('markerHeight', '5');
-      marker.setAttribute('refX', '7');
-      marker.setAttribute('refY', '2.5');
-      marker.setAttribute('orient', 'auto');
-      const poly = document.createElementNS(SVG_NS, 'polygon');
-      poly.setAttribute('points', '0 0, 7 2.5, 0 5');
-      poly.setAttribute('fill', 'rgba(100, 116, 139, 0.45)');
-      marker.appendChild(poly);
-      defs.appendChild(marker);
-      svg.appendChild(defs);
-
-      for (const [taskId, task] of Object.entries(session.tasks)) {
-        for (const depId of (task.needs || [])) {
-          const srcEl = document.querySelector(`.task-card[data-task-id="${CSS.escape(depId)}"]`);
-          const tgtEl = document.querySelector(`.task-card[data-task-id="${CSS.escape(taskId)}"]`);
-          if (!srcEl || !tgtEl) continue;
-
-          const srcRect = srcEl.getBoundingClientRect();
-          const tgtRect = tgtEl.getBoundingClientRect();
-
-          const x1 = srcRect.right - containerRect.left + container.scrollLeft;
-          const y1 = srcRect.top + srcRect.height / 2 - containerRect.top + container.scrollTop;
-          const x2 = tgtRect.left - containerRect.left + container.scrollLeft;
-          const y2 = tgtRect.top + tgtRect.height / 2 - containerRect.top + container.scrollTop;
-
-          const path = document.createElementNS(SVG_NS, 'path');
-
-          if (x2 - x1 < 20) {
-            // Same or nearby column — route around
-            const offset = 50;
-            const midX = Math.max(x1, x2) + offset;
-            path.setAttribute('d', `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`);
-          } else {
-            const dx = (x2 - x1) * 0.4;
-            path.setAttribute('d', `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
-          }
-
-          path.setAttribute('stroke', 'rgba(100, 116, 139, 0.3)');
-          path.setAttribute('stroke-width', '1.5');
-          path.setAttribute('fill', 'none');
-          path.setAttribute('stroke-dasharray', '4 3');
-          path.setAttribute('marker-end', 'url(#arrow)');
-          svg.appendChild(path);
-        }
-      }
-    }
-
-    /* ═══════════════════════════════════════════
-       Render — Detail Panel
-       ═══════════════════════════════════════════ */
-    function renderDetail() {
-      const panel = document.getElementById('detail-panel');
-      const inner = document.getElementById('detail-inner');
-      const session = state.jobs.get(state.selectedSessionId);
-
-      if (!session || !state.selectedTaskId) {
-        panel.classList.add('hidden');
-        return;
-      }
-
-      const task = session.tasks[state.selectedTaskId];
-      if (!task) {
-        panel.classList.add('hidden');
-        return;
-      }
-
-      panel.classList.remove('hidden');
-      const result = getResultForTask(state.selectedSessionId, task);
-
-      let statusClass = 'status-' + task.status;
-
-      const stopBtn = task.status === 'running'
-        ? `<button class="stop-btn" onclick="publishCancel('${esc(state.selectedSessionId)}','${esc(task.task_id)}','User stopped task')">STOP TASK</button>`
-        : '';
-
-      let html = `<div class="detail-header">
-        <h2>${esc(task.id)}</h2>
-        <span class="detail-badge agent">${esc(task.agent)}</span>
-        ${task.model ? `<span class="detail-badge model">${esc(task.model)}</span>` : ''}
-        <span class="detail-badge ${statusClass}">${esc(task.status)}</span>
-        ${stopBtn}
-        <button class="detail-close" onclick="closeDetail()">&times; close</button>
-      </div>`;
-
-      // Description
-      html += `<div class="detail-section">
-        <div class="detail-section-label">Description</div>
-        <div class="detail-text">${esc(task.description)}</div>
-      </div>`;
-
-      // Live streaming output (for running tasks)
-      const streamKey = `${state.selectedSessionId}/${task.task_id}`;
-      const chunks = state.streamChunks.get(streamKey);
-      if (task.status === 'running' && chunks) {
-        html += `<div class="detail-section">
-          <div class="detail-section-label"><span class="stream-dot"></span> Live Output</div>`;
-
-        if (chunks && chunks.length > 0) {
-          let streamHtml = '';
-          // Show last 50 chunks
-          const recent = chunks.slice(-50);
-          for (const c of recent) {
-            if (c.type === 'text') {
-              streamHtml += esc(c.content);
-            } else if (c.type === 'tool_use') {
-              streamHtml += `<span class="chunk-tool">[${esc(c.content)}]</span>\n`;
-            } else if (c.type === 'tool_result') {
-              streamHtml += `<span class="chunk-tool">  → ${esc(truncate(c.content, 150))}</span>\n`;
-            } else if (c.type === 'error') {
-              streamHtml += `<span class="chunk-error">[ERROR: ${esc(c.content)}]</span>\n`;
-            }
-          }
-          html += `<div class="detail-stream-output">${streamHtml}</div>`;
-        }
-
-        html += `</div>`;
-      }
-
-      // Result
-      if (result) {
-        html += `<div class="detail-section">
-          <div class="detail-section-label">Result</div>
-          <div class="detail-result-box"><div class="detail-text">${esc(result)}</div></div>
-        </div>`;
-      }
-
-      // Dependencies
-      if (task.needs && task.needs.length > 0) {
-        html += `<div class="detail-section">
-          <div class="detail-section-label">Dependencies</div>
-          <div class="detail-deps">${task.needs.map(d =>
-            `<span class="detail-dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`
-          ).join('')}</div>
-        </div>`;
-      }
-
-      // Usage
-      const usage = getUsageForTask(state.selectedSessionId, task);
-      if (usage && usage.usage) {
-        const u = usage.usage;
-        html += `<div class="detail-section">
-          <div class="detail-section-label">Token Usage</div>
-          <div class="detail-usage">
-            <div class="usage-stat"><div class="stat-label">Input</div><div class="stat-value">${fmtTokens(u.input_tokens)}</div></div>
-            <div class="usage-stat"><div class="stat-label">Output</div><div class="stat-value">${fmtTokens(u.output_tokens)}</div></div>
-            <div class="usage-stat"><div class="stat-label">Cache Read</div><div class="stat-value">${fmtTokens(u.cache_read_input_tokens)}</div></div>
-            <div class="usage-stat"><div class="stat-label">Cache Write</div><div class="stat-value">${fmtTokens(u.cache_creation_input_tokens)}</div></div>
-            ${usage.cost_usd != null ? `<div class="usage-stat"><div class="stat-label">Cost</div><div class="stat-value cost">$${usage.cost_usd.toFixed(4)}</div></div>` : ''}
-          </div>
-        </div>`;
-      }
-
-      // Meta
-      html += `<div class="detail-section">
-        <div class="detail-meta">
-          <span>task_id: ${esc(task.task_id)}</span>
-        </div>
-      </div>`;
-
-      inner.innerHTML = html;
-
-      // Wire up dependency tag clicks
-      inner.querySelectorAll('.detail-dep-tag').forEach(tag => {
-        tag.addEventListener('click', () => {
-          state.selectedTaskId = tag.dataset.dep;
-          renderKanbanSelection();
-          renderDetail();
-        });
-      });
-    }
-
-    function closeDetail() {
-      state.selectedTaskId = null;
-      document.getElementById('detail-panel').classList.add('hidden');
-      renderKanbanSelection();
-    }
-
-    /* ═══════════════════════════════════════════
-       Render — All
-       ═══════════════════════════════════════════ */
-    function renderAll() {
-      renderSessionList();
-      renderChatPanel();
-      renderKanban();
-      renderDetail();
-    }
-
-    /* ═══════════════════════════════════════════
-       Compose — Submit Requests
-       ═══════════════════════════════════════════ */
-    function generateSessionId() {
-      return 'dash-' + crypto.randomUUID().slice(0, 8);
-    }
-
+    // --- Send ---
     function sendMessage(text) {
       text = text.trim();
       if (!text || !mqttClient || !state.connected) return;
+      let agentId = '', pipelineId = '', vars = {};
 
-      let agentId = '';
-      let pipelineId = '';
-      let pipelineVars = {};
-
-      // Slash commands override dropdown
       if (text.startsWith('/agent ')) {
-        const parts = text.split(/\s+/, 2);
-        agentId = parts[1] || '';
-        text = text.slice(('/agent ' + agentId).length).trim();
+        const parts = text.split(/\s+/, 2); agentId = parts[1] || ''; text = text.slice(('/agent ' + agentId).length).trim();
         if (!agentId || !text) return;
       } else if (text.startsWith('/pipeline ')) {
-        const parts = text.split(/\s+/);
-        pipelineId = parts[1] || '';
-        for (let i = 2; i < parts.length; i++) {
-          if (parts[i] === '--var' && i + 1 < parts.length) {
-            const kv = parts[++i];
-            const eq = kv.indexOf('=');
-            if (eq > 0) pipelineVars[kv.slice(0, eq)] = kv.slice(eq + 1);
-          }
-        }
-        if (!pipelineId) return;
-        if (!text) text = `Pipeline '${pipelineId}'`;
+        const parts = text.split(/\s+/); pipelineId = parts[1] || '';
+        for (let i = 2; i < parts.length; i++) if (parts[i] === '--var' && i+1 < parts.length) { const kv = parts[++i], eq = kv.indexOf('='); if (eq > 0) vars[kv.slice(0,eq)] = kv.slice(eq+1); }
+        if (!pipelineId) return; text = text || `Pipeline '${pipelineId}'`;
       } else {
-        // Use dropdown selection
         const target = document.getElementById('compose-target').value;
         if (target.startsWith('agent:')) agentId = target.slice(6);
         else if (target.startsWith('pipeline:')) pipelineId = target.slice(9);
       }
-
       if (!agentId && !pipelineId) return;
 
-      // Reuse active session, or generate new
-      let sessionId = null;
-      if (state.selectedSessionId) {
-        const session = state.jobs.get(state.selectedSessionId);
-        if (session && jobIsActive(session)) {
-          sessionId = state.selectedSessionId;
-        }
-      }
-      if (!sessionId) sessionId = generateSessionId();
-
-      const org = 'skitter', unit = 'default';
-      const mqttSession = crypto.randomUUID().slice(0, 8);
-      const replyTopic = `$a2a/v1/reply/${org}/${unit}/dashboard/${mqttSession}`;
-      const msg = {
-        text,
-        sender: 'dashboard',
-        session_id: sessionId,
-        timestamp: Date.now() / 1000,
-      };
+      const sid = 'dash-' + crypto.randomUUID().slice(0, 8);
+      const replyTopic = `$a2a/v1/reply/skitter/default/dashboard/${crypto.randomUUID().slice(0,8)}`;
+      const msg = { text, sender: 'dashboard', session_id: sid, timestamp: Date.now() / 1000 };
       if (agentId) msg.agent_id = agentId;
-      if (pipelineId) {
-        msg.pipeline_id = pipelineId;
-        msg.pipeline_vars = pipelineVars;
-      }
+      if (pipelineId) { msg.pipeline_id = pipelineId; msg.pipeline_vars = vars; }
 
-      mqttClient.publish(`$a2a/v1/request/${org}/${unit}/coordinator`, JSON.stringify(msg), {
-        qos: 1,
-        properties: {
-          responseTopic: replyTopic,
-          correlationData: Buffer.from(sessionId),
-        },
+      mqttClient.publish('$a2a/v1/request/skitter/default/coordinator', JSON.stringify(msg), {
+        qos: 1, properties: { responseTopic: replyTopic, correlationData: Buffer.from(sid) },
       });
-
-      // Select this session and clear input
-      state.selectedSessionId = sessionId;
+      state.selectedSessionId = sid;
       document.getElementById('compose-input').value = '';
       renderAll();
     }
 
-    function renderComposeSelector() {
+    // --- Render ---
+    function renderConn() {
+      const dot = document.getElementById('conn-dot');
+      dot.className = 'conn-dot' + (state.connected ? ' on' : '');
+      dot.title = state.connected ? 'Connected' : 'Disconnected';
+      document.getElementById('compose').classList.toggle('disabled', !state.connected);
+    }
+
+    function renderSessions() {
+      const el = document.getElementById('panel-sessions');
+      if (state.sessions.size === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No sessions yet</span></div>'; return; }
+      let h = '';
+      for (const [sid, s] of state.sessions) {
+        const active = isActive(s);
+        h += `<div class="sess-item${sid === state.selectedSessionId ? ' active' : ''}" data-sid="${esc(sid)}">
+          <div class="sess-id"><span class="sess-dot ${active ? 'running' : 'done'}"></span>${esc(sid)}</div>
+          <div class="sess-label">${esc(trunc(s.label || '', 50))}</div>
+        </div>`;
+      }
+      el.innerHTML = h;
+      el.querySelectorAll('.sess-item').forEach(el => el.addEventListener('click', () => {
+        state.selectedSessionId = el.dataset.sid; state.selectedTaskId = null; renderAll();
+      }));
+    }
+
+    function renderAgents() {
+      const el = document.getElementById('panel-agents');
+      if (state.agentCards.size === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No agents discovered</span></div>'; return; }
+      let h = '';
+      for (const [id, c] of state.agentCards) {
+        h += `<div class="config-item">
+          <div class="config-name">${esc(id)}${c.model ? `<span class="config-badge">${esc(c.model)}</span>` : ''}</div>
+          <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
+        </div>`;
+      }
+      el.innerHTML = h;
+    }
+
+    function renderPipelines() {
+      const el = document.getElementById('panel-pipelines');
+      // Pipelines aren't discoverable via MQTT yet — show placeholder if empty
+      if (state.pipelineCards.size === 0) {
+        el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">Use /pipeline &lt;id&gt; --var k=v in compose</span></div>';
+        return;
+      }
+    }
+
+    function renderHeader() {
+      const hdr = document.getElementById('main-hdr');
+      const s = state.sessions.get(state.selectedSessionId);
+      if (!s) { hdr.innerHTML = '<h2 id="hdr-title" style="color:var(--text-dim)">No session selected</h2>'; return; }
+
+      const type = s.pipeline_id ? 'pipeline' : 'agent';
+      const typeLabel = s.pipeline_id || s.agent_id || '';
+      const usage = sessionUsage(state.selectedSessionId);
+      const running = Object.values(s.tasks).filter(t => t.status === 'running');
+      const stopAll = running.length > 0 ? `<button class="stop-btn" onclick="cancelAll('${esc(state.selectedSessionId)}')">Stop all</button>` : '';
+
+      let usageHtml = '';
+      if (usage) {
+        usageHtml = `<div class="usage-bar">
+          <span>In <span class="val">${fmtTok(usage.input)}</span></span>
+          <span>Out <span class="val">${fmtTok(usage.output)}</span></span>
+          <span class="cost">$${usage.cost.toFixed(4)}</span>
+        </div>`;
+      }
+
+      hdr.innerHTML = `<h2>${esc(state.selectedSessionId)}</h2>
+        <span class="badge badge-${type}">${esc(typeLabel)}</span>
+        ${stopAll}${usageHtml}`;
+    }
+
+    function renderTasks() {
+      const area = document.getElementById('task-area');
+      const s = state.sessions.get(state.selectedSessionId);
+      if (!s) { area.innerHTML = '<div class="empty"><div class="empty-title">Waiting for sessions</div><div class="empty-hint">Send a request from the sidebar</div></div>'; return; }
+
+      const tasks = Object.values(s.tasks);
+      const pending = tasks.filter(t => t.status === 'pending');
+      const running = tasks.filter(t => t.status === 'running');
+      const done = tasks.filter(t => t.status === 'done');
+      const sid = state.selectedSessionId;
+
+      function card(t) {
+        const sel = t.id === state.selectedTaskId;
+        let workerDot = '', streamInd = '', preview = '';
+        if (t.status === 'running') {
+          const ws = state.workerStatus.get(`${sid}/${t.task_id}`);
+          if (ws === 'alive') workerDot = '<span class="worker-dot alive"></span>';
+          else if (ws === 'dead') workerDot = '<span class="worker-dot dead"></span>';
+          const hasChunks = state.streamChunks.has(`${sid}/${t.task_id}`);
+          if (hasChunks) {
+            streamInd = '<span class="stream-dot"></span> ';
+            const lt = latestStream(sid, t);
+            if (lt) preview = `<div class="card-preview">${esc(trunc(lt, 60))}</div>`;
+          }
+        }
+        const usage = state.taskUsage.get(`${sid}/${t.task_id}`);
+        let foot = '<div class="card-foot">';
+        if (usage && usage.usage) foot += `<span class="card-tokens">${fmtTok((usage.usage.input_tokens||0)+(usage.usage.output_tokens||0))} tok</span>`;
+        if (usage && usage.cost_usd != null) foot += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
+        if (t.status === 'running') foot += `<button class="stop-btn" onclick="event.stopPropagation();cancelTask('${esc(sid)}','${esc(t.task_id)}')">Stop</button>`;
+        foot += '</div>';
+
+        return `<div class="card ${t.status}${sel ? ' selected' : ''}" data-tid="${esc(t.id)}">
+          <div class="card-top"><span class="card-id">${streamInd}${esc(t.id)}</span>${t.model ? `<span class="card-model">${esc(t.model)}</span>` : ''}</div>
+          <div class="card-agent">${workerDot}${esc(t.agent)}</div>
+          <div class="card-desc">${esc(trunc(t.description, 100))}</div>
+          ${preview}${foot}
+        </div>`;
+      }
+
+      area.innerHTML = `<div class="task-grid">
+        <div><div class="col-hdr"><span class="col-dot pending"></span><h3>Pending</h3><span class="cnt">${pending.length}</span></div><div class="task-col">${pending.map(card).join('')}</div></div>
+        <div><div class="col-hdr"><span class="col-dot running"></span><h3>Running</h3><span class="cnt">${running.length}</span></div><div class="task-col">${running.map(card).join('')}</div></div>
+        <div><div class="col-hdr"><span class="col-dot done"></span><h3>Done</h3><span class="cnt">${done.length}</span></div><div class="task-col">${done.map(card).join('')}</div></div>
+      </div>`;
+
+      area.querySelectorAll('.card').forEach(c => c.addEventListener('click', () => {
+        state.selectedTaskId = c.dataset.tid; renderTaskSelection(); renderDetail();
+      }));
+      renderTaskSelection();
+    }
+
+    function renderTaskSelection() {
+      document.querySelectorAll('.card').forEach(c => c.classList.toggle('selected', c.dataset.tid === state.selectedTaskId));
+    }
+
+    function renderDetail() {
+      const panel = document.getElementById('detail');
+      const inner = document.getElementById('detail-inner');
+      const s = state.sessions.get(state.selectedSessionId);
+      if (!s || !state.selectedTaskId) { panel.classList.remove('open'); return; }
+      const t = s.tasks[state.selectedTaskId];
+      if (!t) { panel.classList.remove('open'); return; }
+      panel.classList.add('open');
+
+      const sid = state.selectedSessionId;
+      const result = state.taskResults.get(`${sid}/${t.task_id}`) || null;
+      const stopBtn = t.status === 'running' ? `<button class="stop-btn" onclick="cancelTask('${esc(sid)}','${esc(t.task_id)}')">Stop</button>` : '';
+
+      let h = `<div class="det-hdr">
+        <h2>${esc(t.id)}</h2>
+        <span class="config-badge">${esc(t.agent)}</span>
+        ${t.model ? `<span class="card-model">${esc(t.model)}</span>` : ''}
+        <span class="badge-status ${t.status}">${esc(t.status)}</span>
+        ${stopBtn}
+        <button class="det-close" onclick="closeDetail()">Close</button>
+      </div>`;
+
+      h += `<div class="det-section"><div class="det-label">Description</div><div class="det-text">${esc(t.description)}</div></div>`;
+
+      // Live stream
+      const chunks = state.streamChunks.get(`${sid}/${t.task_id}`);
+      if (t.status === 'running' && chunks && chunks.length) {
+        let sh = '';
+        for (const c of chunks.slice(-50)) {
+          if (c.type === 'text') sh += esc(c.content);
+          else if (c.type === 'tool_use') sh += `<span class="tool">[${esc(c.content)}]</span>\n`;
+          else if (c.type === 'tool_result') sh += `<span class="tool">  \u2192 ${esc(trunc(c.content, 150))}</span>\n`;
+          else if (c.type === 'error') sh += `<span class="err">[ERROR: ${esc(c.content)}]</span>\n`;
+        }
+        h += `<div class="det-section"><div class="det-label"><span class="stream-dot"></span> Live Output</div><div class="det-stream">${sh}</div></div>`;
+      }
+
+      if (result) h += `<div class="det-section"><div class="det-label">Result</div><div class="det-box"><div class="det-text">${esc(result)}</div></div></div>`;
+
+      if (t.needs && t.needs.length) {
+        h += `<div class="det-section"><div class="det-label">Dependencies</div><div class="det-deps">${t.needs.map(d => `<span class="dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`).join('')}</div></div>`;
+      }
+
+      const usage = state.taskUsage.get(`${sid}/${t.task_id}`);
+      if (usage && usage.usage) {
+        const u = usage.usage;
+        h += `<div class="det-section"><div class="det-label">Usage</div><div class="det-usage">
+          <div class="ustat"><div class="ustat-label">Input</div><div class="ustat-val">${fmtTok(u.input_tokens)}</div></div>
+          <div class="ustat"><div class="ustat-label">Output</div><div class="ustat-val">${fmtTok(u.output_tokens)}</div></div>
+          <div class="ustat"><div class="ustat-label">Cache Read</div><div class="ustat-val">${fmtTok(u.cache_read_input_tokens)}</div></div>
+          <div class="ustat"><div class="ustat-label">Cache Write</div><div class="ustat-val">${fmtTok(u.cache_creation_input_tokens)}</div></div>
+          ${usage.cost_usd != null ? `<div class="ustat"><div class="ustat-label">Cost</div><div class="ustat-val cost">$${usage.cost_usd.toFixed(4)}</div></div>` : ''}
+        </div></div>`;
+      }
+
+      h += `<div class="det-section"><div class="det-meta">task_id: ${esc(t.task_id)}</div></div>`;
+      inner.innerHTML = h;
+
+      inner.querySelectorAll('.dep-tag').forEach(tag => tag.addEventListener('click', () => {
+        state.selectedTaskId = tag.dataset.dep; renderTaskSelection(); renderDetail();
+      }));
+    }
+
+    function closeDetail() { state.selectedTaskId = null; document.getElementById('detail').classList.remove('open'); renderTaskSelection(); }
+
+    function renderSelector() {
       const sel = document.getElementById('compose-target');
       const prev = sel.value;
       sel.innerHTML = '';
-      // Agents
-      for (const [id, card] of state.agentCards) {
+      for (const [id, c] of state.agentCards) {
         const opt = document.createElement('option');
         opt.value = `agent:${id}`;
-        opt.textContent = `agent: ${id}` + (card.name ? ` — ${card.name}` : '');
+        opt.textContent = `${id}${c.name ? ' \u2014 ' + c.name : ''}`;
         sel.appendChild(opt);
       }
-      // Restore previous selection if still valid
-      if (prev && sel.querySelector(`option[value="${prev}"]`)) {
-        sel.value = prev;
-      }
+      if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
     }
 
-    function updateComposeState() {
-      const bar = document.getElementById('compose-bar');
-      bar.classList.toggle('disabled', !state.connected);
-    }
+    function renderAll() { renderSessions(); renderHeader(); renderTasks(); renderDetail(); }
 
-    // Wire up compose UI
-    document.getElementById('compose-send').addEventListener('click', () => {
-      sendMessage(document.getElementById('compose-input').value);
+    // --- Tab switching ---
+    document.querySelectorAll('.side-tab').forEach(tab => tab.addEventListener('click', () => {
+      document.querySelectorAll('.side-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.side-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    }));
+
+    // --- Compose wiring ---
+    document.getElementById('compose-send').addEventListener('click', () => sendMessage(document.getElementById('compose-input').value));
+    document.getElementById('compose-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(e.target.value); }
     });
 
-    document.getElementById('compose-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage(e.target.value);
-      }
-    });
-
-    document.getElementById('new-session-btn').addEventListener('click', () => {
-      state.selectedSessionId = null;
-      state.selectedTaskId = null;
-      document.getElementById('compose-input').focus();
-      renderAll();
-    });
-
-    /* ═══════════════════════════════════════════
-       Init
-       ═══════════════════════════════════════════ */
-    renderClock();
-    setInterval(renderClock, 1000);
-    renderAll();
+    // --- Init ---
     connect();
-
-    window.addEventListener('resize', scheduleEdgeDraw);
+    renderAll();
+    renderAgents();
+    renderPipelines();
   </script>
 </body>
 </html>

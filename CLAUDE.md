@@ -1,41 +1,43 @@
 # Skitter
 
-~1,500 lines of Python. MQTT-based personal AI assistant. Stateless coordinator manages task DAGs via an MQTT broker; independent workers handle AI reasoning via `claude-agent-sdk`.
+~1,500 lines of Python. MQTT-based personal AI assistant. Stateless supervisor spawns workers and handles joins via an MQTT broker; independent workers handle AI reasoning via `claude-agent-sdk` or `codex` CLI.
 
-Key files: `skitter/coordinator.py`, `skitter/worker.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `SOUL.md`, `docs/architecture.md`.
+Key files: `skitter/coordinator.py`, `skitter/worker.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/reload.py`, `SOUL.md`, `docs/architecture.md`.
 
 ## Architecture Essentials
 
-- **Zero-LLM coordinator** — never calls an LLM. It is a pure DAG executor: build graph, dispatch tasks, collect results, advance.
-- **A2A-over-MQTT** — all topics follow the A2A draft v0.1 scheme. MQTT v5 properties (Response Topic, Correlation Data) enable request/reply. Agents are discoverable via retained Agent Cards.
+- **Zero-LLM supervisor** — never calls an LLM. Organized as a `Coordinator` class with handler methods. Spawns workers for entry tasks, handles joins (multi-input), respawns on crash.
+- **Chain-based routing** — workers publish retained chain results for non-terminal tasks. Supervisor dispatches next task on chain result arrival — immediately for simple chains, after accumulating inputs for joins.
+- **Retained dispatch** — task dispatch uses retained MQTT messages (`state/dispatch/{task_id}`). Crash-proof: if supervisor dies between publish and spawn, retained message persists. Eliminates alive-triggered handshake.
+- **A2A-over-MQTT** — all topics follow the A2A draft v0.1 scheme. Event topics: `event/{org}/{unit}/{agent_id}/{event_type}`. Task IDs in payload, not topic. Agents discoverable via retained Agent Cards.
 - **MQTT as backbone** — retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
-- **Stateless recovery** — coordinator rebuilds from retained MQTT messages on restart.
-- **DAG execution** — pipeline templates define task graphs, coordinator spawns workers for ready tasks in parallel, advances graph as results arrive.
-- **QA is a pipeline concern** — coordinator has no built-in QA logic. Add reviewer/fact-checker nodes to your pipeline YAML with dependencies on work tasks.
-- **Predefined agents** — YAML definitions in `~/.skitter/agents/`. Pipeline tasks reference agents by ID; coordinator resolves defaults.
-- **Pipeline templates** — YAML DAGs in `~/.skitter/pipelines/`. Every request must include `pipeline_id`. Variables interpolated with `SafeFormatter`.
-- **Workers are subprocesses or Docker containers** — controlled by `SKITTER_WORKER_MODE` env var. Subprocess mode (default) uses `subprocess.Popen`; Docker mode runs containers on the `skitter` network.
+- **Stateless recovery** — supervisor rebuilds from retained MQTT messages (sessions + chain results + dispatch) on restart.
+- **QA is a pipeline concern** — supervisor has no built-in QA logic. Add reviewer/fact-checker nodes to your pipeline YAML with dependencies on work tasks.
+- **Predefined agents** — YAML definitions in `~/.skitter/agents/`. Pipeline tasks reference agents by ID; supervisor resolves defaults. Supports `runtime: claude|codex` and custom `workspace`.
+- **Pipeline templates** — YAML chains in `~/.skitter/pipelines/`. Tasks have `id`, `next`, `needs` fields. Variables interpolated with `SafeFormatter`.
+- **Multi-runtime workers** — `claude` (claude-agent-sdk, default) or `codex` (OpenAI Codex CLI, authenticated via `codex login` or `OPENAI_API_KEY`).
+- **Toolsmith agent** — meta-agent that creates/modifies agent and pipeline YAML at runtime, triggers reload via `python -m skitter.reload`.
+- **Workers are subprocesses or Docker containers** — controlled by `SKITTER_WORKER_MODE` env var. Docker mode passes both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`.
 
 ## Key Modules
 
 - `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`PipelineDef`/`PipelineTask` dataclasses, `SafeFormatter`, `write_examples()` for `skitter init`.
 - `skitter/agents_cli.py` — `skitter agents list/show` subcommands.
 - `skitter/pipeline_cli.py` — `skitter pipeline list/show/run` subcommands.
+- `skitter/reload.py` — Publishes reload signal to supervisor via MQTT.
 
 ## Current Limitations
 
 - No auth/TLS (localhost-only PoC)
 - Workers run with `bypassPermissions`
-- Concurrent same-`chat_id` messages overwrite
+- Concurrent same-`session_id` messages overwrite
 - Worker errors passed as normal results
 - No conversation memory across sessions
-- No dependency cycle detection
 
 ## Roadmap
 
 - Telegram bridge
 - Per-chat conversation history
-- Circular DAG detection
 - Worker timeouts and exponential backoff
 
 ---

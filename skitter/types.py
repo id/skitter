@@ -166,7 +166,7 @@ class StreamItem:
 class InboundMessage:
     text: str
     sender: str
-    chat_id: str
+    session_id: str
     timestamp: float = field(default_factory=time.time)
     pipeline_id: str = ""
     pipeline_vars: dict[str, str] = field(default_factory=dict)
@@ -176,7 +176,7 @@ class InboundMessage:
         d: dict = {
             "text": self.text,
             "sender": self.sender,
-            "chat_id": self.chat_id,
+            "session_id": self.session_id,
             "timestamp": self.timestamp,
         }
         if self.pipeline_id:
@@ -193,7 +193,7 @@ class InboundMessage:
         return cls(
             text=d["text"],
             sender=d["sender"],
-            chat_id=d["chat_id"],
+            session_id=d["session_id"],
             timestamp=d.get("timestamp", time.time()),
             pipeline_id=d.get("pipeline_id", ""),
             pipeline_vars=d.get("pipeline_vars", {}),
@@ -204,56 +204,71 @@ class InboundMessage:
 @dataclass
 class OutboundMessage:
     text: str
-    chat_id: str
+    session_id: str
 
     def to_json(self) -> str:
-        return json.dumps({"text": self.text, "chat_id": self.chat_id})
+        return json.dumps({"text": self.text, "session_id": self.session_id})
 
     @classmethod
     def from_json(cls, data: str) -> "OutboundMessage":
         d = json.loads(data)
-        return cls(text=d["text"], chat_id=d["chat_id"])
+        return cls(text=d["text"], session_id=d["session_id"])
 
 
 @dataclass
-class TaskMessage:
+class AgentMessage:
     task_id: str
-    chat_id: str
+    session_id: str
     description: str
     soul: str
     skills: str
     context: str = ""
     max_turns: int = 10
     model: str = ""
+    runtime: str = "claude"
+    next: str = ""
+    next_needs: list[str] = field(default_factory=list)
+    caller_reply_topic: str = ""
+    caller_correlation: str = ""
     timestamp: float = field(default_factory=time.time)
 
     def to_json(self) -> str:
         return json.dumps(
             {
                 "task_id": self.task_id,
-                "chat_id": self.chat_id,
+                "session_id": self.session_id,
                 "description": self.description,
                 "soul": self.soul,
                 "skills": self.skills,
                 "context": self.context,
                 "max_turns": self.max_turns,
                 "model": self.model,
+                "runtime": self.runtime,
+                "next": self.next,
+                "next_needs": self.next_needs,
+                "caller_reply_topic": self.caller_reply_topic,
+                "caller_correlation": self.caller_correlation,
                 "timestamp": self.timestamp,
             }
         )
 
     @classmethod
-    def from_json(cls, data: str) -> "TaskMessage":
+    def from_json(cls, data: str) -> "AgentMessage":
         d = json.loads(data)
         return cls(
             task_id=d["task_id"],
-            chat_id=d["chat_id"],
+            session_id=d["session_id"],
             description=d["description"],
             soul=d["soul"],
             skills=d["skills"],
             context=d.get("context", ""),
             max_turns=d.get("max_turns", 10),
             model=d.get("model", ""),
+            runtime=d.get("runtime", "claude"),
+            next=d.get("next", ""),
+            next_needs=d.get("next_needs", []),
+            caller_reply_topic=d.get("caller_reply_topic", ""),
+            caller_correlation=d.get("caller_correlation", ""),
             timestamp=d.get("timestamp", time.time()),
         )
 
@@ -261,7 +276,7 @@ class TaskMessage:
 @dataclass
 class CancelSignal:
     task_id: str
-    chat_id: str
+    session_id: str
     reason: str
     timestamp: float = field(default_factory=time.time)
 
@@ -269,7 +284,7 @@ class CancelSignal:
         return json.dumps(
             {
                 "task_id": self.task_id,
-                "chat_id": self.chat_id,
+                "session_id": self.session_id,
                 "reason": self.reason,
                 "timestamp": self.timestamp,
             }
@@ -280,79 +295,90 @@ class CancelSignal:
         d = json.loads(data)
         return cls(
             task_id=d["task_id"],
-            chat_id=d["chat_id"],
+            session_id=d["session_id"],
             reason=d["reason"],
             timestamp=d.get("timestamp", time.time()),
         )
 
 
 @dataclass
-class JobTask:
-    logical_id: str
+class SessionTask:
+    """Lightweight task record for status tracking and dashboard display."""
+
+    id: str
     task_id: str
     agent: str
     description: str
-    soul: str
-    skills: str
-    depends_on: list[str] = field(default_factory=list)
-    status: str = "pending"
-    max_turns: int = 10
     model: str = ""
+    status: str = "pending"
+    next: str = ""
+    needs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
-            "logical_id": self.logical_id,
+            "id": self.id,
             "task_id": self.task_id,
             "agent": self.agent,
             "description": self.description,
-            "soul": self.soul,
-            "skills": self.skills,
-            "depends_on": self.depends_on,
-            "status": self.status,
-            "max_turns": self.max_turns,
             "model": self.model,
+            "status": self.status,
+            "next": self.next,
+            "needs": self.needs,
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "JobTask":
+    def from_dict(cls, d: dict) -> "SessionTask":
         return cls(
-            logical_id=d["logical_id"],
+            id=d["id"],
             task_id=d["task_id"],
             agent=d["agent"],
             description=d["description"],
-            soul=d["soul"],
-            skills=d["skills"],
-            depends_on=d.get("depends_on", []),
-            status=d.get("status", "pending"),
-            max_turns=d.get("max_turns", 10),
             model=d.get("model", ""),
+            status=d.get("status", "pending"),
+            next=d.get("next", ""),
+            needs=d.get("needs", []),
         )
 
 
 @dataclass
-class JobSpec:
-    chat_id: str
-    original_text: str
-    tasks: dict[str, JobTask] = field(default_factory=dict)
-    results: dict[str, str] = field(default_factory=dict)
+class Session:
+    session_id: str
+    pipeline_id: str = ""
+    agent_id: str = ""
+    label: str = ""
+    variables: dict[str, str] = field(default_factory=dict)
+    caller_reply_topic: str = ""
+    caller_correlation: str = ""
+    tasks: dict[str, SessionTask] = field(default_factory=dict)
+    spawn_request_id: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
             {
-                "chat_id": self.chat_id,
-                "original_text": self.original_text,
+                "session_id": self.session_id,
+                "pipeline_id": self.pipeline_id,
+                "agent_id": self.agent_id,
+                "label": self.label,
+                "variables": self.variables,
+                "caller_reply_topic": self.caller_reply_topic,
+                "caller_correlation": self.caller_correlation,
                 "tasks": {k: v.to_dict() for k, v in self.tasks.items()},
-                "results": self.results,
+                "spawn_request_id": self.spawn_request_id,
             }
         )
 
     @classmethod
-    def from_json(cls, data: str) -> "JobSpec":
+    def from_json(cls, data: str) -> "Session":
         d = json.loads(data)
-        tasks = {k: JobTask.from_dict(v) for k, v in d.get("tasks", {}).items()}
+        tasks = {k: SessionTask.from_dict(v) for k, v in d.get("tasks", {}).items()}
         return cls(
-            chat_id=d["chat_id"],
-            original_text=d["original_text"],
+            session_id=d["session_id"],
+            pipeline_id=d.get("pipeline_id", ""),
+            agent_id=d.get("agent_id", ""),
+            label=d.get("label", ""),
+            variables=d.get("variables", {}),
+            caller_reply_topic=d.get("caller_reply_topic", ""),
+            caller_correlation=d.get("caller_correlation", ""),
             tasks=tasks,
-            results=d.get("results", {}),
+            spawn_request_id=d.get("spawn_request_id", ""),
         )

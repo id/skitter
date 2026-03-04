@@ -61,6 +61,8 @@ def cmd_show(agent_id: str) -> None:
         "skills": agent.skills,
         "model": agent.model,
         "max_turns": agent.max_turns,
+        "runtime": agent.runtime,
+        "workspace": agent.workspace,
     }
     # Remove empty fields for cleaner output
     data = {k: v for k, v in data.items() if v}
@@ -75,30 +77,30 @@ def cmd_run(agent_id: str, description: str) -> None:
         console.print(f"Available: {available}")
         sys.exit(1)
 
-    chat_id = f"agent-{uuid.uuid4().hex[:8]}"
+    session_id = f"agent-{uuid.uuid4().hex[:8]}"
     msg = InboundMessage(
         text=description,
         sender="cli",
-        chat_id=chat_id,
+        session_id=session_id,
         agent_id=agent_id,
     )
 
-    session_id = uuid.uuid4().hex[:12]
-    reply_t = topic_reply("cli", session_id)
+    mqtt_session = uuid.uuid4().hex[:12]
+    reply_t = topic_reply("cli", mqtt_session)
     coordinator_request = topic_request("coordinator")
 
     async def run_agent() -> None:
         async with aiomqtt.Client(
             MQTT_HOST,
             MQTT_PORT,
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/agent-cli-{session_id}",
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/agent-cli-{mqtt_session}",
             protocol=aiomqtt.ProtocolVersion.V5,
         ) as client:
             await client.subscribe(reply_t, qos=1)
 
             props = make_properties(
                 response_topic=reply_t,
-                correlation_data=chat_id,
+                correlation_data=session_id,
             )
             await client.publish(
                 coordinator_request,
@@ -106,9 +108,10 @@ def cmd_run(agent_id: str, description: str) -> None:
                 qos=1,
                 properties=props,
             )
-            console.print(f"Agent '{agent_id}' started as chat {chat_id}")
+            console.print(f"Agent '{agent_id}' started as session {session_id}")
             console.print("Waiting for result... (Ctrl+C to detach)\n")
 
+            seen_seqs: set[tuple[str, int]] = set()
             try:
                 async with asyncio.timeout(600.0):
                     async for mqtt_msg in client.messages:
@@ -120,9 +123,13 @@ def cmd_run(agent_id: str, description: str) -> None:
                         except Exception:
                             continue
 
-                        # Stream item
+                        # Stream item (with dedup for QoS 1 redelivery)
                         if "seq" in data and "type" in data:
                             item = StreamItem.from_json(payload)
+                            dedup_key = (item.task_id, item.seq)
+                            if dedup_key in seen_seqs:
+                                continue
+                            seen_seqs.add(dedup_key)
                             if item.type == "text":
                                 console.print(item.content, end="")
                             elif item.type == "tool_use":

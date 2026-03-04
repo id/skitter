@@ -60,10 +60,11 @@ def cmd_show(pipeline_id: str) -> None:
         "variables": pipeline.variables,
         "tasks": [
             {
-                "logical_id": t.logical_id,
+                "id": t.id,
                 "agent": t.agent,
                 "description": t.description,
-                "depends_on": t.depends_on,
+                "next": t.next,
+                "needs": t.needs,
             }
             for t in pipeline.tasks
         ],
@@ -89,7 +90,7 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
         )
         sys.exit(1)
 
-    chat_id = f"pipeline-{uuid.uuid4().hex[:8]}"
+    session_id = f"pipeline-{uuid.uuid4().hex[:8]}"
     description = f"Pipeline '{pipeline.name}'"
     if variables:
         var_str = ", ".join(f"{k}={v}" for k, v in variables.items())
@@ -98,20 +99,20 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
     msg = InboundMessage(
         text=description,
         sender="cli",
-        chat_id=chat_id,
+        session_id=session_id,
         pipeline_id=pipeline_id,
         pipeline_vars=variables,
     )
 
-    session_id = uuid.uuid4().hex[:12]
-    reply_t = topic_reply("cli", session_id)
+    mqtt_session = uuid.uuid4().hex[:12]
+    reply_t = topic_reply("cli", mqtt_session)
     coordinator_request = topic_request("coordinator")
 
     async def run_pipeline() -> None:
         async with aiomqtt.Client(
             MQTT_HOST,
             MQTT_PORT,
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/pipeline-cli-{session_id}",
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/pipeline-cli-{mqtt_session}",
             protocol=aiomqtt.ProtocolVersion.V5,
         ) as client:
             if wait:
@@ -119,7 +120,7 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
 
             props = make_properties(
                 response_topic=reply_t,
-                correlation_data=chat_id,
+                correlation_data=session_id,
             )
             await client.publish(
                 coordinator_request,
@@ -127,13 +128,14 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
                 qos=1,
                 properties=props,
             )
-            console.print(f"Pipeline '{pipeline_id}' submitted as chat {chat_id}")
+            console.print(f"Pipeline '{pipeline_id}' submitted as session {session_id}")
 
             if not wait:
                 return
 
             console.print("Waiting for result... (Ctrl+C to detach)\n")
 
+            seen_seqs: set[tuple[str, int]] = set()
             try:
                 async with asyncio.timeout(600.0):
                     async for mqtt_msg in client.messages:
@@ -145,9 +147,13 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
                         except Exception:
                             continue
 
-                        # Stream item
+                        # Stream item (with dedup for QoS 1 redelivery)
                         if "seq" in data and "type" in data:
                             item = StreamItem.from_json(payload)
+                            dedup_key = (item.task_id, item.seq)
+                            if dedup_key in seen_seqs:
+                                continue
+                            seen_seqs.add(dedup_key)
                             if item.type == "text":
                                 console.print(item.content, end="")
                             elif item.type == "tool_use":

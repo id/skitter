@@ -25,14 +25,17 @@ class AgentDef:
     skills: str = ""
     model: str = ""
     max_turns: int = 10
+    runtime: str = "claude"  # "claude" or "codex"
+    workspace: str = ""  # custom cwd for worker
 
 
 @dataclass
 class PipelineTask:
-    logical_id: str
+    id: str
     agent: str
     description: str
-    depends_on: list[str] = field(default_factory=list)
+    next: str = ""  # target task id, or "output" for terminal
+    needs: list[str] = field(default_factory=list)
     # Per-task overrides (empty = use agent default)
     soul: str = ""
     skills: str = ""
@@ -112,6 +115,8 @@ def load_agents() -> dict[str, AgentDef]:
                 skills=data.get("skills", ""),
                 model=data.get("model", ""),
                 max_turns=data.get("max_turns", 10),
+                runtime=data.get("runtime", "claude"),
+                workspace=data.get("workspace", ""),
             )
         except Exception as e:
             log.warning("Failed to load agent %s: %s", path.name, e)
@@ -130,18 +135,30 @@ def load_pipelines() -> dict[str, PipelineDef]:
             pipeline_id = path.stem
             tasks = []
             for t in data.get("tasks", []):
+                task_id = t.get("id", "")
+                needs = t.get("needs", [])
                 tasks.append(
                     PipelineTask(
-                        logical_id=t["logical_id"],
+                        id=task_id,
                         agent=t.get("agent", "worker"),
                         description=t.get("description", ""),
-                        depends_on=t.get("depends_on", []),
+                        next=t.get("next", ""),
+                        needs=needs,
                         soul=t.get("soul", ""),
                         skills=t.get("skills", ""),
                         model=t.get("model", ""),
                         max_turns=t.get("max_turns", 0),
                     )
                 )
+            # Auto-infer `next` from reverse dependency graph if absent
+            for t in tasks:
+                if not t.next:
+                    # Find tasks that list this task in their needs
+                    dependents = [other.id for other in tasks if t.id in other.needs]
+                    if len(dependents) == 1:
+                        t.next = dependents[0]
+                    elif len(dependents) == 0:
+                        t.next = "output"
             pipelines[pipeline_id] = PipelineDef(
                 id=pipeline_id,
                 name=data.get("name", pipeline_id),

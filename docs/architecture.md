@@ -2,131 +2,112 @@
 
 ## Design Principles
 
-1. **Zero-LLM coordinator.** The coordinator makes no AI calls. It is a pure DAG executor — build graph, dispatch tasks, collect results, advance. `claude_agent_sdk` is only imported by the worker process.
+1. **Zero-LLM supervisor.** The supervisor makes no AI calls. It spawns workers for entry tasks, handles joins, and respawns on crash. `claude_agent_sdk` is only imported by the worker process.
 
-2. **Stateless coordinator.** All state is derived from retained MQTT messages. If the coordinator crashes, it recovers jobs from the broker on restart and respawns interrupted workers.
+2. **Chain-based routing.** Workers publish retained chain results for non-terminal tasks. The supervisor dispatches the next task when chain results arrive — immediately for simple chains, after accumulating all inputs for joins.
 
-3. **MQTT v5 as the backbone.** The broker is the single source of truth. Retained messages act as durable storage for job specs and Agent Cards. LWT handles worker crash detection. MQTT v5 properties (Response Topic, Correlation Data) enable request/reply patterns without retained task messages.
+3. **Stateless supervisor.** All state is derived from retained MQTT messages. If the supervisor crashes, it recovers sessions, chain results, and dispatch state from the broker on restart.
 
-4. **A2A-over-MQTT.** All topics follow the A2A draft v0.1 scheme. Agents are discoverable via retained Agent Cards. Requests use JSON-RPC 2.0 envelopes with v5 correlation.
+4. **MQTT v5 as the backbone.** The broker is the single source of truth. Retained messages act as durable storage for sessions, chain results, and task dispatch. LWT handles worker crash detection.
 
-5. **QA is a pipeline concern.** The coordinator has no built-in QA logic. If you want fact-checking or review, add a reviewer task node to your pipeline that depends on the work task.
+5. **A2A-over-MQTT.** All topics follow the A2A draft v0.1 scheme. Agents are discoverable via retained Agent Cards. Requests use JSON-RPC 2.0 envelopes with v5 correlation.
+
+6. **QA is a pipeline concern.** The supervisor has no built-in QA logic. If you want fact-checking or review, add a reviewer task node to your pipeline that depends on the work task.
+
+7. **Multi-runtime workers.** Workers support `claude` (claude-agent-sdk) and `codex` (OpenAI Codex CLI) runtimes, selected per-agent via YAML config.
 
 ## A2A Topic Scheme
 
 ```
 $a2a/v1/
 ├── discovery/{org}/{unit}/{agent_id}           # Retained Agent Cards
-├── request/{org}/{unit}/{agent_id}             # Requests to agents (incl. coordinator)
+├── request/{org}/{unit}/{agent_id}             # Requests to agents (incl. supervisor)
 ├── request/{org}/{unit}/{agent_id}/cancel      # Cancel signal for agent
 ├── reply/{org}/{unit}/{agent_id}/{suffix}      # Replies (Response Topic, per-session)
-├── event/{org}/{unit}/workers/{task_id}        # Worker liveness (LWT)
-├── state/{org}/{unit}/jobs/{chat_id}           # Retained job spec (DAG state)
-└── state/{org}/{unit}/usage/{chat_id}/{task_id} # Usage tracking
+├── event/{org}/{unit}/{agent_id}/{event_type}  # Agent events (alive/done/dead)
+├── state/{org}/{unit}/sessions/{session_id}           # Retained session spec
+├── state/{org}/{unit}/dispatch/{task_id}              # Retained task dispatch
+├── state/{org}/{unit}/chain/{session_id}/{task_id}   # Retained chain results
+├── state/{org}/{unit}/usage/{session_id}/{task_id}   # Usage tracking
+└── control/{org}/{unit}/reload                 # Reload agents/pipelines signal
 ```
 
 Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A_ORG` / `SKITTER_A2A_UNIT`).
 
-## Request Lifecycle
+## Chain-Based Execution
 
-```mermaid
-stateDiagram-v2
-    [*] --> InboundRequest
-    InboundRequest --> JobBuilt
-    JobBuilt --> WorkersRunning
-    WorkersRunning --> WorkersRunning: advance graph
-    WorkersRunning --> Complete
-    Complete --> [*]
-```
-
-**States explained:**
-
-- **InboundRequest** — A2A request arrives with `agent_id` (direct call) or `pipeline_id` (DAG execution)
-- **JobBuilt** — Task graph is ready (single task for direct call, full DAG for pipeline)
-- **WorkersRunning** — Workers execute in parallel; as results arrive, newly unblocked tasks spawn
-- **Complete** — All tasks done, result routed to caller's Response Topic
-
-## Alive-Triggered Dispatch
-
-A2A forbids retained request/reply messages. Dispatch uses an alive-triggered handshake:
+### Simple Chain (linear pipeline)
 
 ```mermaid
 sequenceDiagram
-    participant C as Coordinator
+    participant S as Supervisor
+    participant W1 as Worker A
+    participant W2 as Worker B
+
+    S->>Broker: Retain dispatch for A
+    S->>W1: Spawn process
+    W1->>Broker: Read retained dispatch
+    W1->>W1: Run agent
+    W1->>Broker: Retain chain result (A)
+    Broker->>S: Chain result notification
+    S->>Broker: Retain dispatch for B
+    S->>W2: Spawn process
+    W2->>Broker: Read retained dispatch
+    W2->>W2: Run agent
+    W2->>Caller: TaskStatusUpdate (terminal)
+```
+
+Workers publish retained chain results for non-terminal tasks. The supervisor subscribes to chain results via wildcard, finds the next task from the source task's `next` field, and dispatches it.
+
+### Join (fan-in)
+
+```mermaid
+sequenceDiagram
+    participant S as Supervisor
+    participant W1 as Worker A
+    participant W2 as Worker B
+    participant WJ as Worker Join
+
+    S->>W1: Dispatch + Spawn A
+    S->>W2: Dispatch + Spawn B
+    W1->>Broker: Retain chain result (A)
+    W2->>Broker: Retain chain result (B)
+    Broker->>S: Chain result notifications
+    S->>S: All needs satisfied
+    S->>WJ: Dispatch + Spawn Join (context = A + B results)
+    WJ->>Caller: TaskStatusUpdate (terminal)
+```
+
+When a chain result arrives for a task whose `next` has multiple `needs`, the supervisor accumulates inputs and dispatches the join worker when all inputs are collected.
+
+### Direct-to-Caller Streaming
+
+Workers stream `StreamItem` directly to `task.caller_reply_topic`, eliminating stream forwarding from the supervisor.
+
+## Retained Dispatch
+
+Task dispatch uses retained MQTT messages for crash-proof delivery:
+
+```mermaid
+sequenceDiagram
+    participant S as Supervisor
     participant B as MQTT Broker
     participant W as Worker
 
-    C->>W: Spawn process
-    W->>B: Connect (LWT on event topic)
-    W->>B: Subscribe to request/{agent_id}
-    W->>B: Publish alive event
-    B->>C: Deliver alive event
-    C->>B: Publish task to request/{agent_id}<br/>(Response Topic + Correlation Data)
-    B->>W: Deliver task with v5 properties
-    W->>W: Run claude_agent_sdk query
-    W->>B: Stream items to Response Topic (QoS 0)
-    W->>B: TaskStatusUpdate to Response Topic (QoS 1)
-    B->>C: Deliver stream + status with Correlation Data
-    W->>B: Publish done event
+    S->>B: Publish retained dispatch to state/dispatch/{task_id}
+    S->>W: Spawn process
+    W->>B: Connect (LWT on event/{agent_id}/dead)
+    W->>B: Subscribe to state/dispatch/{task_id}
+    B->>W: Deliver retained dispatch (AgentMessage + routing)
+    W->>B: Clear retained dispatch
+    W->>W: Run agent (claude or codex runtime)
+    W->>Caller: Stream items directly (QoS 0)
+    W->>S: TaskStatusUpdate or chain result
+    W->>B: Publish event/{agent_id}/done
     W->>W: Exit
 ```
 
-The coordinator maintains `pending_dispatch: dict[task_id, (job, task)]` — queued until the worker's alive event arrives.
-
-## Token-by-Token Streaming
-
-Workers publish each text delta as a `StreamItem` (QoS 0) to the coordinator's Response Topic with the same Correlation Data. Tool use/result events are also streamed. The terminal `TaskStatusUpdate(state=COMPLETED)` is published at QoS 1.
-
-## DAG Execution
-
-Pipeline templates define task graphs. Tasks with no dependencies run in parallel. Every task — research, review, synthesis — is a regular agent node.
-
-```mermaid
-flowchart LR
-    subgraph Parallel fan-out with synthesis
-        A[research - sonnet] --> S[synthesize - writer]
-        B[analyze_code - sonnet] --> S
-        C[read_docs - haiku] --> S
-    end
-```
-
-Review, QA, and synthesis are all just pipeline tasks — add them as explicit nodes with dependencies:
-
-```mermaid
-flowchart LR
-    subgraph Pipeline with review
-        A[research - sonnet] --> R[review - sonnet]
-        B[research - sonnet] --> R
-        R --> S[synthesize - writer]
-    end
-```
-
-## Agent-to-Agent Discovery and Spawn
-
-Agents can discover peers via retained Agent Cards on `$a2a/v1/discovery/{org}/{unit}/+`. An agent can request the coordinator to spawn a peer:
-
-1. Agent publishes `tasks/spawn` request to coordinator's request topic
-2. Coordinator spawns the requested agent, dispatches task
-3. Result flows back to requesting agent's reply topic
-
-## Worker Workspaces
-
-Each worker gets `~/.skitter/workspaces/{task_id}/` as its working directory. Files persist after completion for downstream agents or users to inspect.
-
-## Agent Cards
-
-On startup, the coordinator publishes Agent Cards (retained) from `~/.skitter/agents/*.yaml`:
-
-```json
-{
-  "agent_id": "researcher",
-  "name": "Research Specialist",
-  "description": "Deep research with source citation",
-  "capabilities": ["tool_use"],
-  "model": "sonnet",
-  "max_turns": 15
-}
-```
+The dispatch payload wraps the `AgentMessage` with coordinator routing info (`reply_topic`, `correlation`). If the supervisor crashes between publish and spawn, the retained dispatch persists on the broker.
 
 ## Pipeline Templates
 
@@ -137,35 +118,92 @@ description: Multi-source research with fact-checking
 variables:
   - topic
 tasks:
-  - logical_id: research_web
+  - id: research_web
     agent: researcher
     description: "Research '{topic}' using web sources."
-    depends_on: []
-  - logical_id: research_academic
+    next: fact_check
+    needs: []
+  - id: research_academic
     agent: researcher
     description: "Research '{topic}' focusing on academic papers."
-    depends_on: []
-  - logical_id: fact_check
+    next: fact_check
+    needs: []
+  - id: fact_check
     agent: reviewer
     description: "Cross-reference findings about '{topic}'."
-    depends_on: [research_web, research_academic]
-  - logical_id: synthesize
+    next: synthesize
+    needs: [research_web, research_academic]
+  - id: synthesize
     agent: writer
-    description: "Combine all research findings about '{topic}' into a clear, coherent response."
-    depends_on: [fact_check]
+    description: "Combine all findings about '{topic}'."
+    next: output
+    needs: [fact_check]
 ```
+
+`next` is auto-inferred from the reverse dependency graph if absent.
+
+## Agent Definitions
+
+```yaml
+# ~/.skitter/agents/researcher.yaml
+name: Research Specialist
+description: Deep research with source citation
+soul: |
+  You are a research specialist.
+skills: |
+  Search broadly before going deep.
+model: sonnet
+max_turns: 15
+runtime: claude    # "claude" or "codex"
+workspace: ""      # custom cwd (default: ~/.skitter/workspaces/{task_id})
+```
+
+## Codex Runtime
+
+Workers support OpenAI's Codex CLI as an alternative runtime:
+- Set `runtime: codex` in agent YAML
+- Auth via `OPENAI_API_KEY` env var (inherited by subprocess)
+- Spawns `codex exec --json --full-auto "{prompt}"` with optional `--model`
+- Parses JSONL stdout for text and tool_use events
+
+## Toolsmith Agent
+
+A meta-agent that creates/modifies agent and pipeline YAML definitions at runtime:
+- Works in `~/.skitter/` directory
+- After writing files, runs `python -m skitter.reload` to notify the supervisor
+- Supervisor re-reads all YAML files and re-publishes Agent Cards
 
 ## Recovery
 
-On coordinator restart:
-1. Recover job specs from retained `$a2a/v1/state/{org}/{unit}/jobs/+`
-2. For tasks with status "running": spawn new worker, queue in `pending_dispatch`, re-dispatch on alive
-3. Workers re-run tasks from scratch
+On supervisor restart:
+1. Recover sessions from retained `$a2a/v1/state/{org}/{unit}/sessions/+`
+2. Recover chain results from retained `$a2a/v1/state/{org}/{unit}/chain/+/+`
+3. For tasks with status "running": re-publish retained dispatch, spawn new worker
+4. Check if any joins are now satisfiable from recovered chain results
+5. Workers re-run tasks from scratch
+
+## Coordinator Class
+
+The supervisor logic is organized as a `Coordinator` class with handler methods:
+
+| Method | Handles |
+|---|---|
+| `handle_inbound()` | Inbound requests (pipeline/agent/spawn) |
+| `handle_chain_result()` | Chain results — marks source done, dispatches next |
+| `handle_reply()` | Terminal task bookkeeping, session completion |
+| `handle_reload()` | Agent/pipeline reload from disk |
+| `handle_event()` | Worker alive/done/dead events |
+| `dispatch_task()` | Builds AgentMessage, publishes retained dispatch |
+| `dispatch_and_spawn()` | Dispatch + spawn worker subprocess |
 
 ## Worker Execution Modes
 
-Workers can run as local subprocesses (default) or Docker containers (`SKITTER_WORKER_MODE=docker`).
+Workers can run as local subprocesses (default) or Docker containers (`SKITTER_WORKER_MODE=docker`). Docker mode passes both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` as env vars.
 
 ## Cancel via A2A
 
-Coordinator publishes JSON-RPC cancel to `$a2a/v1/request/{org}/{unit}/{agent_id}/cancel`. Worker subscribes alongside main request topic and checks via `pre_tool_use` hook.
+Cancel signals are published as JSON-RPC to `$a2a/v1/request/{org}/{unit}/{agent_id}/cancel`. Worker subscribes and checks via `pre_tool_use` hook.
+
+## EMQX Rule Engine
+
+Auxiliary concerns (logging, webhooks, dead-letter routing, metrics) are handled by EMQX rules rather than application code. See `docs/emqx-rules.md`.

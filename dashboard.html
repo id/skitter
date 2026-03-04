@@ -477,7 +477,7 @@
       50% { box-shadow: inset 0 0 12px rgba(59, 130, 246, 0.06); }
     }
     .card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
-    .card-logical-id {
+    .card-task-id {
       font-size: 12px;
       font-weight: 600;
       color: var(--text-primary);
@@ -869,11 +869,11 @@
       jobs: new Map(),
       taskResults: new Map(),
       workerStatus: new Map(),
-      taskUsage: new Map(),    // "chat_id/task_id" -> {usage, cost_usd}
-      streamChunks: new Map(), // "chat_id/task_id" -> [{seq, type, content}]
+      taskUsage: new Map(),    // "session_id/task_id" -> {usage, cost_usd}
+      streamChunks: new Map(), // "session_id/task_id" -> [{seq, type, content}]
       agentCards: new Map(),   // agent_id -> {name, description, model, ...}
       chatMessages: [],
-      selectedChatId: null,
+      selectedSessionId: null,
       selectedTaskId: null,
     };
     let mqttClient = null;
@@ -898,12 +898,8 @@
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
 
-    function getResultForTask(chatId, task) {
-      const job = state.jobs.get(chatId);
-      if (job && job.results && job.results[task.logical_id]) {
-        return job.results[task.logical_id];
-      }
-      return state.taskResults.get(`${chatId}/${task.task_id}`) || null;
+    function getResultForTask(sessionId, task) {
+      return state.taskResults.get(`${sessionId}/${task.task_id}`) || null;
     }
 
     function jobIsActive(job) {
@@ -916,8 +912,8 @@
       return String(n);
     }
 
-    function getUsageForTask(chatId, task) {
-      return state.taskUsage.get(`${chatId}/${task.task_id}`) || null;
+    function getUsageForTask(sessionId, task) {
+      return state.taskUsage.get(`${sessionId}/${task.task_id}`) || null;
     }
 
     function scheduleStreamRender() {
@@ -931,8 +927,8 @@
       }
     }
 
-    function getLatestStreamText(chatId, task) {
-      const key = `${chatId}/${task.task_id}`;
+    function getLatestStreamText(sessionId, task) {
+      const key = `${sessionId}/${task.task_id}`;
       const chunks = state.streamChunks.get(key);
       if (!chunks || chunks.length === 0) return null;
       // Find last text chunk
@@ -943,12 +939,11 @@
       return chunks[chunks.length - 1].content;
     }
 
-    function publishCancel(chatId, taskId, reason) {
+    function publishCancel(sessionId, taskId, reason) {
       if (!mqttClient || !state.connected) return;
-      // Look up the agent for this task from the job spec
-      const job = state.jobs.get(chatId);
-      if (!job) return;
-      const task = Object.values(job.tasks).find(t => t.task_id === taskId);
+      const session = state.jobs.get(sessionId);
+      if (!session) return;
+      const task = Object.values(session.tasks).find(t => t.task_id === taskId);
       if (!task) return;
       const org = 'skitter', unit = 'default';
       const topic = `$a2a/v1/request/${org}/${unit}/${task.agent}/cancel`;
@@ -961,22 +956,22 @@
       mqttClient.publish(topic, payload, { qos: 1 });
     }
 
-    function publishCancelAll(chatId) {
-      const job = state.jobs.get(chatId);
-      if (!job) return;
-      for (const task of Object.values(job.tasks)) {
+    function publishCancelAll(sessionId) {
+      const session = state.jobs.get(sessionId);
+      if (!session) return;
+      for (const task of Object.values(session.tasks)) {
         if (task.status === 'running') {
-          publishCancel(chatId, task.task_id, 'User stopped all tasks');
+          publishCancel(sessionId, task.task_id, 'User stopped all tasks');
         }
       }
     }
 
-    function getJobUsageTotals(chatId) {
-      const job = state.jobs.get(chatId);
-      if (!job) return null;
+    function getJobUsageTotals(sessionId) {
+      const session = state.jobs.get(sessionId);
+      if (!session) return null;
       let totalIn = 0, totalOut = 0, totalCost = 0, count = 0;
-      for (const task of Object.values(job.tasks)) {
-        const u = state.taskUsage.get(`${chatId}/${task.task_id}`);
+      for (const task of Object.values(session.tasks)) {
+        const u = state.taskUsage.get(`${sessionId}/${task.task_id}`);
         if (u && u.usage) {
           totalIn += (u.usage.input_tokens || 0);
           totalOut += (u.usage.output_tokens || 0);
@@ -1018,17 +1013,17 @@
       const parts = topic.split('/');
       // A2A topics: $a2a/v1/{category}/{org}/{unit}/...
 
-      // $a2a/v1/state/{org}/{unit}/jobs/{chat_id}
-      if (parts[2] === 'state' && parts[5] === 'jobs' && parts.length === 7) {
-        const chatId = parts[6];
+      // $a2a/v1/state/{org}/{unit}/sessions/{session_id}
+      if (parts[2] === 'state' && parts[5] === 'sessions' && parts.length === 7) {
+        const sessionId = parts[6];
         if (!raw) {
-          state.jobs.delete(chatId);
-          if (state.selectedChatId === chatId) {
+          state.jobs.delete(sessionId);
+          if (state.selectedSessionId === sessionId) {
             state.selectedTaskId = null;
           }
         } else {
-          try { state.jobs.set(chatId, JSON.parse(raw)); } catch(e) { return; }
-          if (!state.selectedChatId) state.selectedChatId = chatId;
+          try { state.jobs.set(sessionId, JSON.parse(raw)); } catch(e) { return; }
+          if (!state.selectedSessionId) state.selectedSessionId = sessionId;
         }
         renderAll();
         return;
@@ -1039,16 +1034,16 @@
         if (raw) {
           try {
             const s = JSON.parse(raw);
-            // Find chat_id from jobs
-            let chatIdForTask = null;
-            for (const [cid, job] of state.jobs) {
-              for (const t of Object.values(job.tasks)) {
-                if (t.task_id === parts[6]) { chatIdForTask = cid; break; }
+            // Find session_id from sessions
+            let sidForTask = null;
+            for (const [sid, session] of state.jobs) {
+              for (const t of Object.values(session.tasks)) {
+                if (t.task_id === parts[6]) { sidForTask = sid; break; }
               }
-              if (chatIdForTask) break;
+              if (sidForTask) break;
             }
-            if (chatIdForTask) {
-              state.workerStatus.set(`${chatIdForTask}/${parts[6]}`, s.status);
+            if (sidForTask) {
+              state.workerStatus.set(`${sidForTask}/${parts[6]}`, s.status);
             }
           } catch(e) {}
         }
@@ -1056,7 +1051,7 @@
         return;
       }
 
-      // $a2a/v1/state/{org}/{unit}/usage/{chat_id}/{task_id}
+      // $a2a/v1/state/{org}/{unit}/usage/{session_id}/{task_id}
       if (parts[2] === 'state' && parts[5] === 'usage' && parts.length === 8 && raw) {
         try {
           const msg = JSON.parse(raw);
@@ -1074,16 +1069,16 @@
           // StreamItem (has seq + type)
           if (msg.seq != null && msg.type) {
             const taskId = msg.task_id;
-            // Find chat_id from jobs
-            let chatIdForTask = null;
-            for (const [cid, job] of state.jobs) {
-              for (const t of Object.values(job.tasks)) {
-                if (t.task_id === taskId) { chatIdForTask = cid; break; }
+            // Find session_id from sessions
+            let sidForTask = null;
+            for (const [sid, session] of state.jobs) {
+              for (const t of Object.values(session.tasks)) {
+                if (t.task_id === taskId) { sidForTask = sid; break; }
               }
-              if (chatIdForTask) break;
+              if (sidForTask) break;
             }
-            if (chatIdForTask) {
-              const key = `${chatIdForTask}/${taskId}`;
+            if (sidForTask) {
+              const key = `${sidForTask}/${taskId}`;
               if (!state.streamChunks.has(key)) state.streamChunks.set(key, []);
               const chunks = state.streamChunks.get(key);
               chunks.push(msg);
@@ -1094,15 +1089,15 @@
           }
           // TaskStatusUpdate (has state + task_id)
           if (msg.state && msg.task_id) {
-            let chatIdForTask = null;
-            for (const [cid, job] of state.jobs) {
-              for (const t of Object.values(job.tasks)) {
-                if (t.task_id === msg.task_id) { chatIdForTask = cid; break; }
+            let sidForTask = null;
+            for (const [sid, session] of state.jobs) {
+              for (const t of Object.values(session.tasks)) {
+                if (t.task_id === msg.task_id) { sidForTask = sid; break; }
               }
-              if (chatIdForTask) break;
+              if (sidForTask) break;
             }
-            if (chatIdForTask) {
-              state.taskResults.set(`${chatIdForTask}/${msg.task_id}`, msg.result);
+            if (sidForTask) {
+              state.taskResults.set(`${sidForTask}/${msg.task_id}`, msg.result);
             }
             renderDetail();
             return;
@@ -1127,9 +1122,9 @@
       if (parts[2] === 'request' && parts[5] === 'coordinator' && parts.length === 6 && raw) {
         try {
           const msg = JSON.parse(raw);
-          if (msg.chat_id && msg.text) {
-            state.chatMessages.push({ direction: 'in', chat_id: msg.chat_id, text: msg.text, timestamp: msg.timestamp || Date.now()/1000 });
-            if (!state.selectedChatId) state.selectedChatId = msg.chat_id;
+          if (msg.session_id && msg.text) {
+            state.chatMessages.push({ direction: 'in', session_id: msg.session_id, text: msg.text, timestamp: msg.timestamp || Date.now()/1000 });
+            if (!state.selectedSessionId) state.selectedSessionId = msg.session_id;
           }
         } catch(e) {}
         renderChatPanel();
@@ -1168,7 +1163,7 @@
       const el = document.getElementById('session-list');
       const chatIds = new Set();
       for (const id of state.jobs.keys()) chatIds.add(id);
-      for (const m of state.chatMessages) chatIds.add(m.chat_id);
+      for (const m of state.chatMessages) chatIds.add(m.session_id);
 
       if (chatIds.size === 0) {
         el.innerHTML = '<div class="chat-empty">No sessions</div>';
@@ -1179,9 +1174,9 @@
       for (const cid of chatIds) {
         const job = state.jobs.get(cid);
         const active = job && jobIsActive(job);
-        const selected = cid === state.selectedChatId;
-        const text = job ? job.original_text : '';
-        html += `<div class="session-entry${selected ? ' active' : ''}" data-chat-id="${esc(cid)}">
+        const selected = cid === state.selectedSessionId;
+        const text = job ? (job.label || '') : '';
+        html += `<div class="session-entry${selected ? ' active' : ''}" data-session-id="${esc(cid)}">
           <div class="session-id">
             <span class="session-status-dot ${active ? 'active' : 'done'}"></span>
             ${esc(cid.slice(0, 10))}
@@ -1193,7 +1188,7 @@
 
       el.querySelectorAll('.session-entry').forEach(entry => {
         entry.addEventListener('click', () => {
-          state.selectedChatId = entry.dataset.chatId;
+          state.selectedSessionId = entry.dataset.sessionId;
           state.selectedTaskId = null;
           renderAll();
         });
@@ -1205,7 +1200,7 @@
        ═══════════════════════════════════════════ */
     function renderChatPanel() {
       const el = document.getElementById('chat-log');
-      const msgs = state.chatMessages.filter(m => m.chat_id === state.selectedChatId);
+      const msgs = state.chatMessages.filter(m => m.session_id === state.selectedSessionId);
 
       if (msgs.length === 0) {
         el.innerHTML = '<div class="chat-empty">No messages yet</div>';
@@ -1216,7 +1211,7 @@
       for (const m of msgs) {
         const dir = m.direction === 'in' ? 'in' : 'out';
         const label = m.direction === 'in' ? 'USER' : 'SKITTER';
-        const dlBtn = dir === 'out' ? `<button class="msg-download" onclick="downloadReport('${m.chat_id}', this)" title="Download as Markdown">&#8615;</button>` : '';
+        const dlBtn = dir === 'out' ? `<button class="msg-download" onclick="downloadReport('${m.session_id}', this)" title="Download as Markdown">&#8615;</button>` : '';
         html += `<div class="chat-msg ${dir}">
           <div class="msg-meta">${label} &middot; ${formatTime(m.timestamp)}${dlBtn}</div>
           <div class="msg-text">${esc(m.text)}</div>
@@ -1243,59 +1238,59 @@
        ═══════════════════════════════════════════ */
     function renderKanban() {
       const kanban = document.getElementById('kanban');
-      const job = state.jobs.get(state.selectedChatId);
+      const session = state.jobs.get(state.selectedSessionId);
 
-      if (!job) {
+      if (!session) {
         kanban.innerHTML = `<div class="kanban-empty">
           <div class="empty-icon">&#9670;</div>
-          <div class="empty-text">${state.jobs.size === 0 ? 'Waiting for jobs' : 'Select a session'}</div>
+          <div class="empty-text">${state.jobs.size === 0 ? 'Waiting for sessions' : 'Select a session'}</div>
           <div class="empty-hint">${state.jobs.size === 0 ? 'Type a message in the sidebar to get started' : ''}</div>
         </div>`;
         clearEdges();
         return;
       }
 
-      const tasks = Object.values(job.tasks);
+      const tasks = Object.values(session.tasks);
       const pending = tasks.filter(t => t.status === 'pending');
       const running = tasks.filter(t => t.status === 'running');
       const done = tasks.filter(t => t.status === 'done');
 
-      // Job-level usage summary
-      const jobTotals = getJobUsageTotals(state.selectedChatId);
+      // Session-level usage summary
+      const sessionTotals = getJobUsageTotals(state.selectedSessionId);
       const usageBar = document.querySelector('.job-usage-bar');
       if (usageBar) usageBar.remove();
-      if (jobTotals) {
+      if (sessionTotals) {
         const bar = document.createElement('div');
         bar.className = 'job-usage-bar';
-        bar.innerHTML = `<span>IN <span class="val">${fmtTokens(jobTotals.input_tokens)}</span></span>`
-          + `<span>OUT <span class="val">${fmtTokens(jobTotals.output_tokens)}</span></span>`
-          + `<span>TOTAL <span class="val">${fmtTokens(jobTotals.input_tokens + jobTotals.output_tokens)}</span></span>`
-          + `<span>COST <span class="val" style="color:var(--accent-amber)">$${jobTotals.cost_usd.toFixed(4)}</span></span>`;
+        bar.innerHTML = `<span>IN <span class="val">${fmtTokens(sessionTotals.input_tokens)}</span></span>`
+          + `<span>OUT <span class="val">${fmtTokens(sessionTotals.output_tokens)}</span></span>`
+          + `<span>TOTAL <span class="val">${fmtTokens(sessionTotals.input_tokens + sessionTotals.output_tokens)}</span></span>`
+          + `<span>COST <span class="val" style="color:var(--accent-amber)">$${sessionTotals.cost_usd.toFixed(4)}</span></span>`;
         kanban.parentElement.insertBefore(bar, kanban);
       }
 
       const stopAllBtn = running.length > 0
-        ? `<button class="stop-all-btn" onclick="publishCancelAll('${esc(state.selectedChatId)}')">STOP ALL</button>`
+        ? `<button class="stop-all-btn" onclick="publishCancelAll('${esc(state.selectedSessionId)}')">STOP ALL</button>`
         : '';
 
       kanban.innerHTML = `
         <div class="kanban-column">
           <div class="column-header"><span class="column-dot pending"></span><h3>PENDING</h3><span class="column-count">${pending.length}</span></div>
-          <div class="column-body">${pending.map(t => renderCard(t, job)).join('')}</div>
+          <div class="column-body">${pending.map(t => renderCard(t, session)).join('')}</div>
         </div>
         <div class="kanban-column">
           <div class="column-header"><span class="column-dot running"></span><h3>RUNNING</h3><span class="column-count">${running.length}</span>${stopAllBtn}</div>
-          <div class="column-body">${running.map(t => renderCard(t, job)).join('')}</div>
+          <div class="column-body">${running.map(t => renderCard(t, session)).join('')}</div>
         </div>
         <div class="kanban-column">
           <div class="column-header"><span class="column-dot done"></span><h3>DONE</h3><span class="column-count">${done.length}</span></div>
-          <div class="column-body">${done.map(t => renderCard(t, job)).join('')}</div>
+          <div class="column-body">${done.map(t => renderCard(t, session)).join('')}</div>
         </div>
       `;
 
       kanban.querySelectorAll('.task-card').forEach(card => {
         card.addEventListener('click', () => {
-          state.selectedTaskId = card.dataset.logicalId;
+          state.selectedTaskId = card.dataset.taskId;
           renderKanbanSelection();
           renderDetail();
         });
@@ -1305,26 +1300,26 @@
       scheduleEdgeDraw();
     }
 
-    function renderCard(task, job) {
-      const chatId = job.chat_id;
+    function renderCard(task, session) {
+      const sessionId = session.session_id;
       let statusClass = 'status-' + task.status;
-      const selected = task.logical_id === state.selectedTaskId;
+      const selected = task.id === state.selectedTaskId;
 
       // Worker status for running tasks
       let workerDot = '';
       let streamIndicator = '';
       let streamPreview = '';
       if (task.status === 'running') {
-        const ws = state.workerStatus.get(`${chatId}/${task.task_id}`);
+        const ws = state.workerStatus.get(`${sessionId}/${task.task_id}`);
         if (ws === 'alive') workerDot = '<span class="worker-dot alive"></span>';
         else if (ws === 'dead') workerDot = '<span class="worker-dot dead"></span>';
         else if (ws === 'done') workerDot = '<span class="worker-dot wdone"></span>';
 
         // Streaming indicator
-        const hasChunks = state.streamChunks.has(`${chatId}/${task.task_id}`);
+        const hasChunks = state.streamChunks.has(`${sessionId}/${task.task_id}`);
         if (hasChunks) {
           streamIndicator = '<span class="stream-dot"></span>';
-          const lastText = getLatestStreamText(chatId, task);
+          const lastText = getLatestStreamText(sessionId, task);
           if (lastText) {
             streamPreview = `<div class="card-stream-preview">${esc(truncate(lastText, 60))}</div>`;
           }
@@ -1333,7 +1328,7 @@
 
       const desc = truncate(task.description, 100);
 
-      const usage = getUsageForTask(chatId, task);
+      const usage = getUsageForTask(sessionId, task);
       let footerHtml = '<div class="card-footer">';
       if (usage && usage.usage) {
         const total = (usage.usage.input_tokens || 0) + (usage.usage.output_tokens || 0);
@@ -1343,13 +1338,13 @@
         footerHtml += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
       }
       if (task.status === 'running') {
-        footerHtml += `<button class="stop-btn" data-task-id="${esc(task.task_id)}" data-chat-id="${esc(chatId)}" onclick="event.stopPropagation(); publishCancel('${esc(chatId)}','${esc(task.task_id)}','User stopped task')">STOP</button>`;
+        footerHtml += `<button class="stop-btn" data-task-id="${esc(task.task_id)}" data-session-id="${esc(sessionId)}" onclick="event.stopPropagation(); publishCancel('${esc(sessionId)}','${esc(task.task_id)}','User stopped task')">STOP</button>`;
       }
       footerHtml += '</div>';
 
-      return `<div class="task-card ${statusClass}${selected ? ' selected' : ''}" data-logical-id="${esc(task.logical_id)}">
+      return `<div class="task-card ${statusClass}${selected ? ' selected' : ''}" data-task-id="${esc(task.id)}">
         <div class="card-top">
-          <span class="card-logical-id">${streamIndicator}${esc(task.logical_id)}</span>
+          <span class="card-task-id">${streamIndicator}${esc(task.id)}</span>
           ${task.model ? `<span class="card-model">${esc(task.model)}</span>` : ''}
         </div>
         <div class="card-agent">${workerDot}${esc(task.agent)}</div>
@@ -1361,7 +1356,7 @@
 
     function renderKanbanSelection() {
       document.querySelectorAll('.task-card').forEach(card => {
-        card.classList.toggle('selected', card.dataset.logicalId === state.selectedTaskId);
+        card.classList.toggle('selected', card.dataset.taskId === state.selectedTaskId);
       });
     }
 
@@ -1386,8 +1381,8 @@
       const container = document.getElementById('kanban-wrapper');
       svg.innerHTML = '';
 
-      const job = state.jobs.get(state.selectedChatId);
-      if (!job) return;
+      const session = state.jobs.get(state.selectedSessionId);
+      if (!session) return;
 
       const containerRect = container.getBoundingClientRect();
       svg.setAttribute('width', container.scrollWidth);
@@ -1411,10 +1406,10 @@
       defs.appendChild(marker);
       svg.appendChild(defs);
 
-      for (const [logicalId, task] of Object.entries(job.tasks)) {
-        for (const depId of (task.depends_on || [])) {
-          const srcEl = document.querySelector(`.task-card[data-logical-id="${CSS.escape(depId)}"]`);
-          const tgtEl = document.querySelector(`.task-card[data-logical-id="${CSS.escape(logicalId)}"]`);
+      for (const [taskId, task] of Object.entries(session.tasks)) {
+        for (const depId of (task.needs || [])) {
+          const srcEl = document.querySelector(`.task-card[data-task-id="${CSS.escape(depId)}"]`);
+          const tgtEl = document.querySelector(`.task-card[data-task-id="${CSS.escape(taskId)}"]`);
           if (!srcEl || !tgtEl) continue;
 
           const srcRect = srcEl.getBoundingClientRect();
@@ -1453,30 +1448,30 @@
     function renderDetail() {
       const panel = document.getElementById('detail-panel');
       const inner = document.getElementById('detail-inner');
-      const job = state.jobs.get(state.selectedChatId);
+      const session = state.jobs.get(state.selectedSessionId);
 
-      if (!job || !state.selectedTaskId) {
+      if (!session || !state.selectedTaskId) {
         panel.classList.add('hidden');
         return;
       }
 
-      const task = job.tasks[state.selectedTaskId];
+      const task = session.tasks[state.selectedTaskId];
       if (!task) {
         panel.classList.add('hidden');
         return;
       }
 
       panel.classList.remove('hidden');
-      const result = getResultForTask(state.selectedChatId, task);
+      const result = getResultForTask(state.selectedSessionId, task);
 
       let statusClass = 'status-' + task.status;
 
       const stopBtn = task.status === 'running'
-        ? `<button class="stop-btn" onclick="publishCancel('${esc(state.selectedChatId)}','${esc(task.task_id)}','User stopped task')">STOP TASK</button>`
+        ? `<button class="stop-btn" onclick="publishCancel('${esc(state.selectedSessionId)}','${esc(task.task_id)}','User stopped task')">STOP TASK</button>`
         : '';
 
       let html = `<div class="detail-header">
-        <h2>${esc(task.logical_id)}</h2>
+        <h2>${esc(task.id)}</h2>
         <span class="detail-badge agent">${esc(task.agent)}</span>
         ${task.model ? `<span class="detail-badge model">${esc(task.model)}</span>` : ''}
         <span class="detail-badge ${statusClass}">${esc(task.status)}</span>
@@ -1491,7 +1486,7 @@
       </div>`;
 
       // Live streaming output (for running tasks)
-      const streamKey = `${state.selectedChatId}/${task.task_id}`;
+      const streamKey = `${state.selectedSessionId}/${task.task_id}`;
       const chunks = state.streamChunks.get(streamKey);
       if (task.status === 'running' && chunks) {
         html += `<div class="detail-section">
@@ -1527,17 +1522,17 @@
       }
 
       // Dependencies
-      if (task.depends_on && task.depends_on.length > 0) {
+      if (task.needs && task.needs.length > 0) {
         html += `<div class="detail-section">
           <div class="detail-section-label">Dependencies</div>
-          <div class="detail-deps">${task.depends_on.map(d =>
+          <div class="detail-deps">${task.needs.map(d =>
             `<span class="detail-dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`
           ).join('')}</div>
         </div>`;
       }
 
       // Usage
-      const usage = getUsageForTask(state.selectedChatId, task);
+      const usage = getUsageForTask(state.selectedSessionId, task);
       if (usage && usage.usage) {
         const u = usage.usage;
         html += `<div class="detail-section">
@@ -1556,7 +1551,6 @@
       html += `<div class="detail-section">
         <div class="detail-meta">
           <span>task_id: ${esc(task.task_id)}</span>
-          <span>max_turns: ${task.max_turns}</span>
         </div>
       </div>`;
 
@@ -1591,7 +1585,7 @@
     /* ═══════════════════════════════════════════
        Compose — Submit Requests
        ═══════════════════════════════════════════ */
-    function generateChatId() {
+    function generateSessionId() {
       return 'dash-' + crypto.randomUUID().slice(0, 8);
     }
 
@@ -1630,23 +1624,23 @@
 
       if (!agentId && !pipelineId) return;
 
-      // Reuse active session's chat_id, or generate new
-      let chatId = null;
-      if (state.selectedChatId) {
-        const job = state.jobs.get(state.selectedChatId);
-        if (job && jobIsActive(job)) {
-          chatId = state.selectedChatId;
+      // Reuse active session, or generate new
+      let sessionId = null;
+      if (state.selectedSessionId) {
+        const session = state.jobs.get(state.selectedSessionId);
+        if (session && jobIsActive(session)) {
+          sessionId = state.selectedSessionId;
         }
       }
-      if (!chatId) chatId = generateChatId();
+      if (!sessionId) sessionId = generateSessionId();
 
       const org = 'skitter', unit = 'default';
-      const sessionId = crypto.randomUUID().slice(0, 8);
-      const replyTopic = `$a2a/v1/reply/${org}/${unit}/dashboard/${sessionId}`;
+      const mqttSession = crypto.randomUUID().slice(0, 8);
+      const replyTopic = `$a2a/v1/reply/${org}/${unit}/dashboard/${mqttSession}`;
       const msg = {
         text,
         sender: 'dashboard',
-        chat_id: chatId,
+        session_id: sessionId,
         timestamp: Date.now() / 1000,
       };
       if (agentId) msg.agent_id = agentId;
@@ -1659,12 +1653,12 @@
         qos: 1,
         properties: {
           responseTopic: replyTopic,
-          correlationData: Buffer.from(chatId),
+          correlationData: Buffer.from(sessionId),
         },
       });
 
       // Select this session and clear input
-      state.selectedChatId = chatId;
+      state.selectedSessionId = sessionId;
       document.getElementById('compose-input').value = '';
       renderAll();
     }
@@ -1704,7 +1698,7 @@
     });
 
     document.getElementById('new-session-btn').addEventListener('click', () => {
-      state.selectedChatId = null;
+      state.selectedSessionId = null;
       state.selectedTaskId = null;
       document.getElementById('compose-input').focus();
       renderAll();

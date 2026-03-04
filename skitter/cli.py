@@ -19,13 +19,13 @@ from skitter.mqtt import (
 from skitter.types import InboundMessage, StreamItem, TaskStatusUpdate
 
 
-async def run_chat(chat_id: str) -> None:
-    session_id = uuid.uuid4().hex[:12]
-    reply_t = topic_reply("cli", session_id)
+async def run_chat(session_id: str) -> None:
+    mqtt_session = uuid.uuid4().hex[:12]
+    reply_t = topic_reply("cli", mqtt_session)
     coordinator_request = topic_request("coordinator")
 
     print(f"Connecting to {MQTT_HOST}:{MQTT_PORT}")
-    print(f"Chat ID: {chat_id}")
+    print(f"Session ID: {session_id}")
     print(f"Reply topic: {reply_t}")
     print("Type or paste a message. /send to send, /drop to discard.")
     print("Ctrl+C to exit.\n")
@@ -33,12 +33,13 @@ async def run_chat(chat_id: str) -> None:
     async with aiomqtt.Client(
         MQTT_HOST,
         MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{session_id}",
+        identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}",
         protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
         await client.subscribe(reply_t, qos=1)
 
         async def listen() -> None:
+            seen_seqs: set[tuple[str, int]] = set()
             async for msg in client.messages:
                 try:
                     payload = msg.payload.decode() if msg.payload else ""
@@ -46,9 +47,13 @@ async def run_chat(chat_id: str) -> None:
                         continue
                     data = json.loads(payload)
 
-                    # Stream item
+                    # Stream item (with dedup for QoS 1 redelivery)
                     if "seq" in data and "type" in data:
                         item = StreamItem.from_json(payload)
+                        dedup_key = (item.task_id, item.seq)
+                        if dedup_key in seen_seqs:
+                            continue
+                        seen_seqs.add(dedup_key)
                         if item.type == "text":
                             print(f"\r\033[K{item.content}", end="", flush=True)
                         elif item.type == "tool_use":
@@ -126,7 +131,7 @@ async def run_chat(chat_id: str) -> None:
                 msg = InboundMessage(
                     text=text,
                     sender="cli",
-                    chat_id=chat_id,
+                    session_id=session_id,
                     pipeline_id=pipeline_id,
                     pipeline_vars=pipeline_vars,
                     agent_id=agent_id,
@@ -134,7 +139,7 @@ async def run_chat(chat_id: str) -> None:
 
                 props = make_properties(
                     response_topic=reply_t,
-                    correlation_data=chat_id,
+                    correlation_data=session_id,
                 )
                 await client.publish(
                     coordinator_request,
@@ -149,16 +154,16 @@ async def run_chat(chat_id: str) -> None:
 
 
 def main() -> None:
-    chat_id = f"cli-{uuid.uuid4().hex[:8]}"
+    session_id = f"cli-{uuid.uuid4().hex[:8]}"
 
     args = sys.argv[2:]  # skip "skitter" and "chat"
     i = 0
     while i < len(args):
-        if args[i] == "--chat-id" and i + 1 < len(args):
-            chat_id = args[i + 1]
+        if args[i] == "--session-id" and i + 1 < len(args):
+            session_id = args[i + 1]
             i += 2
         else:
             print(f"Unknown argument: {args[i]}", file=sys.stderr)
             sys.exit(1)
 
-    asyncio.run(run_chat(chat_id))
+    asyncio.run(run_chat(session_id))

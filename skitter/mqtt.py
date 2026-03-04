@@ -25,11 +25,6 @@ def topic_discovery(agent_id: str) -> str:
     return f"{_PREFIX}/discovery/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
 
 
-def topic_discovery_wildcard() -> str:
-    """Wildcard for all Agent Cards: $a2a/v1/discovery/{org}/{unit}/+"""
-    return f"{_PREFIX}/discovery/{A2A_ORG}/{A2A_UNIT}/+"
-
-
 def topic_request(agent_id: str) -> str:
     """Request topic: $a2a/v1/request/{org}/{unit}/{agent_id}"""
     return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
@@ -45,29 +40,49 @@ def topic_reply(agent_id: str, suffix: str) -> str:
     return f"{_PREFIX}/reply/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{suffix}"
 
 
-def topic_event_worker(task_id: str) -> str:
-    """Worker liveness (LWT): $a2a/v1/event/{org}/{unit}/workers/{task_id}"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/workers/{task_id}"
+def topic_event(agent_id: str, event_type: str) -> str:
+    """A2A agent event: $a2a/v1/event/{org}/{unit}/{agent_id}/{event_type}"""
+    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{event_type}"
 
 
-def topic_event_worker_wildcard() -> str:
-    """Wildcard for worker events: $a2a/v1/event/{org}/{unit}/workers/+"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/workers/+"
+def topic_event_wildcard() -> str:
+    """Wildcard for all agent events: $a2a/v1/event/{org}/{unit}/+/+"""
+    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/+/+"
 
 
-def topic_state_job(chat_id: str) -> str:
-    """Retained job spec: $a2a/v1/state/{org}/{unit}/jobs/{chat_id}"""
-    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/jobs/{chat_id}"
+def topic_chain_result(session_id: str, source_task_id: str) -> str:
+    """Retained chain result: $a2a/v1/state/{org}/{unit}/chain/{session_id}/{source_task_id}"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/chain/{session_id}/{source_task_id}"
 
 
-def topic_state_job_wildcard() -> str:
-    """Wildcard for job specs: $a2a/v1/state/{org}/{unit}/jobs/+"""
-    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/jobs/+"
+def topic_chain_wildcard() -> str:
+    """Wildcard for chain results: $a2a/v1/state/{org}/{unit}/chain/+/+"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/chain/+/+"
 
 
-def topic_state_usage(chat_id: str, task_id: str) -> str:
-    """Usage tracking: $a2a/v1/state/{org}/{unit}/usage/{chat_id}/{task_id}"""
-    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/usage/{chat_id}/{task_id}"
+def topic_state_dispatch(task_id: str) -> str:
+    """Retained task dispatch: $a2a/v1/state/{org}/{unit}/dispatch/{task_id}"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/dispatch/{task_id}"
+
+
+def topic_control_reload() -> str:
+    """Reload signal: $a2a/v1/control/{org}/{unit}/reload"""
+    return f"{_PREFIX}/control/{A2A_ORG}/{A2A_UNIT}/reload"
+
+
+def topic_state_session(session_id: str) -> str:
+    """Retained session: $a2a/v1/state/{org}/{unit}/sessions/{session_id}"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/sessions/{session_id}"
+
+
+def topic_state_session_wildcard() -> str:
+    """Wildcard for sessions: $a2a/v1/state/{org}/{unit}/sessions/+"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/sessions/+"
+
+
+def topic_state_usage(session_id: str, task_id: str) -> str:
+    """Usage tracking: $a2a/v1/state/{org}/{unit}/usage/{session_id}/{task_id}"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/usage/{session_id}/{task_id}"
 
 
 # --- MQTT v5 property helpers ---

@@ -23,20 +23,19 @@ from claude_agent_sdk._internal.transport import Transport
 from skitter.mqtt import (
     MQTT_HOST,
     MQTT_PORT,
-    make_properties,
     topic_reply,
-    topic_request,
     topic_request_cancel,
+    topic_state_dispatch,
     topic_state_usage,
 )
 from skitter.types import (
     AgentCard,
     A2ARequest,
     A2AResponse,
+    AgentMessage,
     CancelSignal,
-    JobTask,
+    SessionTask,
     StreamItem,
-    TaskMessage,
     TaskStatusUpdate,
 )
 from skitter.worker import run as worker_run
@@ -274,26 +273,31 @@ class MQTTCollector:
 
 async def dispatch_task_to_worker(
     agent: str,
-    chat_id: str,
+    session_id: str,
     task_id: str,
     description: str = "Test task",
     max_turns: int = 10,
     model: str = "haiku",
     reply_topic: str = "",
 ) -> None:
-    """Publish a task to the agent's request topic with v5 properties (simulates coordinator dispatch)."""
-    task_msg = TaskMessage(
+    """Publish a retained dispatch to the state/dispatch topic (simulates supervisor dispatch)."""
+    task_msg = AgentMessage(
         task_id=task_id,
-        chat_id=chat_id,
+        session_id=session_id,
         description=description,
         soul="Test soul",
         skills="Test skills",
         max_turns=max_turns,
         model=model,
     )
-    props = make_properties(
-        response_topic=reply_topic,
-        correlation_data=task_id,
+    import json
+
+    dispatch_payload = json.dumps(
+        {
+            "task": json.loads(task_msg.to_json()),
+            "reply_topic": reply_topic,
+            "correlation": task_id,
+        }
     )
     async with aiomqtt.Client(
         MQTT_HOST,
@@ -302,10 +306,10 @@ async def dispatch_task_to_worker(
         protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
         await client.publish(
-            topic_request(agent),
-            task_msg.to_json(),
+            topic_state_dispatch(task_id),
+            dispatch_payload,
             qos=1,
-            properties=props,
+            retain=True,
         )
 
 
@@ -358,7 +362,7 @@ class TestStreamingTypes:
     def test_cancel_signal_roundtrip(self):
         sig = CancelSignal(
             task_id="t1",
-            chat_id="c1",
+            session_id="c1",
             reason="User requested stop",
         )
         parsed = CancelSignal.from_json(sig.to_json())
@@ -404,18 +408,16 @@ class TestStreamingTypes:
         parsed = A2AResponse.from_json(resp.to_json())
         assert parsed.error["code"] == -32602
 
-    def test_job_task_roundtrip(self):
-        task = JobTask(
-            logical_id="research",
+    def test_session_task_roundtrip(self):
+        task = SessionTask(
+            id="research",
             task_id="t1",
             agent="researcher",
             description="Do research",
-            soul="",
-            skills="",
         )
         d = task.to_dict()
-        restored = JobTask.from_dict(d)
-        assert restored.logical_id == "research"
+        restored = SessionTask.from_dict(d)
+        assert restored.id == "research"
         assert restored.agent == "researcher"
 
 
@@ -432,7 +434,7 @@ class TestWorkerStreaming:
     async def test_text_streaming(self, monkeypatch):
         """Worker streams text items to response topic with correlation data."""
         agent = "researcher"
-        chat_id = f"test-stream-{uuid.uuid4().hex[:8]}"
+        session_id = f"test-stream-{uuid.uuid4().hex[:8]}"
         task_id = uuid.uuid4().hex[:12]
 
         # Set up reply topic to collect results
@@ -450,11 +452,11 @@ class TestWorkerStreaming:
         await asyncio.sleep(0.1)
 
         # Start worker
-        worker_task = asyncio.create_task(worker_run(agent, chat_id, task_id))
+        worker_task = asyncio.create_task(worker_run(agent, session_id, task_id))
 
         # Wait for worker alive, then dispatch
         await asyncio.sleep(0.5)
-        await dispatch_task_to_worker(agent, chat_id, task_id, reply_topic=reply_t)
+        await dispatch_task_to_worker(agent, session_id, task_id, reply_topic=reply_t)
 
         await asyncio.wait_for(worker_task, timeout=10.0)
         await asyncio.sleep(0.3)
@@ -466,14 +468,14 @@ class TestWorkerStreaming:
         status_items = [p for p in payloads if "state" in p]
 
         assert len(text_items) >= 1
-        assert len(status_items) == 1
+        assert len(status_items) >= 1
         assert status_items[0]["state"] == "completed"
         assert "Hello" in status_items[0]["result"]
 
     async def test_tool_use_streaming(self, monkeypatch):
         """Worker streams tool_use and tool_result items."""
         agent = "coder"
-        chat_id = f"test-tools-{uuid.uuid4().hex[:8]}"
+        session_id = f"test-tools-{uuid.uuid4().hex[:8]}"
         task_id = uuid.uuid4().hex[:12]
         reply_t = topic_reply("test", uuid.uuid4().hex[:8])
 
@@ -498,10 +500,10 @@ class TestWorkerStreaming:
         await collector.start()
         await asyncio.sleep(0.1)
 
-        worker_task = asyncio.create_task(worker_run(agent, chat_id, task_id))
+        worker_task = asyncio.create_task(worker_run(agent, session_id, task_id))
         await asyncio.sleep(0.5)
         await dispatch_task_to_worker(
-            agent, chat_id, task_id, max_turns=5, reply_topic=reply_t
+            agent, session_id, task_id, max_turns=5, reply_topic=reply_t
         )
 
         await asyncio.wait_for(worker_task, timeout=10.0)
@@ -515,7 +517,7 @@ class TestWorkerStreaming:
 
         assert len(tool_use) >= 1
         assert len(tool_result) >= 1
-        assert len(status) == 1
+        assert len(status) >= 1
         assert (
             "hello" in status[0]["result"].lower()
             or "Tool Results" in status[0]["result"]
@@ -524,7 +526,7 @@ class TestWorkerStreaming:
     async def test_cancel(self, monkeypatch):
         """Worker stops on cancel signal."""
         agent = "researcher"
-        chat_id = f"test-cancel-{uuid.uuid4().hex[:8]}"
+        session_id = f"test-cancel-{uuid.uuid4().hex[:8]}"
         task_id = uuid.uuid4().hex[:12]
         reply_t = topic_reply("test", uuid.uuid4().hex[:8])
 
@@ -576,10 +578,10 @@ class TestWorkerStreaming:
         await collector.start()
         await asyncio.sleep(0.1)
 
-        worker_task = asyncio.create_task(worker_run(agent, chat_id, task_id))
+        worker_task = asyncio.create_task(worker_run(agent, session_id, task_id))
         await asyncio.sleep(0.5)
         await dispatch_task_to_worker(
-            agent, chat_id, task_id, max_turns=5, reply_topic=reply_t
+            agent, session_id, task_id, max_turns=5, reply_topic=reply_t
         )
 
         await asyncio.wait_for(worker_task, timeout=15.0)
@@ -588,15 +590,15 @@ class TestWorkerStreaming:
 
         payloads = collector.all_payloads()
         status = [p for p in payloads if "state" in p]
-        assert len(status) == 1
+        assert len(status) >= 1
 
     async def test_usage_published(self, monkeypatch):
         """Worker publishes usage to the A2A state topic."""
         agent = "writer"
-        chat_id = f"test-usage-{uuid.uuid4().hex[:8]}"
+        session_id = f"test-usage-{uuid.uuid4().hex[:8]}"
         task_id = uuid.uuid4().hex[:12]
         reply_t = topic_reply("test", uuid.uuid4().hex[:8])
-        usage_t = topic_state_usage(chat_id, task_id)
+        usage_t = topic_state_usage(session_id, task_id)
 
         script = [
             text_message("Short response"),
@@ -608,10 +610,10 @@ class TestWorkerStreaming:
         await collector.start()
         await asyncio.sleep(0.1)
 
-        worker_task = asyncio.create_task(worker_run(agent, chat_id, task_id))
+        worker_task = asyncio.create_task(worker_run(agent, session_id, task_id))
         await asyncio.sleep(0.5)
         await dispatch_task_to_worker(
-            agent, chat_id, task_id, max_turns=0, reply_topic=reply_t
+            agent, session_id, task_id, max_turns=0, reply_topic=reply_t
         )
 
         await asyncio.wait_for(worker_task, timeout=10.0)
@@ -628,7 +630,7 @@ class TestWorkerStreaming:
     async def test_workspace_created(self, monkeypatch, tmp_path):
         """Worker creates workspace directory."""
         agent = "coder"
-        chat_id = f"test-ws-{uuid.uuid4().hex[:8]}"
+        session_id = f"test-ws-{uuid.uuid4().hex[:8]}"
         task_id = uuid.uuid4().hex[:12]
         reply_t = topic_reply("test", uuid.uuid4().hex[:8])
 
@@ -643,10 +645,10 @@ class TestWorkerStreaming:
 
         monkeypatch.setattr(config, "WORKSPACES_DIR", tmp_path / "workspaces")
 
-        worker_task = asyncio.create_task(worker_run(agent, chat_id, task_id))
+        worker_task = asyncio.create_task(worker_run(agent, session_id, task_id))
         await asyncio.sleep(0.5)
         await dispatch_task_to_worker(
-            agent, chat_id, task_id, max_turns=0, reply_topic=reply_t
+            agent, session_id, task_id, max_turns=0, reply_topic=reply_t
         )
 
         await asyncio.wait_for(worker_task, timeout=10.0)

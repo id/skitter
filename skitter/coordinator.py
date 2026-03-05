@@ -608,13 +608,8 @@ class Coordinator:
         if not next_id or next_id == "output":
             # Check session completion
             if all(t.status == "done" for t in session.tasks.values()):
-                await self.client.publish(
-                    topic_state_session(cr_sid), b"", qos=1, retain=True
-                )
-                self.sessions.pop(cr_sid, None)
                 log.info("[supervisor] Session complete for %s", cr_sid)
-            else:
-                await self._publish_session(session)
+            await self._publish_session(session)
             return
 
         next_task = session.tasks.get(next_id)
@@ -751,15 +746,37 @@ class Coordinator:
             log.info("[supervisor] Spawn result routed for %s", sid)
             return
 
+        # Store result from terminal tasks
+        st = session.tasks[tid]
+        if not st.next or st.next == "output":
+            session.result = result_text
+
         # Check if session is complete
         if all(t.status == "done" for t in session.tasks.values()):
-            await self.client.publish(session_topic, b"", qos=1, retain=True)
-            self.sessions.pop(sid, None)
             log.info("[supervisor] Session complete for %s", sid)
-        else:
+
+        await self._publish_session(session)
+
+    async def _publish_pipeline_cards(self) -> None:
+        """Publish pipeline discovery cards as retained MQTT messages."""
+        assert self.client is not None
+        for pipeline_id, pipeline_def in self.pipelines.items():
+            agents = list({t.agent for t in pipeline_def.tasks})
+            card_payload = json.dumps(
+                {
+                    "pipeline_id": pipeline_id,
+                    "name": pipeline_def.name,
+                    "description": pipeline_def.description,
+                    "variables": pipeline_def.variables,
+                    "tasks": [
+                        {"id": t.id, "agent": t.agent} for t in pipeline_def.tasks
+                    ],
+                    "agents": agents,
+                }
+            )
             await self.client.publish(
-                session_topic,
-                session.to_json(),
+                topic_discovery(f"pipeline/{pipeline_id}"),
+                card_payload,
                 qos=1,
                 retain=True,
             )
@@ -778,6 +795,7 @@ class Coordinator:
                 qos=1,
                 retain=True,
             )
+        await self._publish_pipeline_cards()
         log.info(
             "[supervisor] Reloaded %d agents, %d pipelines",
             len(self.agents),
@@ -914,7 +932,13 @@ class Coordinator:
                 qos=1,
                 retain=True,
             )
-            log.info("[supervisor] Published %d Agent Cards", len(self.agents) + 1)
+            # --- Publish Pipeline Cards ---
+            await self._publish_pipeline_cards()
+            log.info(
+                "[supervisor] Published %d Agent Cards, %d Pipeline Cards",
+                len(self.agents) + 1,
+                len(self.pipelines),
+            )
 
             # --- Recovery phase ---
             self.sessions = await recover_sessions(client)

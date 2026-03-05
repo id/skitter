@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Skitter</title>
   <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
   <style>
     :root {
       --bg: #ffffff;
@@ -63,23 +64,55 @@
     .sess-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 
     /* Agent/pipeline list */
-    .config-item { padding: 10px 16px; border-bottom: 1px solid var(--border-light); }
+    .config-item { padding: 10px 16px; border-bottom: 1px solid var(--border-light); cursor: pointer; border-left: 3px solid transparent; transition: all .1s; }
     .config-item:last-child { border-bottom: none; }
+    .config-item:hover { background: var(--bg-hover); }
+    .config-item.active { background: var(--bg); border-left-color: var(--blue); }
     .config-name { font-size: 12px; font-weight: 600; }
     .config-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
     .config-badge { display: inline-block; font-size: 10px; font-family: var(--mono); padding: 1px 5px; border-radius: 3px; background: var(--bg-hover); color: var(--text-sec); margin-left: 6px; }
 
-    /* Compose */
-    .compose { flex-shrink: 0; border-top: 1px solid var(--border); padding: 12px; background: var(--bg); }
-    .compose.disabled { opacity: .4; pointer-events: none; }
-    .compose select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; font-family: var(--sans); background: var(--bg); color: var(--text); margin-bottom: 6px; outline: none; }
-    .compose select:focus { border-color: var(--blue); }
-    .compose-row { display: flex; gap: 6px; }
-    .compose textarea { flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; font-family: var(--sans); resize: none; min-height: 36px; max-height: 100px; outline: none; color: var(--text); }
-    .compose textarea::placeholder { color: var(--text-dim); }
-    .compose textarea:focus { border-color: var(--blue); }
-    .compose button { width: 36px; height: 36px; border: 1px solid var(--blue); background: var(--blue); color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; flex-shrink: 0; }
-    .compose button:hover { opacity: .9; }
+    /* Compose view (main area) */
+    .compose-view { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 40px; }
+    .compose-card { width: 100%; max-width: 560px; }
+    .compose-card-hdr { margin-bottom: 20px; }
+    .compose-card-name { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+    .compose-card-type { font-size: 11px; font-family: var(--mono); color: var(--blue); background: #eff6ff; padding: 2px 8px; border-radius: 4px; margin-left: 10px; vertical-align: middle; }
+    .compose-card-desc { font-size: 13px; line-height: 1.6; color: var(--text-sec); margin-top: 8px; }
+    .compose-card-props { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .compose-prop { font-size: 11px; padding: 3px 10px; border-radius: 4px; background: var(--bg-alt); border: 1px solid var(--border); color: var(--text-sec); }
+    .compose-prop span { font-weight: 600; color: var(--text); }
+    .compose-input-wrap { position: relative; margin-top: 20px; }
+    .compose-textarea { width: 100%; padding: 12px 14px; padding-right: 48px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; font-family: var(--sans); resize: none; min-height: 48px; max-height: 200px; outline: none; color: var(--text); line-height: 1.5; transition: border-color .15s; }
+    .compose-textarea::placeholder { color: var(--text-dim); }
+    .compose-textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.08); }
+    .compose-send { position: absolute; right: 8px; bottom: 8px; width: 32px; height: 32px; border: none; background: var(--blue); color: #fff; border-radius: 8px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: opacity .15s; }
+    .compose-send:hover { opacity: .85; }
+    .compose-send:disabled { opacity: .3; cursor: default; }
+    .compose-hint { font-size: 11px; color: var(--text-dim); margin-top: 8px; text-align: right; }
+
+    /* Session result */
+    .session-result { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+    .session-result-hdr { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--green); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .session-result-hdr .result-actions { margin-left: auto; display: flex; gap: 4px; }
+    .result-act { font-size: 10px; font-weight: 500; color: var(--text-dim); background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+    .result-act:hover { color: var(--text); border-color: var(--text-dim); }
+    .session-result-text { font-size: 13px; line-height: 1.7; color: var(--text); max-height: 400px; overflow-y: auto; }
+    .session-result-text h1, .session-result-text h2, .session-result-text h3, .session-result-text h4 { margin: 12px 0 6px; font-weight: 600; color: var(--text); }
+    .session-result-text h1 { font-size: 18px; } .session-result-text h2 { font-size: 15px; } .session-result-text h3 { font-size: 13px; }
+    .session-result-text p { margin: 6px 0; }
+    .session-result-text ul, .session-result-text ol { margin: 6px 0; padding-left: 20px; }
+    .session-result-text li { margin: 3px 0; }
+    .session-result-text code { font-family: var(--mono); font-size: 12px; background: var(--bg-hover); padding: 1px 5px; border-radius: 3px; }
+    .session-result-text pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0; overflow-x: auto; }
+    .session-result-text pre code { background: none; padding: 0; }
+    .session-result-text blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--text-sec); margin: 8px 0; }
+    .session-result-text a { color: var(--blue); text-decoration: none; }
+    .session-result-text a:hover { text-decoration: underline; }
+    .session-result-text table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+    .session-result-text th, .session-result-text td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+    .session-result-text th { background: var(--bg-hover); font-weight: 600; }
+    .session-result-text hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 
     /* Main header */
     .main-hdr { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-shrink: 0; background: var(--bg); }
@@ -184,13 +217,6 @@
       <div class="side-panel active" id="panel-sessions"></div>
       <div class="side-panel" id="panel-agents"></div>
       <div class="side-panel" id="panel-pipelines"></div>
-      <div class="compose disabled" id="compose">
-        <select id="compose-target"></select>
-        <div class="compose-row">
-          <textarea id="compose-input" placeholder="Enter prompt..." rows="1"></textarea>
-          <button id="compose-send" title="Send">&#9654;</button>
-        </div>
-      </div>
     </aside>
     <div id="main">
       <div class="main-hdr" id="main-hdr">
@@ -215,6 +241,7 @@
       pipelineCards: new Map(),
       selectedSessionId: null,
       selectedTaskId: null,
+      composeTarget: null, // { type: 'agent'|'pipeline', id: string }
     };
     let mqttClient = null;
     let streamRenderPending = false;
@@ -327,10 +354,12 @@
       if (p[2] === 'discovery' && raw) {
         try {
           const card = JSON.parse(raw);
-          if (card.agent_id && card.agent_id !== 'coordinator') {
+          if (card.pipeline_id) {
+            state.pipelineCards.set(card.pipeline_id, card);
+            renderPipelines();
+          } else if (card.agent_id && card.agent_id !== 'coordinator') {
             state.agentCards.set(card.agent_id, card);
             renderAgents();
-            renderSelector();
           }
         } catch(e) {}
         return;
@@ -354,46 +383,13 @@
       for (const t of Object.values(s.tasks)) if (t.status === 'running') cancelTask(sid, t.task_id);
     }
 
-    // --- Send ---
-    function sendMessage(text) {
-      text = text.trim();
-      if (!text || !mqttClient || !state.connected) return;
-      let agentId = '', pipelineId = '', vars = {};
-
-      if (text.startsWith('/agent ')) {
-        const parts = text.split(/\s+/, 2); agentId = parts[1] || ''; text = text.slice(('/agent ' + agentId).length).trim();
-        if (!agentId || !text) return;
-      } else if (text.startsWith('/pipeline ')) {
-        const parts = text.split(/\s+/); pipelineId = parts[1] || '';
-        for (let i = 2; i < parts.length; i++) if (parts[i] === '--var' && i+1 < parts.length) { const kv = parts[++i], eq = kv.indexOf('='); if (eq > 0) vars[kv.slice(0,eq)] = kv.slice(eq+1); }
-        if (!pipelineId) return; text = text || `Pipeline '${pipelineId}'`;
-      } else {
-        const target = document.getElementById('compose-target').value;
-        if (target.startsWith('agent:')) agentId = target.slice(6);
-        else if (target.startsWith('pipeline:')) pipelineId = target.slice(9);
-      }
-      if (!agentId && !pipelineId) return;
-
-      const sid = 'dash-' + crypto.randomUUID().slice(0, 8);
-      const replyTopic = `$a2a/v1/reply/skitter/default/dashboard/${crypto.randomUUID().slice(0,8)}`;
-      const msg = { text, sender: 'dashboard', session_id: sid, timestamp: Date.now() / 1000 };
-      if (agentId) msg.agent_id = agentId;
-      if (pipelineId) { msg.pipeline_id = pipelineId; msg.pipeline_vars = vars; }
-
-      mqttClient.publish('$a2a/v1/request/skitter/default/coordinator', JSON.stringify(msg), {
-        qos: 1, properties: { responseTopic: replyTopic, correlationData: Buffer.from(sid) },
-      });
-      state.selectedSessionId = sid;
-      document.getElementById('compose-input').value = '';
-      renderAll();
-    }
+    // --- Send (kept for /agent and /pipeline text commands if needed) ---
 
     // --- Render ---
     function renderConn() {
       const dot = document.getElementById('conn-dot');
       dot.className = 'conn-dot' + (state.connected ? ' on' : '');
       dot.title = state.connected ? 'Connected' : 'Disconnected';
-      document.getElementById('compose').classList.toggle('disabled', !state.connected);
     }
 
     function renderSessions() {
@@ -409,36 +405,85 @@
       }
       el.innerHTML = h;
       el.querySelectorAll('.sess-item').forEach(el => el.addEventListener('click', () => {
-        state.selectedSessionId = el.dataset.sid; state.selectedTaskId = null; renderAll();
+        state.selectedSessionId = el.dataset.sid; state.selectedTaskId = null; state.composeTarget = null; renderAll();
       }));
+    }
+
+    function pipelineAgentIds() {
+      const ids = new Set();
+      for (const [, p] of state.pipelineCards) {
+        if (p.agents) for (const a of p.agents) ids.add(a);
+      }
+      return ids;
     }
 
     function renderAgents() {
       const el = document.getElementById('panel-agents');
-      if (state.agentCards.size === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No agents discovered</span></div>'; return; }
+      const pipeAgents = pipelineAgentIds();
+      const standalone = [...state.agentCards].filter(([id]) => !pipeAgents.has(id));
+      if (standalone.length === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No agents discovered</span></div>'; return; }
       let h = '';
-      for (const [id, c] of state.agentCards) {
-        h += `<div class="config-item">
+      for (const [id, c] of standalone) {
+        const active = state.composeTarget && state.composeTarget.type === 'agent' && state.composeTarget.id === id;
+        h += `<div class="config-item${active ? ' active' : ''}" data-agent-id="${esc(id)}">
           <div class="config-name">${esc(id)}${c.model ? `<span class="config-badge">${esc(c.model)}</span>` : ''}</div>
           <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
         </div>`;
       }
       el.innerHTML = h;
+      el.querySelectorAll('.config-item').forEach(item => item.addEventListener('click', () => {
+        const id = item.dataset.agentId;
+        if (state.composeTarget && state.composeTarget.type === 'agent' && state.composeTarget.id === id) {
+          state.composeTarget = null;
+        } else {
+          state.composeTarget = { type: 'agent', id };
+          state.selectedSessionId = null; state.selectedTaskId = null;
+        }
+        renderAll();
+      }));
     }
 
     function renderPipelines() {
       const el = document.getElementById('panel-pipelines');
-      // Pipelines aren't discoverable via MQTT yet — show placeholder if empty
       if (state.pipelineCards.size === 0) {
-        el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">Use /pipeline &lt;id&gt; --var k=v in compose</span></div>';
+        el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No pipelines discovered</span></div>';
         return;
       }
+      let h = '';
+      for (const [id, c] of state.pipelineCards) {
+        const active = state.composeTarget && state.composeTarget.type === 'pipeline' && state.composeTarget.id === id;
+        const taskCount = c.tasks ? c.tasks.length : 0;
+        h += `<div class="config-item${active ? ' active' : ''}" data-pipeline-id="${esc(id)}">
+          <div class="config-name">${esc(id)}${taskCount ? `<span class="config-badge">${taskCount} tasks</span>` : ''}</div>
+          <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
+        </div>`;
+      }
+      el.innerHTML = h;
+      el.querySelectorAll('.config-item').forEach(item => item.addEventListener('click', () => {
+        const id = item.dataset.pipelineId;
+        if (state.composeTarget && state.composeTarget.type === 'pipeline' && state.composeTarget.id === id) {
+          state.composeTarget = null;
+        } else {
+          state.composeTarget = { type: 'pipeline', id };
+          state.selectedSessionId = null; state.selectedTaskId = null;
+        }
+        renderAll();
+      }));
     }
 
     function renderHeader() {
       const hdr = document.getElementById('main-hdr');
       const s = state.sessions.get(state.selectedSessionId);
-      if (!s) { hdr.innerHTML = '<h2 id="hdr-title" style="color:var(--text-dim)">No session selected</h2>'; return; }
+      if (!s) {
+        if (state.composeTarget) {
+          const label = state.composeTarget.id;
+          const badge = state.composeTarget.type;
+          hdr.innerHTML = `<h2>${esc(label)}</h2><span class="badge badge-${badge}">${badge}</span>`;
+        } else {
+          hdr.innerHTML = '<h2 style="color:var(--text-dim)">Skitter Dashboard</h2>';
+        }
+        return;
+      }
 
       const type = s.pipeline_id ? 'pipeline' : 'agent';
       const typeLabel = s.pipeline_id || s.agent_id || '';
@@ -460,10 +505,142 @@
         ${stopAll}${usageHtml}`;
     }
 
+    function renderComposeView() {
+      const area = document.getElementById('task-area');
+      const t = state.composeTarget;
+      if (!t) {
+        area.innerHTML = '<div class="empty"><div class="empty-title">Select an agent or pipeline</div><div class="empty-hint">Browse the sidebar to get started</div></div>';
+        return;
+      }
+
+      const isAgent = t.type === 'agent';
+      const card = isAgent ? state.agentCards.get(t.id) : state.pipelineCards.get(t.id);
+      if (!card) return;
+
+      const name = card.name || t.id;
+      const desc = card.description || '';
+      const typeBadge = isAgent ? 'agent' : 'pipeline';
+
+      let propsHtml = '';
+      if (isAgent) {
+        if (card.model) propsHtml += `<span class="compose-prop"><span>Model</span> ${esc(card.model)}</span>`;
+        if (card.capabilities && card.capabilities.length) propsHtml += `<span class="compose-prop"><span>Tools</span> ${card.capabilities.includes('tool_use') ? 'yes' : 'no'}</span>`;
+        if (card.runtime) propsHtml += `<span class="compose-prop"><span>Runtime</span> ${esc(card.runtime)}</span>`;
+      } else {
+        if (card.tasks) propsHtml += `<span class="compose-prop"><span>Tasks</span> ${card.tasks.length}</span>`;
+        if (card.variables && card.variables.length) propsHtml += `<span class="compose-prop"><span>Variables</span> ${card.variables.join(', ')}</span>`;
+      }
+
+      let inputHtml = '';
+      if (isAgent) {
+        inputHtml = `<div class="compose-input-wrap">
+            <textarea class="compose-textarea" id="compose-text" placeholder="Message ${esc(name)}..." rows="1"></textarea>
+            <button class="compose-send" id="compose-btn" title="Send (Enter)">&#9654;</button>
+          </div>
+          <div class="compose-hint">Enter to send, Shift+Enter for newline</div>`;
+      } else {
+        const vars = card.variables || [];
+        let varsHtml = '';
+        for (let i = 0; i < vars.length; i++) {
+          const v = vars[i];
+          const isLast = i === vars.length - 1;
+          varsHtml += `<div style="display:flex;align-items:center;gap:8px">
+            <label style="font-size:12px;font-weight:500;color:var(--text-sec);min-width:80px">${esc(v)}</label>
+            <div style="flex:1;position:relative">
+              <input type="text" class="compose-var" data-var="${esc(v)}" placeholder="${esc(v)}" style="width:100%;padding:8px 10px;${isLast ? 'padding-right:42px;' : ''}border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:var(--sans);outline:none;color:var(--text);transition:border-color .15s">
+              ${isLast ? '<button class="compose-send" id="compose-btn" title="Send (Enter)" style="position:absolute;right:4px;top:50%;transform:translateY(-50%)">&#9654;</button>' : ''}
+            </div>
+          </div>`;
+        }
+        if (vars.length === 0) {
+          varsHtml = `<div><button class="compose-send" id="compose-btn" title="Run pipeline" style="position:static;width:auto;padding:8px 20px;font-size:12px;border-radius:6px">Run &#9654;</button></div>`;
+        }
+        inputHtml = `<div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">${varsHtml}</div>
+          <div class="compose-hint" style="margin-top:8px">Enter to run</div>`;
+      }
+
+      area.innerHTML = `<div class="compose-view">
+        <div class="compose-card">
+          <div class="compose-card-hdr">
+            <div><span class="compose-card-name">${esc(name)}</span><span class="compose-card-type">${typeBadge}</span></div>
+            ${desc ? `<div class="compose-card-desc">${esc(desc)}</div>` : ''}
+            ${propsHtml ? `<div class="compose-card-props">${propsHtml}</div>` : ''}
+          </div>
+          ${inputHtml}
+        </div>
+      </div>`;
+
+      const textarea = document.getElementById('compose-text');
+      const btn = document.getElementById('compose-btn');
+
+      if (textarea) {
+        textarea.addEventListener('input', () => {
+          textarea.style.height = 'auto';
+          textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+        });
+        textarea.addEventListener('keydown', e => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitCompose(); }
+        });
+        textarea.focus();
+      }
+      if (btn) btn.addEventListener('click', submitCompose);
+
+      // Enter to submit from var inputs, focus styling
+      area.querySelectorAll('.compose-var').forEach(inp => {
+        inp.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); submitCompose(); }
+        });
+        inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--blue)'; inp.style.boxShadow = '0 0 0 3px rgba(37,99,235,.08)'; });
+        inp.addEventListener('blur', () => { inp.style.borderColor = 'var(--border)'; inp.style.boxShadow = 'none'; });
+      });
+      const firstInput = area.querySelector('.compose-var');
+      if (firstInput && !textarea) firstInput.focus();
+    }
+
+    function submitCompose() {
+      const textarea = document.getElementById('compose-text');
+      let text = textarea ? textarea.value.trim() : '';
+      const t = state.composeTarget;
+      if (!t || !mqttClient || !state.connected) return;
+      if (t.type === 'agent' && !text) return; // agents need a prompt
+
+      const sid = 'dash-' + crypto.randomUUID().slice(0, 8);
+      const replyTopic = `$a2a/v1/reply/skitter/default/dashboard/${crypto.randomUUID().slice(0,8)}`;
+      const vars = {};
+      document.querySelectorAll('.compose-var').forEach(inp => {
+        if (inp.value.trim()) vars[inp.dataset.var] = inp.value.trim();
+      });
+
+      const msg = { sender: 'dashboard', session_id: sid, timestamp: Date.now() / 1000 };
+
+      if (t.type === 'agent') {
+        msg.agent_id = t.id;
+        msg.text = text;
+      } else {
+        msg.pipeline_id = t.id;
+        if (Object.keys(vars).length) msg.pipeline_vars = vars;
+        const varSummary = Object.values(vars).join(', ');
+        msg.text = text || (varSummary ? `${t.id}: ${varSummary}` : t.id);
+      }
+
+      mqttClient.publish('$a2a/v1/request/skitter/default/coordinator', JSON.stringify(msg), {
+        qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(sid) },
+      });
+
+      state.selectedSessionId = sid;
+      state.composeTarget = null;
+      // Switch to sessions tab
+      document.querySelectorAll('.side-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.side-panel').forEach(p => p.classList.remove('active'));
+      document.querySelector('.side-tab[data-tab="sessions"]').classList.add('active');
+      document.getElementById('panel-sessions').classList.add('active');
+      renderAll();
+    }
+
     function renderTasks() {
       const area = document.getElementById('task-area');
       const s = state.sessions.get(state.selectedSessionId);
-      if (!s) { area.innerHTML = '<div class="empty"><div class="empty-title">Waiting for sessions</div><div class="empty-hint">Send a request from the sidebar</div></div>'; return; }
+      if (!s) { renderComposeView(); return; }
 
       const tasks = Object.values(s.tasks);
       const pending = tasks.filter(t => t.status === 'pending');
@@ -500,7 +677,15 @@
         </div>`;
       }
 
-      area.innerHTML = `<div class="task-grid">
+      let resultHtml = '';
+      if (s.result) {
+        resultHtml = `<div class="session-result">
+          <div class="session-result-hdr">Result<span class="result-actions"><button class="result-act" onclick="copyResult()">Copy</button><button class="result-act" onclick="downloadResult()">Download</button></span></div>
+          <div class="session-result-text">${marked.parse(s.result)}</div>
+        </div>`;
+      }
+
+      area.innerHTML = `${resultHtml}<div class="task-grid">
         <div><div class="col-hdr"><span class="col-dot pending"></span><h3>Pending</h3><span class="cnt">${pending.length}</span></div><div class="task-col">${pending.map(card).join('')}</div></div>
         <div><div class="col-hdr"><span class="col-dot running"></span><h3>Running</h3><span class="cnt">${running.length}</span></div><div class="task-col">${running.map(card).join('')}</div></div>
         <div><div class="col-hdr"><span class="col-dot done"></span><h3>Done</h3><span class="cnt">${done.length}</span></div><div class="task-col">${done.map(card).join('')}</div></div>
@@ -581,20 +766,31 @@
 
     function closeDetail() { state.selectedTaskId = null; document.getElementById('detail').classList.remove('open'); renderTaskSelection(); }
 
-    function renderSelector() {
-      const sel = document.getElementById('compose-target');
-      const prev = sel.value;
-      sel.innerHTML = '';
-      for (const [id, c] of state.agentCards) {
-        const opt = document.createElement('option');
-        opt.value = `agent:${id}`;
-        opt.textContent = `${id}${c.name ? ' \u2014 ' + c.name : ''}`;
-        sel.appendChild(opt);
-      }
-      if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+    function getSessionResult() {
+      const s = state.sessions.get(state.selectedSessionId);
+      return s && s.result ? s.result : '';
+    }
+    function copyResult() {
+      const md = getSessionResult();
+      if (!md) return;
+      navigator.clipboard.writeText(md).then(() => {
+        const btn = document.querySelector('.result-act');
+        if (btn) { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1500); }
+      });
+    }
+    function downloadResult() {
+      const md = getSessionResult();
+      if (!md) return;
+      const sid = state.selectedSessionId || 'result';
+      const blob = new Blob([md], { type: 'text/markdown' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${sid}.md`;
+      a.click();
+      URL.revokeObjectURL(a.href);
     }
 
-    function renderAll() { renderSessions(); renderHeader(); renderTasks(); renderDetail(); }
+    function renderAll() { renderSessions(); renderAgents(); renderPipelines(); renderHeader(); renderTasks(); renderDetail(); }
 
     // --- Tab switching ---
     document.querySelectorAll('.side-tab').forEach(tab => tab.addEventListener('click', () => {
@@ -604,17 +800,9 @@
       document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
     }));
 
-    // --- Compose wiring ---
-    document.getElementById('compose-send').addEventListener('click', () => sendMessage(document.getElementById('compose-input').value));
-    document.getElementById('compose-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(e.target.value); }
-    });
-
     // --- Init ---
     connect();
     renderAll();
-    renderAgents();
-    renderPipelines();
   </script>
 </body>
 </html>

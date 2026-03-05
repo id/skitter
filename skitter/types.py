@@ -351,6 +351,7 @@ class Session:
     caller_correlation: str = ""
     tasks: dict[str, SessionTask] = field(default_factory=dict)
     spawn_request_id: str = ""
+    result: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -364,6 +365,7 @@ class Session:
                 "caller_correlation": self.caller_correlation,
                 "tasks": {k: v.to_dict() for k, v in self.tasks.items()},
                 "spawn_request_id": self.spawn_request_id,
+                "result": self.result,
             }
         )
 
@@ -381,4 +383,5 @@ class Session:
             caller_correlation=d.get("caller_correlation", ""),
             tasks=tasks,
             spawn_request_id=d.get("spawn_request_id", ""),
+            result=d.get("result", ""),
         )

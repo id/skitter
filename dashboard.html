@@ -396,7 +396,7 @@
       const el = document.getElementById('panel-sessions');
       if (state.sessions.size === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No sessions yet</span></div>'; return; }
       let h = '';
-      for (const [sid, s] of state.sessions) {
+      for (const [sid, s] of [...state.sessions].reverse()) {
         const active = isActive(s);
         h += `<div class="sess-item${sid === state.selectedSessionId ? ' active' : ''}" data-sid="${esc(sid)}">
           <div class="sess-id"><span class="sess-dot ${active ? 'running' : 'done'}"></span>${esc(sid)}</div>

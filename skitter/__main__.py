@@ -38,6 +38,21 @@ def dispatch() -> None:
             print("All example files already exist. Nothing to do.")
         else:
             print("Done. Files are in ~/.skitter/")
+    elif subcmd == "run":
+        # skitter run "prompt" — one-shot default agent
+        from skitter.agents_cli import cmd_run
+
+        prompt = " ".join(sys.argv[2:])
+        if not prompt:
+            print("Usage: skitter run '<prompt>'", file=sys.stderr)
+            sys.exit(1)
+        cmd_run("skitter", prompt)
+    elif subcmd and not subcmd.startswith("-"):
+        # skitter "prompt" — treat unrecognized subcommand as prompt
+        from skitter.agents_cli import cmd_run
+
+        prompt = " ".join(sys.argv[1:])
+        cmd_run("skitter", prompt)
     else:
         from skitter.coordinator import main
 

@@ -127,6 +127,7 @@ async def run_chat(session_id: str) -> None:
                     if not agent_id or not text:
                         print("Usage: /agent <agent_id> <description>")
                         continue
+                # else: no prefix — goes to default agent (skitter)
 
                 msg = InboundMessage(
                     text=text,

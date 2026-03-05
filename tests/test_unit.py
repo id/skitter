@@ -11,6 +11,7 @@ from skitter.config import (
     PipelineTask,
 )
 from skitter.coordinator import (
+    Coordinator,
     build_context_for_join,
     create_session,
     find_id_by_task_id,
@@ -444,3 +445,93 @@ class TestTaskHelpers:
         )
         assert find_id_by_task_id(session, "tid1") == "a"
         assert find_id_by_task_id(session, "nope") is None
+
+
+# --- Join accumulation (chain + join overlap) ---
+
+
+class TestAccumulateJoins:
+    """Test that _accumulate_joins stores results for downstream join tasks.
+
+    Covers the pattern where a task's result is consumed by a simple chain
+    (via `next`) but also needed by a downstream join task (via `needs`).
+
+    Pipeline under test:
+        A --next--> B --next--> C (needs: [A, B]) --next--> D (needs: [C])
+
+    Without accumulation, A's result routes to B as a simple chain but C
+    never receives A's result, so the join stalls.
+    """
+
+    def setup_method(self):
+        self.coordinator = Coordinator()
+        self.session = Session(session_id="s1", label="test")
+        self.session.tasks["A"] = SessionTask(
+            id="A",
+            task_id="tid_a",
+            agent="r",
+            description="",
+            next="B",
+            needs=[],
+        )
+        self.session.tasks["B"] = SessionTask(
+            id="B",
+            task_id="tid_b",
+            agent="r",
+            description="",
+            next="C",
+            needs=["A"],
+        )
+        self.session.tasks["C"] = SessionTask(
+            id="C",
+            task_id="tid_c",
+            agent="w",
+            description="",
+            next="D",
+            needs=["A", "B"],
+        )
+        self.session.tasks["D"] = SessionTask(
+            id="D",
+            task_id="tid_d",
+            agent="w",
+            description="",
+            next="output",
+            needs=["C"],
+        )
+        self.coordinator.sessions["s1"] = self.session
+
+    def test_accumulates_for_downstream_join(self):
+        """A's result is stored for C's join even though A.next is B."""
+        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result from A")
+        key = ("s1", "C")
+        assert key in self.coordinator.join_inputs
+        assert "tid_a" in self.coordinator.join_inputs[key]
+        assert self.coordinator.join_inputs[key]["tid_a"] == "result from A"
+
+    def test_does_not_accumulate_for_simple_chain(self):
+        """A's result is NOT stored for B (simple chain, needs has 1 entry)."""
+        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result from A")
+        key = ("s1", "B")
+        assert key not in self.coordinator.join_inputs
+
+    def test_does_not_accumulate_for_unrelated_tasks(self):
+        """A's result is NOT stored for D (D doesn't need A)."""
+        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result from A")
+        key = ("s1", "D")
+        assert key not in self.coordinator.join_inputs
+
+    def test_join_satisfied_after_both_inputs(self):
+        """C's join is fully satisfied after both A and B complete."""
+        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result A")
+        self.coordinator._accumulate_joins(self.session, "B", "tid_b", "result B")
+        key = ("s1", "C")
+        inputs = self.coordinator.join_inputs[key]
+        assert "tid_a" in inputs
+        assert "tid_b" in inputs
+
+    def test_skips_already_running_join(self):
+        """Does not accumulate for a join task that's already running."""
+        self.session.tasks["C"].status = "running"
+        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result A")
+        key = ("s1", "C")
+        assert key not in self.coordinator.join_inputs

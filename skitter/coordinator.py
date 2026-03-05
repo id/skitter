@@ -484,14 +484,26 @@ class Coordinator:
             )
 
         else:
-            await self._send_error(
-                caller_reply_topic,
-                caller_correlation,
-                "Specify agent_id or pipeline_id. Use: "
-                "skitter agent run <id> '<prompt>' or "
-                "skitter pipeline run <id> --var key=value",
+            # Default to "skitter" agent
+            default_agent = "skitter"
+            if default_agent not in self.agents:
+                await self._send_error(
+                    caller_reply_topic,
+                    caller_correlation,
+                    "No default agent. Specify agent_id or pipeline_id, "
+                    "or run 'skitter init' to create the default agent.",
+                )
+                return
+            msg.agent_id = default_agent
+            models = load_models()
+            session = create_session(
+                session_id=msg.session_id,
+                label=msg.text,
+                agent_id=msg.agent_id,
+                text=msg.text,
+                agents=self.agents,
+                models=models,
             )
-            return
 
         # Store caller info on session
         session.caller_reply_topic = caller_reply_topic or ""
@@ -575,6 +587,59 @@ class Coordinator:
             spawn_task_id,
         )
 
+    def _accumulate_joins(
+        self, session: Session, source_id: str, source_tid: str, result: str
+    ) -> None:
+        """Store result for any downstream join tasks that list source_id in needs."""
+        for tid, task in session.tasks.items():
+            if (
+                len(task.needs) > 1
+                and source_id in task.needs
+                and task.status == "pending"
+            ):
+                key = (session.session_id, tid)
+                if key not in self.join_inputs:
+                    self.join_inputs[key] = {}
+                self.join_inputs[key][source_tid] = result
+
+    async def _dispatch_ready_joins(self, session: Session) -> None:
+        """Dispatch any join tasks whose inputs are fully accumulated."""
+        sid = session.session_id
+        for tid, task in list(session.tasks.items()):
+            if len(task.needs) <= 1 or task.status != "pending":
+                continue
+            key = (sid, tid)
+            if key not in self.join_inputs:
+                continue
+            all_satisfied = all(
+                session.tasks.get(need_id) is not None
+                and session.tasks[need_id].task_id in self.join_inputs[key]
+                for need_id in task.needs
+            )
+            if not all_satisfied:
+                continue
+
+            context = build_context_for_join(self.join_inputs[key], task.needs, session)
+            await self.dispatch_and_spawn(session, tid, context)
+
+            # Clear retained chain results for this join
+            for need_id in task.needs:
+                need_task = session.tasks.get(need_id)
+                if need_task:
+                    await self.client.publish(
+                        topic_chain_result(sid, need_task.task_id),
+                        b"",
+                        qos=1,
+                        retain=True,
+                    )
+            del self.join_inputs[key]
+
+            log.info(
+                "[supervisor] Join task '%s' ready — all %d inputs collected",
+                tid,
+                len(task.needs),
+            )
+
     async def handle_chain_result(self, payload: str) -> None:
         """Handle retained chain result — marks source done, dispatches next task."""
         assert self.client is not None
@@ -604,9 +669,12 @@ class Coordinator:
             topic_state_dispatch(cr_source_tid), b"", qos=1, retain=True
         )
 
+        # Accumulate result for any downstream join tasks that need this source
+        self._accumulate_joins(session, source_id, cr_source_tid, cr_result)
+
         next_id = source_task.next
         if not next_id or next_id == "output":
-            # Check session completion
+            await self._dispatch_ready_joins(session)
             if all(t.status == "done" for t in session.tasks.values()):
                 log.info("[supervisor] Session complete for %s", cr_sid)
             await self._publish_session(session)
@@ -614,6 +682,7 @@ class Coordinator:
 
         next_task = session.tasks.get(next_id)
         if not next_task or next_task.status != "pending":
+            await self._dispatch_ready_joins(session)
             await self._publish_session(session)
             return
 
@@ -626,52 +695,16 @@ class Coordinator:
             await self.client.publish(
                 topic_chain_result(cr_sid, cr_source_tid), b"", qos=1, retain=True
             )
-            await self._publish_session(session)
             log.info(
                 "[supervisor] Chain: '%s' -> '%s' for session %s",
                 source_id,
                 next_id,
                 cr_sid,
             )
-        else:
-            # Join: accumulate inputs
-            key = (cr_sid, next_id)
-            if key not in self.join_inputs:
-                self.join_inputs[key] = {}
-            self.join_inputs[key][cr_source_tid] = cr_result
 
-            # Check if all needs satisfied
-            all_satisfied = all(
-                session.tasks.get(need_id) is not None
-                and session.tasks[need_id].task_id in self.join_inputs[key]
-                for need_id in next_task.needs
-            )
-
-            if all_satisfied:
-                context = build_context_for_join(
-                    self.join_inputs[key], next_task.needs, session
-                )
-                await self.dispatch_and_spawn(session, next_id, context)
-
-                # Clear retained chain results
-                for need_id in next_task.needs:
-                    need_task = session.tasks.get(need_id)
-                    if need_task:
-                        await self.client.publish(
-                            topic_chain_result(cr_sid, need_task.task_id),
-                            b"",
-                            qos=1,
-                            retain=True,
-                        )
-                del self.join_inputs[key]
-
-                log.info(
-                    "[supervisor] Join task '%s' ready — all %d inputs collected",
-                    next_id,
-                    len(next_task.needs),
-                )
-
-            await self._publish_session(session)
+        # Dispatch any joins that became ready
+        await self._dispatch_ready_joins(session)
+        await self._publish_session(session)
 
     async def handle_reply(self, mqtt_msg, payload: str) -> None:
         """Handle reply from worker — terminal task bookkeeping."""
@@ -949,15 +982,11 @@ class Coordinator:
                 for (cr_sid, cr_source_tid), cr_result in chain_results.items():
                     cr_session = self.sessions.get(cr_sid)
                     if cr_session:
-                        for jt in cr_session.tasks.values():
-                            if len(jt.needs) > 1:
-                                for need_id in jt.needs:
-                                    need_task = cr_session.tasks.get(need_id)
-                                    if need_task and need_task.task_id == cr_source_tid:
-                                        key = (cr_sid, jt.id)
-                                        if key not in self.join_inputs:
-                                            self.join_inputs[key] = {}
-                                        self.join_inputs[key][cr_source_tid] = cr_result
+                        source_id = find_id_by_task_id(cr_session, cr_source_tid)
+                        if source_id:
+                            self._accumulate_joins(
+                                cr_session, source_id, cr_source_tid, cr_result
+                            )
 
                 # Respawn workers for tasks that were running
                 for session in self.sessions.values():
@@ -974,23 +1003,8 @@ class Coordinator:
                             spawn_worker(task.agent, session.session_id, task.task_id)
 
                 # Check if any joins are now satisfiable
-                for (ji_sid, ji_task_id), ji_inputs in list(self.join_inputs.items()):
-                    ji_session = self.sessions.get(ji_sid)
-                    if not ji_session:
-                        continue
-                    ji_task = ji_session.tasks.get(ji_task_id)
-                    if not ji_task or ji_task.status != "pending":
-                        continue
-                    all_satisfied = all(
-                        ji_session.tasks.get(need_id) is not None
-                        and ji_session.tasks[need_id].task_id in ji_inputs
-                        for need_id in ji_task.needs
-                    )
-                    if all_satisfied:
-                        context = build_context_for_join(
-                            ji_inputs, ji_task.needs, ji_session
-                        )
-                        await self.dispatch_and_spawn(ji_session, ji_task_id, context)
+                for session in self.sessions.values():
+                    await self._dispatch_ready_joins(session)
 
                 log.info(
                     "[supervisor] Recovery complete: %d sessions, %d running tasks",

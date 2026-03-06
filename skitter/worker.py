@@ -514,7 +514,9 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
                 task_msg.next,
             )
 
-            await publish_task_status(client, session_id, task_id, "done")
+            await publish_task_status(
+                client, session_id, task_id, "done", result=response_text
+            )
         else:
             # Terminal: publish to caller
             await publish_terminal_result(client, session, task_name, response_text)

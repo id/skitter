@@ -837,17 +837,19 @@
 
       h += `<div class="det-section"><div class="det-label">Description</div><div class="det-text">${esc(t.description)}</div></div>`;
 
-      // Live stream
+      // Stream log (live while running, full log when done)
       const chunks = state.streamChunks.get(`${sid}/${t.task_id}`);
-      if (mergedStatus === 'running' && chunks && chunks.length) {
+      if (chunks && chunks.length) {
+        const isRunning = mergedStatus === 'running';
         let sh = '';
-        for (const c of chunks.slice(-50)) {
+        for (const c of chunks.slice(isRunning ? -50 : -200)) {
           if (c.type === 'text') sh += esc(c.content);
           else if (c.type === 'tool_use') sh += `<span class="tool">[${esc(c.content)}]</span>\n`;
           else if (c.type === 'tool_result') sh += `<span class="tool">  \u2192 ${esc(trunc(c.content, 150))}</span>\n`;
           else if (c.type === 'error') sh += `<span class="err">[ERROR: ${esc(c.content)}]</span>\n`;
         }
-        h += `<div class="det-section"><div class="det-label"><span class="stream-dot"></span> Live Output</div><div class="det-stream">${sh}</div></div>`;
+        const label = isRunning ? '<span class="stream-dot"></span> Live Output' : 'Activity Log';
+        h += `<div class="det-section"><div class="det-label">${label}</div><div class="det-stream">${sh}</div></div>`;
       }
 
       if (result) h += `<div class="det-section"><div class="det-label">Result</div><div class="det-box"><div class="det-result-md">${marked.parse(result)}</div></div><div class="det-result-actions"><button class="det-act" onclick="copyTaskResult()">Copy</button><button class="det-act" onclick="downloadTaskResult()">Download</button></div></div>`;

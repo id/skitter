@@ -2,7 +2,7 @@
 
 ~2,600 lines of Python. MQTT-based personal AI assistant. A stateless gateway creates sessions and spawns all workers upfront; self-coordinating workers read their session spec from retained MQTT, wait for upstream results, invoke `claude` or `codex` CLI as subprocesses, and publish results.
 
-Key files: `skitter/gateway.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `SOUL.md`, `docs/architecture.md`.
+Key files: `skitter/gateway.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `docs/architecture.md`.
 
 ## Planning and Implementation Process
 

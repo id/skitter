@@ -57,7 +57,7 @@ Small Python codebase.
 
 5. **Watch it work** — open `dashboard.html` in a browser to see jobs, tasks, and chain execution in real time. Connects to the broker's WebSocket endpoint (`ws://localhost:8083/mqtt`) using MQTT v5, no backend required.
 
-*You can also use any MQTT v5 client directly (`mqttx`, `mosquitto_pub`/`mosquitto_sub`, custom Telegram/Slack bots, etc). Publish A2A requests to the gateway's request topic with Response Topic and Correlation Data properties.*
+*You can also use any MQTT v5 client directly (`mqttx`, `mosquitto_pub`/`mosquitto_sub`, custom Telegram/Slack bots, etc). Publish JSON requests to the gateway's request topic with MQTT v5 Response Topic and Correlation Data properties.*
 
 ## Predefined Agents
 
@@ -78,7 +78,7 @@ runtime: claude    # "claude" (default) or "codex"
 workspace: ""      # custom cwd (default: ~/.skitter/workspaces/{task_id})
 ```
 
-Workflow tasks reference agents by ID (e.g., `agent: researcher`). The agent's defaults (model, max_turns, runtime, etc.) are applied automatically. Workflow tasks can still override any field. On startup, the gateway publishes Agent Cards as retained MQTT messages for A2A discovery.
+Workflow tasks reference agents by ID (e.g., `agent: researcher`). The agent's defaults (model, max_turns, runtime, etc.) are applied automatically. Workflow tasks can still override any field. On startup, the gateway publishes Agent Cards as retained MQTT messages for discovery.
 
 Manage and run agents with the CLI:
 
@@ -178,12 +178,12 @@ What this means in practice:
 
 ## How It Works
 
-Skitter implements [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) for all agent communication. Every message in the system — requests, results, streaming, liveness, state — flows through a standard MQTT v5 topic scheme:
+Skitter uses the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) topic scheme for agent communication. Every message in the system — requests, results, streaming, liveness, state — flows through MQTT v5 topics:
 
 ```
 $a2a/v1/
 ├── discovery/{org}/{unit}/{agent_id}                    # Retained Agent Cards (who can do what)
-├── request/{org}/{unit}/{agent_id}                      # A2A requests (JSON-RPC 2.0)
+├── request/{org}/{unit}/{agent_id}                      # Requests (JSON)
 ├── request/{org}/{unit}/{agent_id}/cancel               # Cancel signals
 ├── reply/{org}/{unit}/{agent_id}/{session}              # Replies (per-caller session)
 ├── event/{org}/{unit}/{agent_id}/{event_type}           # Agent events (alive/done/dead)
@@ -203,7 +203,7 @@ The gateway never calls an LLM. It creates sessions, pre-materializes dispatch s
  (CLI, dashboard,                (Docker, port 1883)        (claude CLI / codex CLI)
   Telegram bot, etc.)
                             ┌──────────────────────────┐
-   A2A JSON-RPC request     │                          │
+   JSON request              │                          │
   ──────────────────────────▶  request/.../gateway     │
    (v5 Response Topic +     │          │               │
     Correlation Data)       │          ▼               │
@@ -235,7 +235,7 @@ The gateway never calls an LLM. It creates sessions, pre-materializes dispatch s
                             └──────────────────────────┘
 ```
 
-1. **Request (A2A JSON-RPC):** Any MQTT v5 client publishes a request to `$a2a/v1/request/.../gateway` with a `Response Topic` (where to send the answer) and `Correlation Data` (to match replies). The request includes either `agent_id` (direct call) or `workflow_id` (chain execution).
+1. **Request:** Any MQTT v5 client publishes a JSON request to `$a2a/v1/request/.../gateway` with a `Response Topic` (where to send the answer) and `Correlation Data` (to match replies). The request includes either `agent_id` (direct call) or `workflow_id` (chain execution).
 2. **Build session:** For `agent_id`: the gateway creates a single-task session with the agent's defaults. For `workflow_id`: it resolves the workflow template and interpolates variables. Every task is a regular agent — research, review, synthesis, anything.
 3. **Pre-materialize and spawn:** The gateway publishes the session spec and per-task dispatch specs as retained MQTT messages, then spawns all workers upfront. Workers read their dispatch spec from retained MQTT on startup. Workers with upstream dependencies (joins) wait for chain results to arrive before executing.
 4. **Direct-to-caller streaming:** Workers stream text deltas and tool events directly to the caller's reply topic at QoS 0 — the gateway is not in the streaming path.
@@ -255,6 +255,17 @@ Any MQTT client can discover available agents by subscribing to `$a2a/v1/discove
 ### Crash Recovery
 
 Session specs and dispatch specs are published as **retained messages**. Since the session spec is immutable after creation and workers self-coordinate, the gateway is crash-safe — restarting it has no effect on in-flight sessions. Workers set LWT messages for crash detection; when the TCP connection drops, the broker fires the will message and the gateway can respawn the worker.
+
+### A2A-over-MQTT Conformance
+
+Skitter uses the A2A-over-MQTT topic scheme (`$a2a/v1/discovery/`, `$a2a/v1/request/`, `$a2a/v1/reply/`, `$a2a/v1/event/`) and MQTT v5 `Response Topic` + `Correlation Data` for request/reply correlation. Differences from the [spec](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/):
+
+- **Request payloads are plain JSON**, not JSON-RPC 2.0. Requests carry `{text, sender, session_id, agent_id, workflow_id}` instead of `{jsonrpc, method, params, id}`.
+- **Error replies use JSON-RPC error objects** (`{jsonrpc, id, error: {code, message}}`), matching the spec.
+- **No `Task.id` in responses.** The spec requires responders to return a server-generated task ID. Skitter uses session-scoped task IDs embedded in the session spec instead.
+- **Retained state topics** (`$a2a/v1/state/...`) for sessions, per-task status, chain results, and usage are skitter-specific extensions not defined in the spec.
+- **No retry/timeout profile.** Clients don't implement the spec's `reply_first_timeout_ms`, `stream_idle_timeout_ms`, or exponential backoff.
+- **No auth/TLS.** The spec requires TLS for bearer tokens and supports OAuth 2.0 via User Properties. Skitter currently runs unauthenticated on localhost.
 
 ## Configuration
 

@@ -43,34 +43,6 @@ class AgentCard:
 
 
 @dataclass
-class A2ARequest:
-    """JSON-RPC 2.0 request wrapper for A2A messages."""
-
-    method: str
-    params: dict
-    id: str
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "method": self.method,
-                "params": self.params,
-                "id": self.id,
-            }
-        )
-
-    @classmethod
-    def from_json(cls, data: str) -> "A2ARequest":
-        d = json.loads(data)
-        return cls(
-            method=d["method"],
-            params=d.get("params", {}),
-            id=d["id"],
-        )
-
-
-@dataclass
 class A2AResponse:
     """JSON-RPC 2.0 response wrapper for A2A messages."""
 
@@ -351,7 +323,6 @@ class Session:
     caller_correlation: str = ""
     tasks: dict[str, SessionTask] = field(default_factory=dict)
     task_dispatches: dict[str, dict] = field(default_factory=dict)
-    spawn_request_id: str = ""
     result: str = ""
 
     def to_json(self) -> str:
@@ -366,7 +337,6 @@ class Session:
                 "caller_correlation": self.caller_correlation,
                 "tasks": {k: v.to_dict() for k, v in self.tasks.items()},
                 "task_dispatches": self.task_dispatches,
-                "spawn_request_id": self.spawn_request_id,
                 "result": self.result,
             }
         )
@@ -385,6 +355,5 @@ class Session:
             caller_correlation=d.get("caller_correlation", ""),
             tasks=tasks,
             task_dispatches=d.get("task_dispatches", {}),
-            spawn_request_id=d.get("spawn_request_id", ""),
             result=d.get("result", ""),
         )

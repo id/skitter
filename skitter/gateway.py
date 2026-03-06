@@ -176,15 +176,6 @@ async def handle_request(
         log.error("Bad inbound JSON: %s", e)
         return
 
-    method = data.get("method", "")
-
-    # A2A tasks/spawn
-    if method == "tasks/spawn":
-        await _handle_spawn(
-            client, data, caller_reply_topic, caller_correlation, agents
-        )
-        return
-
     # Standard inbound request
     try:
         msg = InboundMessage.from_json(payload)
@@ -294,78 +285,6 @@ async def handle_request(
         label.capitalize(),
         session.session_id,
         len(session.tasks),
-    )
-
-
-async def _handle_spawn(
-    client: aiomqtt.Client,
-    data: dict,
-    caller_reply_topic: str,
-    caller_correlation: str,
-    agents: dict[str, AgentDef],
-) -> None:
-    """Handle A2A tasks/spawn request."""
-    params = data.get("params", {})
-    request_id = data.get("id", "")
-    spawn_agent_id = params.get("agent_id", "")
-    spawn_description = params.get("description", "")
-    spawn_reply_to = params.get("reply_to", caller_reply_topic or "")
-    spawn_sid = params.get("session_id", f"spawn-{uuid.uuid4().hex[:8]}")
-
-    if not spawn_agent_id:
-        if spawn_reply_to and request_id:
-            err = A2AResponse(
-                id=request_id,
-                error={"code": -32602, "message": "Missing agent_id"},
-            )
-            await client.publish(spawn_reply_to, err.to_json(), qos=1)
-        return
-
-    models = _load_models()
-    session = create_session(
-        spawn_sid,
-        spawn_description,
-        agent_id=spawn_agent_id,
-        text=spawn_description,
-        agents=agents,
-        models=models,
-    )
-    session.caller_reply_topic = spawn_reply_to
-    session.caller_correlation = caller_correlation
-    session.spawn_request_id = request_id
-
-    # Rename the task key from agent_id to "spawn_task" for consistency
-    agent_task = session.tasks.pop(spawn_agent_id)
-    agent_task.id = "spawn_task"
-    session.tasks["spawn_task"] = agent_task
-
-    # Pre-materialize
-    session.task_dispatches["spawn_task"] = build_dispatch_spec(
-        session, "spawn_task", agents, {}
-    )
-
-    await client.publish(
-        topic_state_session(session.session_id),
-        session.to_json(),
-        qos=1,
-        retain=True,
-    )
-
-    agent_task.status = "running"
-    spawn_worker(agent_task.agent, session.session_id, agent_task.task_id)
-
-    await client.publish(
-        topic_state_session(session.session_id),
-        session.to_json(),
-        qos=1,
-        retain=True,
-    )
-
-    log.info(
-        "Spawn request: %s for agent '%s' task %s",
-        request_id,
-        spawn_agent_id,
-        agent_task.task_id,
     )
 
 

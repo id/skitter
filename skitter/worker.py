@@ -319,22 +319,6 @@ async def publish_terminal_result(
             properties=props,
         )
 
-    # Handle spawn task response
-    if task_name == "spawn_task" and session.spawn_request_id:
-        from skitter.types import A2AResponse
-
-        resp = A2AResponse(
-            id=session.spawn_request_id,
-            result={"output": result},
-        )
-        if session.caller_reply_topic:
-            props = make_properties(correlation_data=session.caller_correlation)
-            await client.publish(
-                session.caller_reply_topic,
-                resp.to_json(),
-                qos=1,
-                properties=props,
-            )
 
 
 async def run(agent: str, session_id: str, task_id: str) -> None:

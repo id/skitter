@@ -63,7 +63,7 @@
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
     .sess-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 
-    /* Agent/pipeline list */
+    /* Agent/workflow list */
     .config-item { padding: 10px 16px; border-bottom: 1px solid var(--border-light); cursor: pointer; border-left: 3px solid transparent; transition: all .1s; }
     .config-item:last-child { border-bottom: none; }
     .config-item:hover { background: var(--bg-hover); }
@@ -82,6 +82,15 @@
     .compose-card-props { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
     .compose-prop { font-size: 11px; padding: 3px 10px; border-radius: 4px; background: var(--bg-alt); border: 1px solid var(--border); color: var(--text-sec); }
     .compose-prop span { font-weight: 600; color: var(--text); }
+    .wf-graph { display: flex; flex-direction: column; align-items: center; gap: 0; margin: 20px 0 4px; padding: 16px; background: var(--bg-alt); border-radius: 10px; border: 1px solid var(--border); }
+    .wf-layer { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .wf-node { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; min-width: 120px; text-align: center; transition: border-color .15s; }
+    .wf-node:hover { border-color: var(--blue); }
+    .wf-terminal { border-style: double; border-width: 3px; }
+    .wf-node-id { font-size: 12px; font-weight: 700; font-family: var(--mono); color: var(--text); letter-spacing: -0.01em; }
+    .wf-node-agent { font-size: 11px; color: var(--blue); margin-top: 3px; }
+    .wf-node-model { font-size: 10px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
+    .wf-arrow { font-size: 11px; color: var(--text-dim); padding: 6px 0; text-align: center; letter-spacing: 0.5px; }
     .compose-input-wrap { position: relative; margin-top: 20px; }
     .compose-textarea { width: 100%; padding: 12px 14px; padding-right: 48px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; font-family: var(--sans); resize: none; min-height: 48px; max-height: 200px; outline: none; color: var(--text); line-height: 1.5; transition: border-color .15s; }
     .compose-textarea::placeholder { color: var(--text-dim); }
@@ -118,7 +127,7 @@
     .main-hdr { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-shrink: 0; background: var(--bg); }
     .main-hdr h2 { font-size: 14px; font-weight: 600; }
     .main-hdr .badge { font-size: 10px; font-family: var(--mono); padding: 2px 8px; border-radius: 4px; }
-    .badge-pipeline { background: #eff6ff; color: var(--blue); }
+    .badge-workflow { background: #eff6ff; color: var(--blue); }
     .badge-agent { background: #f0fdf4; color: var(--green); }
     .usage-bar { margin-left: auto; display: flex; gap: 14px; font-size: 11px; color: var(--text-dim); }
     .usage-bar .val { font-weight: 600; color: var(--text-sec); }
@@ -168,6 +177,7 @@
     /* Detail panel */
     #detail { border-top: 1px solid var(--border); background: var(--bg-alt); overflow-y: auto; flex-shrink: 0; max-height: 0; transition: max-height .2s ease; }
     #detail.open { max-height: 45vh; }
+    #detail.expanded { max-height: 85vh; }
     #detail-inner { padding: 16px 20px; }
     .det-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
     .det-hdr h2 { font-size: 15px; font-weight: 600; }
@@ -176,7 +186,25 @@
     .det-section { margin-bottom: 12px; }
     .det-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); margin-bottom: 4px; }
     .det-text { font-size: 12px; line-height: 1.6; color: var(--text-sec); white-space: pre-wrap; word-wrap: break-word; }
-    .det-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; max-height: 200px; overflow-y: auto; }
+    .det-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-y: auto; }
+    .det-result-md { font-size: 13px; line-height: 1.7; color: var(--text); max-height: 60vh; overflow-y: auto; }
+    .det-result-md p { margin: 0 0 8px; }
+    .det-result-md h1, .det-result-md h2, .det-result-md h3 { margin: 12px 0 6px; font-weight: 600; }
+    .det-result-md h1 { font-size: 16px; } .det-result-md h2 { font-size: 14px; } .det-result-md h3 { font-size: 13px; }
+    .det-result-md ul, .det-result-md ol { margin: 6px 0; padding-left: 20px; }
+    .det-result-md li { margin: 3px 0; }
+    .det-result-md code { font-family: var(--mono); background: var(--bg-alt); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+    .det-result-md pre { background: var(--bg-alt); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 11px; margin: 8px 0; }
+    .det-result-md pre code { background: none; padding: 0; }
+    .det-result-md blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--text-sec); margin: 8px 0; }
+    .det-result-md a { color: var(--blue); text-decoration: none; }
+    .det-result-md a:hover { text-decoration: underline; }
+    .det-result-md table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+    .det-result-md th, .det-result-md td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+    .det-result-md th { background: var(--bg-hover); font-weight: 600; }
+    .det-result-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .det-act { background: none; border: 1px solid var(--border); color: var(--text-sec); cursor: pointer; font-size: 11px; padding: 3px 10px; border-radius: 4px; font-family: var(--sans); }
+    .det-act:hover { background: var(--bg-hover); color: var(--text); }
     .det-stream { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; max-height: 250px; overflow-y: auto; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--text-sec); white-space: pre-wrap; word-wrap: break-word; }
     .det-stream .tool { color: var(--blue); }
     .det-stream .err { color: var(--red); }
@@ -212,11 +240,11 @@
       <div class="side-tabs">
         <div class="side-tab active" data-tab="sessions">Sessions</div>
         <div class="side-tab" data-tab="agents">Agents</div>
-        <div class="side-tab" data-tab="pipelines">Pipelines</div>
+        <div class="side-tab" data-tab="workflows">Workflows</div>
       </div>
       <div class="side-panel active" id="panel-sessions"></div>
       <div class="side-panel" id="panel-agents"></div>
-      <div class="side-panel" id="panel-pipelines"></div>
+      <div class="side-panel" id="panel-workflows"></div>
     </aside>
     <div id="main">
       <div class="main-hdr" id="main-hdr">
@@ -233,15 +261,16 @@
     const state = {
       connected: false,
       sessions: new Map(),
+      taskStatus: new Map(),
       taskResults: new Map(),
       workerStatus: new Map(),
       taskUsage: new Map(),
       streamChunks: new Map(),
       agentCards: new Map(),
-      pipelineCards: new Map(),
+      workflowCards: new Map(),
       selectedSessionId: null,
       selectedTaskId: null,
-      composeTarget: null, // { type: 'agent'|'pipeline', id: string }
+      composeTarget: null, // { type: 'agent'|'workflow', id: string }
     };
     let mqttClient = null;
     let streamRenderPending = false;
@@ -250,7 +279,12 @@
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '\u2026' : s; }
     function fmtTok(n) { return n == null ? '?' : n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
-    function isActive(s) { return Object.values(s.tasks).some(t => t.status !== 'done'); }
+    function isActive(s) {
+      return Object.values(s.tasks).some(t => {
+        const ts = state.taskStatus.get(`${s.session_id}/${t.task_id}`);
+        return (ts || t.status) !== 'done';
+      });
+    }
 
     function sessionUsage(sid) {
       const s = state.sessions.get(sid);
@@ -301,7 +335,19 @@
         return;
       }
 
-      // Worker events
+      // Per-task status (retained): $a2a/v1/state/{org}/{unit}/task/{session_id}/{task_id}
+      if (p[2] === 'state' && p[5] === 'task' && p.length === 8 && raw) {
+        try {
+          const m = JSON.parse(raw);
+          const sid = p[6], tid = p[7];
+          state.taskStatus.set(`${sid}/${tid}`, m.status);
+          if (m.result) state.taskResults.set(`${sid}/${tid}`, m.result);
+        } catch(e) {}
+        renderSessions(); renderTasks(); renderDetail();
+        return;
+      }
+
+      // Worker events (alive/done/dead)
       if (p[2] === 'event' && raw) {
         try {
           const ev = JSON.parse(raw);
@@ -354,10 +400,10 @@
       if (p[2] === 'discovery' && raw) {
         try {
           const card = JSON.parse(raw);
-          if (card.pipeline_id) {
-            state.pipelineCards.set(card.pipeline_id, card);
-            renderPipelines();
-          } else if (card.agent_id && card.agent_id !== 'coordinator') {
+          if (card.workflow_id) {
+            state.workflowCards.set(card.workflow_id, card);
+            renderWorkflows();
+          } else if (card.agent_id && card.agent_id !== 'gateway') {
             state.agentCards.set(card.agent_id, card);
             renderAgents();
           }
@@ -383,7 +429,7 @@
       for (const t of Object.values(s.tasks)) if (t.status === 'running') cancelTask(sid, t.task_id);
     }
 
-    // --- Send (kept for /agent and /pipeline text commands if needed) ---
+    // --- Send (kept for /agent and /workflow text commands if needed) ---
 
     // --- Render ---
     function renderConn() {
@@ -409,9 +455,9 @@
       }));
     }
 
-    function pipelineAgentIds() {
+    function workflowAgentIds() {
       const ids = new Set();
-      for (const [, p] of state.pipelineCards) {
+      for (const [, p] of state.workflowCards) {
         if (p.agents) for (const a of p.agents) ids.add(a);
       }
       return ids;
@@ -419,8 +465,8 @@
 
     function renderAgents() {
       const el = document.getElementById('panel-agents');
-      const pipeAgents = pipelineAgentIds();
-      const standalone = [...state.agentCards].filter(([id]) => !pipeAgents.has(id));
+      const workflowAgents = workflowAgentIds();
+      const standalone = [...state.agentCards].filter(([id]) => !workflowAgents.has(id));
       if (standalone.length === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No agents discovered</span></div>'; return; }
       let h = '';
       for (const [id, c] of standalone) {
@@ -443,28 +489,28 @@
       }));
     }
 
-    function renderPipelines() {
-      const el = document.getElementById('panel-pipelines');
-      if (state.pipelineCards.size === 0) {
-        el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No pipelines discovered</span></div>';
+    function renderWorkflows() {
+      const el = document.getElementById('panel-workflows');
+      if (state.workflowCards.size === 0) {
+        el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No workflows discovered</span></div>';
         return;
       }
       let h = '';
-      for (const [id, c] of state.pipelineCards) {
-        const active = state.composeTarget && state.composeTarget.type === 'pipeline' && state.composeTarget.id === id;
+      for (const [id, c] of state.workflowCards) {
+        const active = state.composeTarget && state.composeTarget.type === 'workflow' && state.composeTarget.id === id;
         const taskCount = c.tasks ? c.tasks.length : 0;
-        h += `<div class="config-item${active ? ' active' : ''}" data-pipeline-id="${esc(id)}">
+        h += `<div class="config-item${active ? ' active' : ''}" data-workflow-id="${esc(id)}">
           <div class="config-name">${esc(id)}${taskCount ? `<span class="config-badge">${taskCount} tasks</span>` : ''}</div>
           <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
         </div>`;
       }
       el.innerHTML = h;
       el.querySelectorAll('.config-item').forEach(item => item.addEventListener('click', () => {
-        const id = item.dataset.pipelineId;
-        if (state.composeTarget && state.composeTarget.type === 'pipeline' && state.composeTarget.id === id) {
+        const id = item.dataset.workflowId;
+        if (state.composeTarget && state.composeTarget.type === 'workflow' && state.composeTarget.id === id) {
           state.composeTarget = null;
         } else {
-          state.composeTarget = { type: 'pipeline', id };
+          state.composeTarget = { type: 'workflow', id };
           state.selectedSessionId = null; state.selectedTaskId = null;
         }
         renderAll();
@@ -485,8 +531,8 @@
         return;
       }
 
-      const type = s.pipeline_id ? 'pipeline' : 'agent';
-      const typeLabel = s.pipeline_id || s.agent_id || '';
+      const type = s.workflow_id ? 'workflow' : 'agent';
+      const typeLabel = s.workflow_id || s.agent_id || '';
       const usage = sessionUsage(state.selectedSessionId);
       const running = Object.values(s.tasks).filter(t => t.status === 'running');
       const stopAll = running.length > 0 ? `<button class="stop-btn" onclick="cancelAll('${esc(state.selectedSessionId)}')">Stop all</button>` : '';
@@ -509,17 +555,17 @@
       const area = document.getElementById('task-area');
       const t = state.composeTarget;
       if (!t) {
-        area.innerHTML = '<div class="empty"><div class="empty-title">Select an agent or pipeline</div><div class="empty-hint">Browse the sidebar to get started</div></div>';
+        area.innerHTML = '<div class="empty"><div class="empty-title">Select an agent or workflow</div><div class="empty-hint">Browse the sidebar to get started</div></div>';
         return;
       }
 
       const isAgent = t.type === 'agent';
-      const card = isAgent ? state.agentCards.get(t.id) : state.pipelineCards.get(t.id);
+      const card = isAgent ? state.agentCards.get(t.id) : state.workflowCards.get(t.id);
       if (!card) return;
 
       const name = card.name || t.id;
       const desc = card.description || '';
-      const typeBadge = isAgent ? 'agent' : 'pipeline';
+      const typeBadge = isAgent ? 'agent' : 'workflow';
 
       let propsHtml = '';
       if (isAgent) {
@@ -529,6 +575,60 @@
       } else {
         if (card.tasks) propsHtml += `<span class="compose-prop"><span>Tasks</span> ${card.tasks.length}</span>`;
         if (card.variables && card.variables.length) propsHtml += `<span class="compose-prop"><span>Variables</span> ${card.variables.join(', ')}</span>`;
+        if (card.agents && card.agents.length) propsHtml += `<span class="compose-prop"><span>Agents</span> ${card.agents.join(', ')}</span>`;
+      }
+
+      // Workflow composition graph
+      let graphHtml = '';
+      if (!isAgent && card.tasks && card.tasks.length) {
+        const tasks = card.tasks;
+        const agentModels = {};
+        for (const [aid, ac] of state.agentCards) agentModels[aid] = { model: ac.model || '', runtime: ac.runtime || 'claude' };
+
+        // Group tasks by depth (BFS from entry nodes)
+        const taskMap = {};
+        tasks.forEach(t => taskMap[t.id] = t);
+        // Compute depth from needs (longest path from any root)
+        const depths = {};
+        function getDepth(id) {
+          if (depths[id] !== undefined) return depths[id];
+          const t = taskMap[id];
+          if (!t || !t.needs || t.needs.length === 0) { depths[id] = 0; return 0; }
+          const d = Math.max(...t.needs.map(n => getDepth(n))) + 1;
+          depths[id] = d;
+          return d;
+        }
+        tasks.forEach(t => getDepth(t.id));
+
+        // Build layers
+        const maxD = Math.max(...Object.values(depths));
+        const layers = [];
+        for (let d = 0; d <= maxD; d++) layers.push(tasks.filter(t => depths[t.id] === d));
+
+        let g = '<div class="wf-graph">';
+        layers.forEach((layer, di) => {
+          g += '<div class="wf-layer">';
+          layer.forEach(t => {
+            const am = agentModels[t.agent] || {};
+            const modelLabel = t.model || am.model || 'default';
+            const runtimeIcon = am.runtime === 'codex' ? '&#9883;' : '&#9670;';
+            const isTerminal = !t.next || t.next === 'output';
+            g += `<div class="wf-node${isTerminal ? ' wf-terminal' : ''}">
+              <div class="wf-node-id">${esc(t.id)}</div>
+              <div class="wf-node-agent">${runtimeIcon} ${esc(t.agent)}</div>
+              <div class="wf-node-model">${esc(modelLabel)}</div>
+            </div>`;
+          });
+          g += '</div>';
+          if (di < layers.length - 1) {
+            // Arrow between layers
+            const nextLayer = layers[di + 1];
+            const isJoin = nextLayer.length === 1 && layer.length > 1 && nextLayer[0].needs && nextLayer[0].needs.length > 1;
+            g += `<div class="wf-arrow">${isJoin ? '&#9660; join' : '&#9660;'}</div>`;
+          }
+        });
+        g += '</div>';
+        graphHtml = g;
       }
 
       let inputHtml = '';
@@ -553,7 +653,7 @@
           </div>`;
         }
         if (vars.length === 0) {
-          varsHtml = `<div><button class="compose-send" id="compose-btn" title="Run pipeline" style="position:static;width:auto;padding:8px 20px;font-size:12px;border-radius:6px">Run &#9654;</button></div>`;
+          varsHtml = `<div><button class="compose-send" id="compose-btn" title="Run workflow" style="position:static;width:auto;padding:8px 20px;font-size:12px;border-radius:6px">Run &#9654;</button></div>`;
         }
         inputHtml = `<div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">${varsHtml}</div>
           <div class="compose-hint" style="margin-top:8px">Enter to run</div>`;
@@ -566,6 +666,7 @@
             ${desc ? `<div class="compose-card-desc">${esc(desc)}</div>` : ''}
             ${propsHtml ? `<div class="compose-card-props">${propsHtml}</div>` : ''}
           </div>
+          ${graphHtml}
           ${inputHtml}
         </div>
       </div>`;
@@ -617,13 +718,13 @@
         msg.agent_id = t.id;
         msg.text = text;
       } else {
-        msg.pipeline_id = t.id;
-        if (Object.keys(vars).length) msg.pipeline_vars = vars;
+        msg.workflow_id = t.id;
+        if (Object.keys(vars).length) msg.workflow_vars = vars;
         const varSummary = Object.values(vars).join(', ');
         msg.text = text || (varSummary ? `${t.id}: ${varSummary}` : t.id);
       }
 
-      mqttClient.publish('$a2a/v1/request/skitter/default/coordinator', JSON.stringify(msg), {
+      mqttClient.publish('$a2a/v1/request/skitter/default/gateway', JSON.stringify(msg), {
         qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(sid) },
       });
 
@@ -642,11 +743,15 @@
       const s = state.sessions.get(state.selectedSessionId);
       if (!s) { renderComposeView(); return; }
 
-      const tasks = Object.values(s.tasks);
-      const pending = tasks.filter(t => t.status === 'pending');
+      const sid = state.selectedSessionId;
+      // Merge per-task status from retained topics over session's embedded status
+      const tasks = Object.values(s.tasks).map(t => {
+        const ts = state.taskStatus.get(`${sid}/${t.task_id}`);
+        return ts ? { ...t, status: ts } : t;
+      });
+      const pending = tasks.filter(t => t.status === 'pending' || t.status === 'waiting');
       const running = tasks.filter(t => t.status === 'running');
       const done = tasks.filter(t => t.status === 'done');
-      const sid = state.selectedSessionId;
 
       function card(t) {
         const sel = t.id === state.selectedTaskId;
@@ -661,6 +766,10 @@
             const lt = latestStream(sid, t);
             if (lt) preview = `<div class="card-preview">${esc(trunc(lt, 60))}</div>`;
           }
+        }
+        if (t.status === 'done' && !preview) {
+          const tr = state.taskResults.get(`${sid}/${t.task_id}`);
+          if (tr) preview = `<div class="card-preview">${esc(trunc(tr, 60))}</div>`;
         }
         const usage = state.taskUsage.get(`${sid}/${t.task_id}`);
         let foot = '<div class="card-foot">';
@@ -678,10 +787,11 @@
       }
 
       let resultHtml = '';
-      if (s.result) {
+      const sessionResult = getSessionResult();
+      if (sessionResult) {
         resultHtml = `<div class="session-result">
           <div class="session-result-hdr">Result<span class="result-actions"><button class="result-act" onclick="copyResult()">Copy</button><button class="result-act" onclick="downloadResult()">Download</button></span></div>
-          <div class="session-result-text">${marked.parse(s.result)}</div>
+          <div class="session-result-text">${marked.parse(sessionResult)}</div>
         </div>`;
       }
 
@@ -711,15 +821,17 @@
       panel.classList.add('open');
 
       const sid = state.selectedSessionId;
+      const mergedStatus = state.taskStatus.get(`${sid}/${t.task_id}`) || t.status;
       const result = state.taskResults.get(`${sid}/${t.task_id}`) || null;
-      const stopBtn = t.status === 'running' ? `<button class="stop-btn" onclick="cancelTask('${esc(sid)}','${esc(t.task_id)}')">Stop</button>` : '';
+      const stopBtn = mergedStatus === 'running' ? `<button class="stop-btn" onclick="cancelTask('${esc(sid)}','${esc(t.task_id)}')">Stop</button>` : '';
 
       let h = `<div class="det-hdr">
         <h2>${esc(t.id)}</h2>
         <span class="config-badge">${esc(t.agent)}</span>
         ${t.model ? `<span class="card-model">${esc(t.model)}</span>` : ''}
-        <span class="badge-status ${t.status}">${esc(t.status)}</span>
+        <span class="badge-status ${mergedStatus}">${esc(mergedStatus)}</span>
         ${stopBtn}
+        <button class="det-close det-expand" onclick="toggleExpand()">Expand</button>
         <button class="det-close" onclick="closeDetail()">Close</button>
       </div>`;
 
@@ -727,7 +839,7 @@
 
       // Live stream
       const chunks = state.streamChunks.get(`${sid}/${t.task_id}`);
-      if (t.status === 'running' && chunks && chunks.length) {
+      if (mergedStatus === 'running' && chunks && chunks.length) {
         let sh = '';
         for (const c of chunks.slice(-50)) {
           if (c.type === 'text') sh += esc(c.content);
@@ -738,7 +850,7 @@
         h += `<div class="det-section"><div class="det-label"><span class="stream-dot"></span> Live Output</div><div class="det-stream">${sh}</div></div>`;
       }
 
-      if (result) h += `<div class="det-section"><div class="det-label">Result</div><div class="det-box"><div class="det-text">${esc(result)}</div></div></div>`;
+      if (result) h += `<div class="det-section"><div class="det-label">Result</div><div class="det-box"><div class="det-result-md">${marked.parse(result)}</div></div><div class="det-result-actions"><button class="det-act" onclick="copyTaskResult()">Copy</button><button class="det-act" onclick="downloadTaskResult()">Download</button></div></div>`;
 
       if (t.needs && t.needs.length) {
         h += `<div class="det-section"><div class="det-label">Dependencies</div><div class="det-deps">${t.needs.map(d => `<span class="dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`).join('')}</div></div>`;
@@ -759,16 +871,62 @@
       h += `<div class="det-section"><div class="det-meta">task_id: ${esc(t.task_id)}</div></div>`;
       inner.innerHTML = h;
 
+      // Sync expand button text
+      const expBtn = inner.querySelector('.det-expand');
+      if (expBtn) expBtn.textContent = panel.classList.contains('expanded') ? 'Collapse' : 'Expand';
+
       inner.querySelectorAll('.dep-tag').forEach(tag => tag.addEventListener('click', () => {
         state.selectedTaskId = tag.dataset.dep; renderTaskSelection(); renderDetail();
       }));
     }
 
-    function closeDetail() { state.selectedTaskId = null; document.getElementById('detail').classList.remove('open'); renderTaskSelection(); }
+    function closeDetail() { state.selectedTaskId = null; const d = document.getElementById('detail'); d.classList.remove('open', 'expanded'); renderTaskSelection(); }
+    function toggleExpand() {
+      const d = document.getElementById('detail');
+      d.classList.toggle('expanded');
+      const btn = d.querySelector('.det-expand');
+      if (btn) btn.textContent = d.classList.contains('expanded') ? 'Collapse' : 'Expand';
+    }
 
     function getSessionResult() {
       const s = state.sessions.get(state.selectedSessionId);
-      return s && s.result ? s.result : '';
+      if (!s) return '';
+      // Session result from immutable spec
+      if (s.result) return s.result;
+      // Derive from terminal task's per-task result
+      const sid = state.selectedSessionId;
+      const terminal = Object.values(s.tasks).find(t => t.next === 'output');
+      if (terminal) {
+        const r = state.taskResults.get(`${sid}/${terminal.task_id}`);
+        if (r) return r;
+      }
+      return '';
+    }
+    function getSelectedTaskResult() {
+      const s = state.sessions.get(state.selectedSessionId);
+      if (!s || !state.selectedTaskId) return '';
+      const t = s.tasks[state.selectedTaskId];
+      if (!t) return '';
+      return state.taskResults.get(`${state.selectedSessionId}/${t.task_id}`) || '';
+    }
+    function copyTaskResult() {
+      const md = getSelectedTaskResult();
+      if (!md) return;
+      navigator.clipboard.writeText(md).then(() => {
+        const btn = document.querySelector('.det-act');
+        if (btn) { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1500); }
+      });
+    }
+    function downloadTaskResult() {
+      const md = getSelectedTaskResult();
+      if (!md) return;
+      const name = state.selectedTaskId || 'result';
+      const blob = new Blob([md], { type: 'text/markdown' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${name}.md`;
+      a.click();
+      URL.revokeObjectURL(a.href);
     }
     function copyResult() {
       const md = getSessionResult();
@@ -790,7 +948,7 @@
       URL.revokeObjectURL(a.href);
     }
 
-    function renderAll() { renderSessions(); renderAgents(); renderPipelines(); renderHeader(); renderTasks(); renderDetail(); }
+    function renderAll() { renderSessions(); renderAgents(); renderWorkflows(); renderHeader(); renderTasks(); renderDetail(); }
 
     // --- Tab switching ---
     document.querySelectorAll('.side-tab').forEach(tab => tab.addEventListener('click', () => {

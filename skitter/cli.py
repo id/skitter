@@ -22,7 +22,7 @@ from skitter.types import InboundMessage, StreamItem, TaskStatusUpdate
 async def run_chat(session_id: str) -> None:
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
-    coordinator_request = topic_request("coordinator")
+    gateway_request = topic_request("gateway")
 
     print(f"Connecting to {MQTT_HOST}:{MQTT_PORT}")
     print(f"Session ID: {session_id}")
@@ -103,23 +103,23 @@ async def run_chat(session_id: str) -> None:
                     continue
 
                 # Parse invocation commands
-                pipeline_id = ""
-                pipeline_vars: dict[str, str] = {}
+                workflow_id = ""
+                workflow_vars: dict[str, str] = {}
                 agent_id = ""
-                if text.startswith("/pipeline "):
+                if text.startswith("/workflow "):
                     parts = text.split()
-                    pipeline_id = parts[1] if len(parts) > 1 else ""
+                    workflow_id = parts[1] if len(parts) > 1 else ""
                     i = 2
                     while i < len(parts):
                         if parts[i] == "--var" and i + 1 < len(parts):
                             kv = parts[i + 1]
                             if "=" in kv:
                                 k, v = kv.split("=", 1)
-                                pipeline_vars[k] = v
+                                workflow_vars[k] = v
                             i += 2
                         else:
                             i += 1
-                    text = f"Pipeline '{pipeline_id}'"
+                    text = f"Workflow '{workflow_id}'"
                 elif text.startswith("/agent "):
                     parts = text.split(None, 2)
                     agent_id = parts[1] if len(parts) > 1 else ""
@@ -133,8 +133,8 @@ async def run_chat(session_id: str) -> None:
                     text=text,
                     sender="cli",
                     session_id=session_id,
-                    pipeline_id=pipeline_id,
-                    pipeline_vars=pipeline_vars,
+                    workflow_id=workflow_id,
+                    workflow_vars=workflow_vars,
                     agent_id=agent_id,
                 )
 
@@ -143,7 +143,7 @@ async def run_chat(session_id: str) -> None:
                     correlation_data=session_id,
                 )
                 await client.publish(
-                    coordinator_request,
+                    gateway_request,
                     msg.to_json(),
                     qos=1,
                     properties=props,

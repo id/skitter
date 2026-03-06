@@ -6,10 +6,10 @@ def dispatch() -> None:
 
     Routes to the appropriate sub-module based on the first positional arg:
 
-        skitter                → coordinator (default)
+        skitter                → gateway (default)
         skitter chat  [...]    → interactive MQTT chat client
         skitter agents [...]   → manage predefined agents
-        skitter pipeline [...] → manage and run pipelines
+        skitter workflow [...] → manage and run workflows
         skitter init           → create ~/.skitter/ with example files
     """
     subcmd = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -22,19 +22,19 @@ def dispatch() -> None:
         from skitter.agents_cli import main
 
         main()
-    elif subcmd == "pipeline":
-        from skitter.pipeline_cli import main
+    elif subcmd == "workflow":
+        from skitter.workflow_cli import main
 
         main()
     elif subcmd == "init":
         from skitter.config import write_examples
 
-        agents_written, pipelines_written = write_examples()
+        agents_written, workflows_written = write_examples()
         if agents_written:
             print(f"Created agents: {', '.join(agents_written)}")
-        if pipelines_written:
-            print(f"Created pipelines: {', '.join(pipelines_written)}")
-        if not agents_written and not pipelines_written:
+        if workflows_written:
+            print(f"Created workflows: {', '.join(workflows_written)}")
+        if not agents_written and not workflows_written:
             print("All example files already exist. Nothing to do.")
         else:
             print("Done. Files are in ~/.skitter/")
@@ -54,7 +54,7 @@ def dispatch() -> None:
         prompt = " ".join(sys.argv[1:])
         cmd_run("skitter", prompt)
     else:
-        from skitter.coordinator import main
+        from skitter.gateway import main
 
         main()
 

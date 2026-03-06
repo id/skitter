@@ -1,4 +1,4 @@
-"""Configuration loader for ~/.skitter/ agents and pipelines."""
+"""Configuration loader for ~/.skitter/ agents and workflows."""
 
 import logging
 import string
@@ -13,7 +13,7 @@ log = logging.getLogger("skitter.config")
 
 SKITTER_DIR = Path.home() / ".skitter"
 AGENTS_DIR = SKITTER_DIR / "agents"
-PIPELINES_DIR = SKITTER_DIR / "pipelines"
+WORKFLOWS_DIR = SKITTER_DIR / "workflows"
 
 
 @dataclass
@@ -30,7 +30,7 @@ class AgentDef:
 
 
 @dataclass
-class PipelineTask:
+class WorkflowTask:
     id: str
     agent: str
     description: str
@@ -44,12 +44,12 @@ class PipelineTask:
 
 
 @dataclass
-class PipelineDef:
+class WorkflowDef:
     id: str
     name: str
     description: str = ""
     variables: list[str] = field(default_factory=list)
-    tasks: list[PipelineTask] = field(default_factory=list)
+    tasks: list[WorkflowTask] = field(default_factory=list)
 
 
 class SafeFormatter(string.Formatter):
@@ -94,7 +94,7 @@ def safe_format(template: str, variables: dict[str, str]) -> str:
 
 def ensure_dirs() -> None:
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    PIPELINES_DIR.mkdir(parents=True, exist_ok=True)
+    WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_agents() -> dict[str, AgentDef]:
@@ -123,22 +123,22 @@ def load_agents() -> dict[str, AgentDef]:
     return agents
 
 
-def load_pipelines() -> dict[str, PipelineDef]:
-    pipelines: dict[str, PipelineDef] = {}
-    if not PIPELINES_DIR.is_dir():
-        return pipelines
-    for path in sorted(PIPELINES_DIR.glob("*.yaml")):
+def load_workflows() -> dict[str, WorkflowDef]:
+    workflows: dict[str, WorkflowDef] = {}
+    if not WORKFLOWS_DIR.is_dir():
+        return workflows
+    for path in sorted(WORKFLOWS_DIR.glob("*.yaml")):
         try:
             data = yaml.safe_load(path.read_text())
             if not isinstance(data, dict):
                 continue
-            pipeline_id = path.stem
+            workflow_id = path.stem
             tasks = []
             for t in data.get("tasks", []):
                 task_id = t.get("id", "")
                 needs = t.get("needs", [])
                 tasks.append(
-                    PipelineTask(
+                    WorkflowTask(
                         id=task_id,
                         agent=t.get("agent", "worker"),
                         description=t.get("description", ""),
@@ -159,16 +159,16 @@ def load_pipelines() -> dict[str, PipelineDef]:
                         t.next = dependents[0]
                     elif len(dependents) == 0:
                         t.next = "output"
-            pipelines[pipeline_id] = PipelineDef(
-                id=pipeline_id,
-                name=data.get("name", pipeline_id),
+            workflows[workflow_id] = WorkflowDef(
+                id=workflow_id,
+                name=data.get("name", workflow_id),
                 description=data.get("description", ""),
                 variables=data.get("variables", []),
                 tasks=tasks,
             )
         except Exception as e:
-            log.warning("Failed to load pipeline %s: %s", path.name, e)
-    return pipelines
+            log.warning("Failed to load workflow %s: %s", path.name, e)
+    return workflows
 
 
 # --- Example files for `skitter init` ---
@@ -187,10 +187,11 @@ def _load_examples(subdir: str) -> dict[str, str]:
 
 
 EXAMPLE_AGENTS = _load_examples("agents")
-EXAMPLE_PIPELINES = _load_examples("pipelines")
+EXAMPLE_WORKFLOWS = _load_examples("workflows")
 
 
 WORKSPACES_DIR = SKITTER_DIR / "workspaces"
+AGENT_HOMES_DIR = SKITTER_DIR / "agent-homes"
 
 
 def agent_def_to_card(agent: "AgentDef") -> AgentCard:
@@ -209,18 +210,18 @@ def agent_def_to_card(agent: "AgentDef") -> AgentCard:
 
 
 def write_examples() -> tuple[list[str], list[str]]:
-    """Write example agent and pipeline files. Returns (agents_written, pipelines_written)."""
+    """Write example agent and workflow files. Returns (agents_written, workflows_written)."""
     ensure_dirs()
     agents_written: list[str] = []
-    pipelines_written: list[str] = []
+    workflows_written: list[str] = []
     for name, content in EXAMPLE_AGENTS.items():
         path = AGENTS_DIR / f"{name}.yaml"
         if not path.exists():
             path.write_text(content)
             agents_written.append(name)
-    for name, content in EXAMPLE_PIPELINES.items():
-        path = PIPELINES_DIR / f"{name}.yaml"
+    for name, content in EXAMPLE_WORKFLOWS.items():
+        path = WORKFLOWS_DIR / f"{name}.yaml"
         if not path.exists():
             path.write_text(content)
-            pipelines_written.append(name)
-    return agents_written, pipelines_written
+            workflows_written.append(name)
+    return agents_written, workflows_written

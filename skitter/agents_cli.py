@@ -87,7 +87,7 @@ def cmd_run(agent_id: str, description: str) -> None:
 
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
-    coordinator_request = topic_request("coordinator")
+    gateway_request = topic_request("gateway")
 
     async def run_agent() -> None:
         async with aiomqtt.Client(
@@ -103,7 +103,7 @@ def cmd_run(agent_id: str, description: str) -> None:
                 correlation_data=session_id,
             )
             await client.publish(
-                coordinator_request,
+                gateway_request,
                 msg.to_json(),
                 qos=1,
                 properties=props,

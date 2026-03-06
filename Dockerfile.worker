@@ -8,9 +8,16 @@ RUN apt-get update && \
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# Non-root user (required by claude --dangerously-skip-permissions)
+RUN useradd -m -s /bin/bash skitter
+USER skitter
+
 WORKDIR /app
-COPY pyproject.toml .
-COPY skitter/ skitter/
+COPY --chown=skitter pyproject.toml .
+COPY --chown=skitter skitter/ skitter/
+
+USER root
 RUN pip install --no-cache-dir .
+USER skitter
 
 ENTRYPOINT ["python", "-m", "skitter.worker"]

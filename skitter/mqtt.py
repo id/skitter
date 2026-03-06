@@ -80,6 +80,16 @@ def topic_state_session_wildcard() -> str:
     return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/sessions/+"
 
 
+def topic_state_task(session_id: str, task_id: str) -> str:
+    """Retained per-task status: $a2a/v1/state/{org}/{unit}/task/{session_id}/{task_id}"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/task/{session_id}/{task_id}"
+
+
+def topic_state_task_wildcard() -> str:
+    """Wildcard for per-task status: $a2a/v1/state/{org}/{unit}/task/+/+"""
+    return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/task/+/+"
+
+
 def topic_state_usage(session_id: str, task_id: str) -> str:
     """Usage tracking: $a2a/v1/state/{org}/{unit}/usage/{session_id}/{task_id}"""
     return f"{_PREFIX}/state/{A2A_ORG}/{A2A_UNIT}/usage/{session_id}/{task_id}"

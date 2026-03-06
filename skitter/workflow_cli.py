@@ -1,4 +1,4 @@
-"""CLI for managing and running pipelines via A2A-over-MQTT."""
+"""CLI for managing and running workflows via A2A-over-MQTT."""
 
 import asyncio
 import json
@@ -10,7 +10,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from skitter.config import load_pipelines
+from skitter.config import load_workflows
 from skitter.mqtt import (
     MQTT_HOST,
     MQTT_PORT,
@@ -26,38 +26,38 @@ console = Console()
 
 
 def cmd_list() -> None:
-    pipelines = load_pipelines()
-    if not pipelines:
-        console.print("No pipelines found in ~/.skitter/pipelines/")
-        console.print("Run 'skitter init' to create example pipelines.")
+    workflows = load_workflows()
+    if not workflows:
+        console.print("No workflows found in ~/.skitter/workflows/")
+        console.print("Run 'skitter init' to create example workflows.")
         return
-    table = Table(title="Pipelines")
+    table = Table(title="Workflows")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
     table.add_column("Tasks", justify="right")
     table.add_column("Variables")
-    for pid, pipeline in pipelines.items():
+    for pid, workflow in workflows.items():
         table.add_row(
             pid,
-            pipeline.name,
-            str(len(pipeline.tasks)),
-            ", ".join(pipeline.variables) if pipeline.variables else "",
+            workflow.name,
+            str(len(workflow.tasks)),
+            ", ".join(workflow.variables) if workflow.variables else "",
         )
     console.print(table)
 
 
-def cmd_show(pipeline_id: str) -> None:
-    pipelines = load_pipelines()
-    pipeline = pipelines.get(pipeline_id)
-    if pipeline is None:
-        console.print(f"Pipeline '{pipeline_id}' not found.")
-        available = ", ".join(pipelines.keys()) if pipelines else "(none)"
+def cmd_show(workflow_id: str) -> None:
+    workflows = load_workflows()
+    workflow = workflows.get(workflow_id)
+    if workflow is None:
+        console.print(f"Workflow '{workflow_id}' not found.")
+        available = ", ".join(workflows.keys()) if workflows else "(none)"
         console.print(f"Available: {available}")
         sys.exit(1)
     data = {
-        "name": pipeline.name,
-        "description": pipeline.description,
-        "variables": pipeline.variables,
+        "name": workflow.name,
+        "description": workflow.description,
+        "variables": workflow.variables,
         "tasks": [
             {
                 "id": t.id,
@@ -66,32 +66,32 @@ def cmd_show(pipeline_id: str) -> None:
                 "next": t.next,
                 "needs": t.needs,
             }
-            for t in pipeline.tasks
+            for t in workflow.tasks
         ],
     }
     console.print(yaml.dump(data, default_flow_style=False, sort_keys=False))
 
 
-def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> None:
-    pipelines = load_pipelines()
-    pipeline = pipelines.get(pipeline_id)
-    if pipeline is None:
-        console.print(f"Pipeline '{pipeline_id}' not found.")
-        available = ", ".join(pipelines.keys()) if pipelines else "(none)"
+def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> None:
+    workflows = load_workflows()
+    workflow = workflows.get(workflow_id)
+    if workflow is None:
+        console.print(f"Workflow '{workflow_id}' not found.")
+        available = ", ".join(workflows.keys()) if workflows else "(none)"
         console.print(f"Available: {available}")
         sys.exit(1)
 
-    missing = [v for v in pipeline.variables if v not in variables]
+    missing = [v for v in workflow.variables if v not in variables]
     if missing:
         console.print(f"Missing required variables: {', '.join(missing)}")
         console.print(
-            f"Usage: skitter pipeline run {pipeline_id} "
+            f"Usage: skitter workflow run {workflow_id} "
             + " ".join(f'--var {v}="..."' for v in missing)
         )
         sys.exit(1)
 
-    session_id = f"pipeline-{uuid.uuid4().hex[:8]}"
-    description = f"Pipeline '{pipeline.name}'"
+    session_id = f"workflow-{uuid.uuid4().hex[:8]}"
+    description = f"Workflow '{workflow.name}'"
     if variables:
         var_str = ", ".join(f"{k}={v}" for k, v in variables.items())
         description += f" with {var_str}"
@@ -100,19 +100,19 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
         text=description,
         sender="cli",
         session_id=session_id,
-        pipeline_id=pipeline_id,
-        pipeline_vars=variables,
+        workflow_id=workflow_id,
+        workflow_vars=variables,
     )
 
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
-    coordinator_request = topic_request("coordinator")
+    gateway_request = topic_request("gateway")
 
-    async def run_pipeline() -> None:
+    async def run_workflow() -> None:
         async with aiomqtt.Client(
             MQTT_HOST,
             MQTT_PORT,
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/pipeline-cli-{mqtt_session}",
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/workflow-cli-{mqtt_session}",
             protocol=aiomqtt.ProtocolVersion.V5,
         ) as client:
             if wait:
@@ -123,12 +123,12 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
                 correlation_data=session_id,
             )
             await client.publish(
-                coordinator_request,
+                gateway_request,
                 msg.to_json(),
                 qos=1,
                 properties=props,
             )
-            console.print(f"Pipeline '{pipeline_id}' submitted as session {session_id}")
+            console.print(f"Workflow '{workflow_id}' submitted as session {session_id}")
 
             if not wait:
                 return
@@ -175,7 +175,7 @@ def cmd_run(pipeline_id: str, variables: dict[str, str], wait: bool = True) -> N
             except TimeoutError:
                 console.print("[yellow]Timed out waiting for result[/yellow]")
 
-    asyncio.run(run_pipeline())
+    asyncio.run(run_workflow())
 
 
 def parse_vars(args: list[str]) -> dict[str, str]:
@@ -195,18 +195,18 @@ def parse_vars(args: list[str]) -> dict[str, str]:
 
 
 def main() -> None:
-    args = sys.argv[2:]  # skip "skitter" and "pipeline"
+    args = sys.argv[2:]  # skip "skitter" and "workflow"
     if not args or args[0] == "list":
         cmd_list()
     elif args[0] == "show":
         if len(args) < 2:
-            console.print("Usage: skitter pipeline show <pipeline_id>")
+            console.print("Usage: skitter workflow show <workflow_id>")
             sys.exit(1)
         cmd_show(args[1])
     elif args[0] == "run":
         if len(args) < 2:
             console.print(
-                "Usage: skitter pipeline run <pipeline_id> [--var key=value ...]"
+                "Usage: skitter workflow run <workflow_id> [--var key=value ...]"
             )
             sys.exit(1)
         variables = parse_vars(args[2:])
@@ -216,6 +216,6 @@ def main() -> None:
     else:
         console.print(f"Unknown subcommand: {args[0]}")
         console.print(
-            "Usage: skitter pipeline [list|show <id>|run <id> --var key=value]"
+            "Usage: skitter workflow [list|show <id>|run <id> --var key=value]"
         )
         sys.exit(1)

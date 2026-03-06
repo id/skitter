@@ -1,12 +1,19 @@
+"""Self-coordinating worker — reads session spec, waits for upstream results,
+runs agent as CLI subprocess, publishes results.
+
+Join workers subscribe to upstream chain result topics
+and sleep until all inputs arrive via MQTT retained messages.
+"""
+
 import asyncio
 import json
 import logging
+import os
 import sys
-import time
 
 import aiomqtt
-import claude_agent_sdk
 
+from skitter.config import AGENT_HOMES_DIR, WORKSPACES_DIR
 from skitter.mqtt import (
     MQTT_HOST,
     MQTT_PORT,
@@ -16,12 +23,13 @@ from skitter.mqtt import (
     topic_chain_result,
     topic_event,
     topic_request_cancel,
-    topic_state_dispatch,
+    topic_state_session,
+    topic_state_task,
     topic_state_usage,
 )
-from skitter import config as skitter_config
 from skitter.types import (
     AgentMessage,
+    Session,
     StreamItem,
     TaskStatusUpdate,
 )
@@ -31,68 +39,25 @@ logging.basicConfig(
 )
 log = logging.getLogger("skitter.worker")
 
-TOOL_RESULT_PREVIEW = 200
-TOOL_OUTPUT_PER_ITEM = 1500
-TOOL_OUTPUT_TOTAL = 20_000
+
+def resolve_agent_home(agent_id: str) -> str:
+    """Return the agent's home directory path."""
+    home = AGENT_HOMES_DIR / agent_id
+    home.mkdir(parents=True, exist_ok=True)
+    return str(home)
 
 
-async def run_claude_agent(
-    task: AgentMessage,
-    workspace: str,
-    publish_stream_item,
-    cancel_event: asyncio.Event,
-) -> tuple[str, dict | None, float | None]:
-    """Run a task using claude-agent-sdk. Returns (response_text, usage, cost_usd)."""
-    seq_holder = [0]
-    started_at = time.time()
-    accumulated_text: list[str] = []
-    tool_log: list[str] = []
-    tool_output_parts: list[str] = []
-    tool_output_chars = 0
-    tool_calls = 0
-    errors = 0
-
-    async def _publish(item_type: str, content: str) -> None:
-        seq_holder[0] += 1
-        await publish_stream_item(item_type, content, seq_holder[0])
-
-    async def post_tool_use(event, _match, _ctx):
-        nonlocal tool_calls, errors, tool_output_chars
-        tool_name = event["tool_name"]
-        tool_response = event.get("tool_response", "")
-        tool_calls += 1
-        response_str = str(tool_response)
-        is_error = isinstance(tool_response, dict) and tool_response.get(
-            "is_error", False
-        )
-        if is_error:
-            errors += 1
-        tool_log.append(f"{tool_name} → {'error' if is_error else 'ok'}")
-        await _publish("tool_result", response_str[:TOOL_RESULT_PREVIEW])
-
-        if not is_error and tool_output_chars < TOOL_OUTPUT_TOTAL:
-            trimmed = response_str[:TOOL_OUTPUT_PER_ITEM]
-            entry = f"[{tool_name}]: {trimmed}"
-            tool_output_parts.append(entry)
-            tool_output_chars += len(entry)
-
-        return {}
-
-    async def pre_tool_use(event, _match, _ctx):
-        if cancel_event.is_set():
-            return {"continue_": False, "reason": "Task cancelled"}
-        return {}
-
-    # Build system prompt
-    system_parts = []
+def build_system_prompt(task: AgentMessage) -> str:
+    """Build system prompt from soul + skills + context + budget."""
+    parts = []
     if task.soul:
-        system_parts.append(f"# Identity\n{task.soul}")
+        parts.append(f"# Identity\n{task.soul}")
     if task.skills:
-        system_parts.append(f"# Skills & Constraints\n{task.skills}")
+        parts.append(f"# Skills & Constraints\n{task.skills}")
     if task.context:
-        system_parts.append(f"# Context from upstream tasks\n{task.context}")
+        parts.append(f"# Context from upstream tasks\n{task.context}")
     if task.max_turns > 0:
-        system_parts.append(
+        parts.append(
             f"# Resource Budget\n"
             f"You have {task.max_turns} tool-use turns. "
             f"After that, your execution stops immediately.\n\n"
@@ -101,116 +66,55 @@ async def run_claude_agent(
             f"- Your FINAL text output IS your deliverable. Tool results alone are not visible to reviewers.\n"
             f"- When ~2 turns remain, stop gathering and write a comprehensive summary of everything you found."
         )
-    system_prompt = "\n\n".join(system_parts) if system_parts else None
-
-    usage: dict | None = None
-    cost_usd: float | None = None
-    response_text = "(no response)"
-    try:
-        texts: list[str] = []
-        options = claude_agent_sdk.ClaudeAgentOptions(
-            max_turns=task.max_turns,
-            permission_mode="bypassPermissions",
-        )
-        if task.max_turns == 0:
-            options.allowed_tools = []
-            options.tools = []
-        else:
-            options.hooks = {
-                "PreToolUse": [
-                    claude_agent_sdk.HookMatcher(
-                        matcher=None,
-                        hooks=[pre_tool_use],
-                        timeout=None,
-                    )
-                ],
-                "PostToolUse": [
-                    claude_agent_sdk.HookMatcher(
-                        matcher=None,
-                        hooks=[post_tool_use],
-                        timeout=None,
-                    )
-                ],
-            }
-        if task.model:
-            options.model = task.model
-        if system_prompt:
-            options.system_prompt = system_prompt
-        options.cwd = workspace
-
-        async for message in claude_agent_sdk.query(
-            prompt=task.description,
-            options=options,
-        ):
-            if isinstance(message, claude_agent_sdk.AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, claude_agent_sdk.TextBlock):
-                        texts.append(block.text)
-                        accumulated_text.append(block.text)
-                        await _publish("text", block.text)
-                    elif isinstance(block, claude_agent_sdk.ToolUseBlock):
-                        input_summary = str(block.input)[:100]
-                        await _publish(
-                            "tool_use",
-                            f"{block.name}: {input_summary}",
-                        )
-            elif isinstance(message, claude_agent_sdk.ResultMessage):
-                usage = message.usage
-                cost_usd = message.total_cost_usd
-                log.info(
-                    "[worker] Result: is_error=%s, turns=%s, cost=$%s",
-                    message.is_error,
-                    message.num_turns,
-                    f"{cost_usd:.4f}" if cost_usd else "?",
-                )
-
-        response_text = "\n".join(texts) if texts else "(no response)"
-
-        if tool_output_parts:
-            tool_section = "\n\n".join(tool_output_parts)
-            response_text += (
-                f"\n\n---\n## Tool Results ({tool_calls} calls)\n\n" + tool_section
-            )
-    except Exception as e:
-        log.error("[worker] Claude agent error: %s", e)
-        if accumulated_text or tool_output_parts:
-            parts = [f"[PARTIAL — agent error after {time.time() - started_at:.0f}s]"]
-            if accumulated_text:
-                parts.append("\n".join(accumulated_text))
-            if tool_output_parts:
-                tool_section = "\n\n".join(tool_output_parts)
-                parts.append(
-                    f"---\n## Tool Results ({tool_calls} calls)\n\n" + tool_section
-                )
-            response_text = "\n\n".join(parts)
-        else:
-            response_text = f"Error: {e}"
-
-    return response_text, usage, cost_usd
+    return "\n\n".join(parts)
 
 
-async def run_codex_agent(
+async def run_agent(
     task: AgentMessage,
     workspace: str,
     publish_stream_item,
+    cancel_event: asyncio.Event,
 ) -> tuple[str, dict | None, float | None]:
-    """Run a task using Codex CLI. Returns (response_text, usage, cost_usd)."""
-    # Build prompt from soul + skills + context + description
-    prompt_parts = []
-    if task.soul:
-        prompt_parts.append(task.soul)
-    if task.skills:
-        prompt_parts.append(task.skills)
-    if task.context:
-        prompt_parts.append(f"Context:\n{task.context}")
-    prompt_parts.append(task.description)
-    prompt = "\n\n".join(prompt_parts)
+    """Run any agent runtime as a subprocess, parse JSONL stdout."""
+    if task.runtime == "codex":
+        # Build prompt from soul + skills + context + description
+        prompt_parts = []
+        if task.soul:
+            prompt_parts.append(task.soul)
+        if task.skills:
+            prompt_parts.append(task.skills)
+        if task.context:
+            prompt_parts.append(f"Context:\n{task.context}")
+        prompt_parts.append(task.description)
+        prompt = "\n\n".join(prompt_parts)
 
-    cmd = ["codex", "exec", "--json", "--full-auto", prompt]
-    if task.model:
-        cmd.extend(["--model", task.model])
+        cmd = ["codex", "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt]
+        if task.model:
+            cmd.extend(["--model", task.model])
+    else:
+        # Claude CLI
+        cmd = [
+            "claude",
+            "-p",
+            task.description,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--max-turns",
+            str(task.max_turns),
+            "--dangerously-skip-permissions",
+        ]
+        if task.model:
+            cmd.extend(["--model", task.model])
+        if task.max_turns == 0:
+            cmd.extend(["--allowedTools", ""])
 
-    seq_holder = [0]
+        system_prompt = build_system_prompt(task)
+        if system_prompt:
+            cmd.extend(["--append-system-prompt", system_prompt])
+
+    # Filter CLAUDECODE to allow nested claude sessions
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -218,17 +122,25 @@ async def run_codex_agent(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workspace,
+            env=env,
         )
     except FileNotFoundError:
-        error_msg = (
-            "Error: codex CLI not installed. Install with: npm i -g @openai/codex"
-        )
-        log.error("[worker] %s", error_msg)
+        binary = "codex" if task.runtime == "codex" else "claude"
+        error_msg = f"Error: {binary} CLI not found on PATH"
+        log.error(error_msg)
         return error_msg, None, None
 
     texts: list[str] = []
+    usage: dict | None = None
+    cost_usd: float | None = None
+    seq = 0
+
     assert proc.stdout is not None
     async for line in proc.stdout:
+        if cancel_event.is_set():
+            proc.terminate()
+            break
+
         line_str = line.decode().strip()
         if not line_str:
             continue
@@ -237,39 +149,210 @@ async def run_codex_agent(
         except json.JSONDecodeError:
             continue
 
+        seq += 1
         event_type = event.get("type", "")
-        if event_type == "message" and event.get("role") == "assistant":
-            for block in event.get("content", []):
-                if block.get("type") == "output_text":
+
+        # Claude stream-json: {"type":"assistant","message":{"content":[...]}}
+        if event_type == "assistant":
+            message = event.get("message", {})
+            for block in message.get("content", []):
+                if block.get("type") == "text":
                     text = block.get("text", "")
                     texts.append(text)
-                    seq_holder[0] += 1
-                    await publish_stream_item("text", text, seq_holder[0])
+                    await publish_stream_item("text", text, seq)
                 elif block.get("type") == "tool_use":
-                    seq_holder[0] += 1
                     await publish_stream_item(
                         "tool_use",
                         f"{block.get('name', '?')}: {str(block.get('input', ''))[:100]}",
-                        seq_holder[0],
+                        seq,
                     )
+        # Codex JSONL: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+        elif event_type == "item.completed":
+            item = event.get("item", {})
+            if item.get("type") == "agent_message":
+                text = item.get("text", "")
+                if text:
+                    texts.append(text)
+                    await publish_stream_item("text", text, seq)
+        # Codex: {"type":"turn.completed","usage":{...}}
+        elif event_type == "turn.completed":
+            usage = event.get("usage")
+        # Claude: {"type":"result","total_cost_usd":...,"usage":{...}}
+        elif event_type == "result":
+            cost_usd = event.get("total_cost_usd")
+            usage = event.get("usage")
 
     await proc.wait()
-    response_text = "\n".join(texts) if texts else "(no response from codex)"
-    return response_text, None, None
+
+    # Log stderr for debugging (auth errors, etc.)
+    if proc.stderr:
+        stderr = (await proc.stderr.read()).decode().strip()
+        if stderr:
+            log.warning("stderr: %s", stderr[:500])
+
+    if proc.returncode and proc.returncode != 0 and not texts:
+        return f"(process exited with code {proc.returncode})", None, None
+
+    response_text = "\n".join(texts) if texts else "(no response)"
+    return response_text, usage, cost_usd
+
+
+async def read_retained_session(
+    client: aiomqtt.Client, session_id: str
+) -> Session | None:
+    """Read the retained session spec from MQTT."""
+    session_topic = topic_state_session(session_id)
+    await client.subscribe(session_topic, qos=1)
+
+    try:
+        async with asyncio.timeout(30.0):
+            async for mqtt_msg in client.messages:
+                payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
+                if not payload:
+                    continue
+                session = Session.from_json(payload)
+                await client.unsubscribe(session_topic)
+                return session
+    except TimeoutError:
+        log.error("Timed out waiting for session %s", session_id)
+
+    await client.unsubscribe(session_topic)
+    return None
+
+
+async def wait_for_needs(
+    client: aiomqtt.Client, session: Session, task_name: str
+) -> str:
+    """Subscribe to upstream chain result topics and wait until all arrive."""
+    my_task = session.tasks[task_name]
+    needed: dict[str, str] = {}  # source_task_id -> need_id
+    for need_id in my_task.needs:
+        need_task = session.tasks.get(need_id)
+        if need_task:
+            needed[need_task.task_id] = need_id
+            await client.subscribe(
+                topic_chain_result(session.session_id, need_task.task_id), qos=1
+            )
+
+    if not needed:
+        return ""
+
+    log.info("Waiting for %d upstream results: %s", len(needed), list(needed.values()))
+    results: dict[str, str] = {}
+
+    async for mqtt_msg in client.messages:
+        payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
+        if not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except Exception:
+            continue
+
+        source_tid = data.get("task_id", "")
+        if source_tid in needed:
+            need_id = needed[source_tid]
+            results[need_id] = data.get("result", "")
+            log.info(
+                "Got result from '%s' (%d/%d)",
+                need_id,
+                len(results),
+                len(needed),
+            )
+            if len(results) == len(needed):
+                break
+
+    # Unsubscribe from chain topics
+    for need_id in my_task.needs:
+        need_task = session.tasks.get(need_id)
+        if need_task:
+            await client.unsubscribe(
+                topic_chain_result(session.session_id, need_task.task_id)
+            )
+
+    parts = [
+        f"## Result from '{need_id}':\n{result}" for need_id, result in results.items()
+    ]
+    return "\n\n".join(parts)
+
+
+async def publish_task_status(
+    client: aiomqtt.Client,
+    session_id: str,
+    task_id: str,
+    status: str,
+    result: str = "",
+) -> None:
+    """Publish per-task status as a retained message on its own topic."""
+    payload = {"task_id": task_id, "session_id": session_id, "status": status}
+    if result:
+        payload["result"] = result
+    await client.publish(
+        topic_state_task(session_id, task_id),
+        json.dumps(payload),
+        qos=1,
+        retain=True,
+    )
+
+
+async def publish_terminal_result(
+    client: aiomqtt.Client,
+    session: Session,
+    task_name: str,
+    result: str,
+) -> None:
+    """Publish result to caller."""
+    my_task = session.tasks[task_name]
+    status = TaskStatusUpdate(
+        task_id=my_task.task_id,
+        state="completed",
+        result=result,
+    )
+
+    # Publish to caller
+    if session.caller_reply_topic:
+        props = make_properties(correlation_data=session.caller_correlation)
+        await client.publish(
+            session.caller_reply_topic,
+            status.to_json(),
+            qos=1,
+            properties=props,
+        )
+
+    # Handle spawn task response
+    if task_name == "spawn_task" and session.spawn_request_id:
+        from skitter.types import A2AResponse
+
+        resp = A2AResponse(
+            id=session.spawn_request_id,
+            result={"output": result},
+        )
+        if session.caller_reply_topic:
+            props = make_properties(correlation_data=session.caller_correlation)
+            await client.publish(
+                session.caller_reply_topic,
+                resp.to_json(),
+                qos=1,
+                properties=props,
+            )
 
 
 async def run(agent: str, session_id: str, task_id: str) -> None:
     log.info("[worker:%s:%s] Starting", agent, task_id)
 
-    # A2A topics — use agent_id-based event topics
     alive_topic = topic_event(agent, "alive")
     done_topic = topic_event(agent, "done")
     lwt_topic = topic_event(agent, "dead")
-    dispatch_topic = topic_state_dispatch(task_id)
-    cancel_topic = topic_request_cancel(agent)
     usage_topic = topic_state_usage(session_id, task_id)
 
-    lwt_payload = json.dumps({"status": "dead", "task_id": task_id, "agent": agent})
+    lwt_payload = json.dumps(
+        {
+            "status": "dead",
+            "task_id": task_id,
+            "agent": agent,
+            "session_id": session_id,
+        }
+    )
     will = aiomqtt.Will(topic=lwt_topic, payload=lwt_payload, qos=1)
 
     async with aiomqtt.Client(
@@ -279,94 +362,96 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         will=will,
         protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
-        # Subscribe to retained dispatch topic
-        await client.subscribe(dispatch_topic, qos=1)
-
-        # Announce alive (monitoring only)
+        # Announce alive
         await client.publish(
             alive_topic,
             json.dumps({"status": "alive", "task_id": task_id, "agent": agent}),
             qos=1,
         )
-        log.info(
-            "[worker:%s:%s] Alive, subscribed to %s", agent, task_id, dispatch_topic
-        )
 
-        # Read retained dispatch from coordinator
-        task: AgentMessage | None = None
-        response_topic: str | None = None
-        correlation_data: str | None = None
-
-        try:
-            async with asyncio.timeout(30.0):
-                async for mqtt_msg in client.messages:
-                    try:
-                        payload = mqtt_msg.payload.decode()
-                        data = json.loads(payload)
-                        task = AgentMessage.from_json(json.dumps(data["task"]))
-                        response_topic = data["reply_topic"]
-                        correlation_data = data["correlation"]
-                        break
-                    except Exception as e:
-                        log.error(
-                            "[worker:%s:%s] Failed to parse dispatch: %s",
-                            agent,
-                            task_id,
-                            e,
-                        )
-                        break
-        except TimeoutError:
-            log.error(
-                "[worker:%s:%s] Timed out waiting for retained dispatch",
-                agent,
-                task_id,
-            )
-
-        if task is None or response_topic is None:
-            log.error(
-                "[worker:%s:%s] No task or no response topic, exiting", agent, task_id
-            )
+        # 1. Read session spec (retained)
+        session = await read_retained_session(client, session_id)
+        if session is None:
+            log.error("[worker:%s:%s] No session found, exiting", agent, task_id)
             return
 
-        # Clear retained dispatch
-        await client.publish(dispatch_topic, b"", qos=1, retain=True)
+        # Find my task by task_id
+        task_name = None
+        for tid, st in session.tasks.items():
+            if st.task_id == task_id:
+                task_name = tid
+                break
 
-        log.info(
-            "[worker:%s:%s] Processing task (runtime=%s, model=%s, max_turns=%d): %.80s",
-            agent,
-            task_id,
-            task.runtime,
-            task.model or "default",
-            task.max_turns,
-            task.description,
+        if task_name is None:
+            log.error("[worker:%s:%s] Task not found in session", agent, task_id)
+            return
+
+        my_spec = session.task_dispatches.get(task_name)
+        if my_spec is None:
+            log.error("[worker:%s:%s] No dispatch spec in session", agent, task_id)
+            return
+
+        # 2. Wait for upstream results (join coordination)
+        my_task = session.tasks[task_name]
+        context = ""
+        if my_task.needs:
+            await publish_task_status(client, session_id, task_id, "waiting")
+            context = await wait_for_needs(client, session, task_name)
+
+        # 3. Build AgentMessage from pre-materialized spec + context
+        spec_with_context = {**my_spec, "context": context}
+        task_msg = AgentMessage(
+            task_id=spec_with_context["task_id"],
+            session_id=spec_with_context["session_id"],
+            description=spec_with_context["description"],
+            soul=spec_with_context.get("soul", ""),
+            skills=spec_with_context.get("skills", ""),
+            context=spec_with_context.get("context", ""),
+            max_turns=spec_with_context.get("max_turns", 10),
+            model=spec_with_context.get("model", ""),
+            runtime=spec_with_context.get("runtime", "claude"),
+            next=spec_with_context.get("next", ""),
+            caller_reply_topic=spec_with_context.get("caller_reply_topic", ""),
+            caller_correlation=spec_with_context.get("caller_correlation", ""),
         )
 
-        # Resolve workspace
-        workspace = skitter_config.WORKSPACES_DIR / task_id
-        workspace.mkdir(parents=True, exist_ok=True)
-        workspace_str = str(workspace)
+        await publish_task_status(client, session_id, task_id, "running")
 
-        # Determine streaming target: direct to caller
-        stream_topic = task.caller_reply_topic or response_topic
-        stream_correlation = task.caller_correlation or correlation_data
+        log.info(
+            "[worker:%s:%s] Processing (runtime=%s, model=%s, max_turns=%d): %.80s",
+            agent,
+            task_id,
+            task_msg.runtime,
+            task_msg.model or "default",
+            task_msg.max_turns,
+            task_msg.description,
+        )
+
+        # 4. Resolve workspace
+        workspace = WORKSPACES_DIR / task_id
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        # Per-agent HOME (only used in docker mode to isolate agent configs)
+        # In subprocess mode, keep the real HOME so claude CLI finds OAuth creds
+        worker_mode = os.environ.get("SKITTER_WORKER_MODE", "subprocess")
+        if worker_mode == "docker":
+            agent_home = resolve_agent_home(agent)
+            os.environ["HOME"] = agent_home
+
+        # Streaming target
+        stream_topic = task_msg.caller_reply_topic
+        stream_correlation = task_msg.caller_correlation
 
         async def publish_stream_item(item_type: str, content: str, seq: int) -> None:
-            item = StreamItem(
-                task_id=task_id,
-                seq=seq,
-                type=item_type,
-                content=content,
-            )
+            if not stream_topic:
+                return
+            item = StreamItem(task_id=task_id, seq=seq, type=item_type, content=content)
             props = make_properties(correlation_data=stream_correlation)
-            await client.publish(
-                stream_topic,
-                item.to_json(),
-                qos=0,
-                properties=props,
-            )
+            await client.publish(stream_topic, item.to_json(), qos=0, properties=props)
 
         # Cancel listener
         cancel_event = asyncio.Event()
+        cancel_topic = topic_request_cancel(agent)
         listener_task: asyncio.Task | None = None
 
         async def cancel_listener() -> None:
@@ -389,44 +474,32 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
                                 or data.get("task_id") == task_id
                             ):
                                 log.info(
-                                    "[worker:%s:%s] Cancel signal received",
-                                    agent,
-                                    task_id,
+                                    "[worker:%s:%s] Cancel received", agent, task_id
                                 )
                                 cancel_event.set()
                                 return
-                        except Exception as e:
-                            log.warning(
-                                "[worker:%s:%s] Bad cancel message: %s",
-                                agent,
-                                task_id,
-                                e,
-                            )
+                        except Exception:
+                            pass
             except asyncio.CancelledError:
                 pass
             except Exception as e:
                 log.warning(
-                    "[worker:%s:%s] Cancel listener error: %s",
-                    agent,
-                    task_id,
-                    e,
+                    "[worker:%s:%s] Cancel listener error: %s", agent, task_id, e
                 )
 
-        if task.max_turns != 0:
+        if task_msg.max_turns != 0:
             listener_task = asyncio.create_task(cancel_listener())
 
-        # --- Run agent based on runtime ---
+        # 5. Run agent
         usage: dict | None = None
         cost_usd: float | None = None
         try:
-            if task.runtime == "codex":
-                response_text, usage, cost_usd = await run_codex_agent(
-                    task, workspace_str, publish_stream_item
-                )
-            else:
-                response_text, usage, cost_usd = await run_claude_agent(
-                    task, workspace_str, publish_stream_item, cancel_event
-                )
+            response_text, usage, cost_usd = await run_agent(
+                task_msg,
+                str(workspace),
+                publish_stream_item,
+                cancel_event,
+            )
         finally:
             if listener_task and not listener_task.done():
                 listener_task.cancel()
@@ -435,40 +508,9 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
                 except asyncio.CancelledError:
                     pass
 
-        # --- Post-completion routing ---
-        final_status = TaskStatusUpdate(
-            task_id=task_id,
-            state="completed",
-            result=response_text,
-        )
-
-        if task.next == "" or task.next == "output":
-            # Terminal: publish result to caller + bookkeeping to coordinator
-            reply_topic = task.caller_reply_topic or response_topic
-            reply_corr = task.caller_correlation or correlation_data
-            props = make_properties(correlation_data=reply_corr)
-            await client.publish(
-                reply_topic,
-                final_status.to_json(),
-                qos=1,
-                properties=props,
-            )
-            # Bookkeeping to coordinator
-            props = make_properties(correlation_data=correlation_data)
-            await client.publish(
-                response_topic,
-                final_status.to_json(),
-                qos=1,
-                properties=props,
-            )
-            log.info(
-                "[worker:%s:%s] Terminal result published to %s",
-                agent,
-                task_id,
-                reply_topic,
-            )
-        else:
-            # Non-terminal: publish retained chain result for coordinator
+        # 6. Publish result
+        if task_msg.next and task_msg.next != "output":
+            # Non-terminal: publish retained chain result
             await client.publish(
                 topic_chain_result(session_id, task_id),
                 json.dumps(
@@ -485,7 +527,20 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
                 "[worker:%s:%s] Chain result published for next task '%s'",
                 agent,
                 task_id,
-                task.next,
+                task_msg.next,
+            )
+
+            await publish_task_status(client, session_id, task_id, "done")
+        else:
+            # Terminal: publish to caller
+            await publish_terminal_result(client, session, task_name, response_text)
+            await publish_task_status(
+                client, session_id, task_id, "done", result=response_text
+            )
+            log.info(
+                "[worker:%s:%s] Terminal result published",
+                agent,
+                task_id,
             )
 
         # Publish usage

@@ -1,44 +1,79 @@
 # Skitter
 
-~1,500 lines of Python. MQTT-based personal AI assistant. Stateless supervisor spawns workers and handles joins via an MQTT broker; independent workers handle AI reasoning via `claude-agent-sdk` or `codex` CLI.
+~2,600 lines of Python. MQTT-based personal AI assistant. A stateless gateway creates sessions and spawns all workers upfront; self-coordinating workers read their session spec from retained MQTT, wait for upstream results, invoke `claude` or `codex` CLI as subprocesses, and publish results.
 
-Key files: `skitter/coordinator.py`, `skitter/worker.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/reload.py`, `SOUL.md`, `docs/architecture.md`.
+Key files: `skitter/gateway.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `SOUL.md`, `docs/architecture.md`.
+
+## Planning and Implementation Process
+
+For non-trivial requests (new features, architectural changes, multi-file refactors), follow this process:
+
+### 1. Planning Phase
+- **Use a team of agents** for planning — delegate research and analysis to subagents.
+- **Evaluate fit** — research whether the request aligns with skitter's intended goals (minimal MQTT-based gateway, self-coordinating workers, small codebase). Push back on the user if a request conflicts with core architectural principles or adds unnecessary complexity.
+- **Persist the plan** — write a markdown file under `docs/` with timestamp in the filename: `docs/YYYY-mm-DD-HH-MM-SS-<slug>.md`. Include: problem statement, proposed approach, affected files, risks, and open questions.
+
+### 2. Implementation Phase
+- **Coding persona** — write code as a professional senior Python developer. Prefer idiomatic, neat Python without boilerplate. No unnecessary abstractions or over-engineering.
+- **Tests** — cover new and changed functionality with clever, focused tests. Don't add tests for trivial getters or obvious behavior; test the interesting edge cases and integration points.
+- **No backward compatibility** — rewrite and drop old code freely. Don't add shims, re-exports, or deprecation warnings. If something is replaced, delete the old version.
+
+### 3. Quality Phase
+- **Lint and format** — always run `uvx ruff format` and `uvx ruff check` on changed files. Fix all issues.
+- **Unit tests** — run `uv run python -m pytest tests/test_unit.py -q`.
+- **Live tests** — run `tests/test_live_claude.py` and `tests/test_live_codex.py` for end-to-end verification (standalone agent + workflow). Use an MQTT spy to confirm message flow.
+- **Dashboard** — verify `dashboard.html` still works with any changes to session state, discovery, or MQTT topics. Rewrite dashboard sections if the data model changed.
+
+### 4. Review Phase
+- **Correctness review** — review as a staff-level Python developer. Look for: correctness of async/MQTT interactions, edge cases in worker self-coordination and join waiting, state consistency across crash/recovery.
+- **Simplification review** — separate pass focused on removing unnecessary logic and finding opportunities to simplify. Look for: dead code paths, redundant checks, over-abstracted helpers that are called once, conditionals that can't trigger, code that defends against impossible states, and any logic that exists "just in case." If two code paths do nearly the same thing, merge them. If a function wraps a single call, inline it. Prefer deleting code over explaining why it's needed.
 
 ## Architecture Essentials
 
-- **Zero-LLM supervisor** — never calls an LLM. Organized as a `Coordinator` class with handler methods. Spawns workers for entry tasks, handles joins (multi-input), respawns on crash.
-- **Chain-based routing** — workers publish retained chain results for non-terminal tasks. Supervisor dispatches next task on chain result arrival — immediately for simple chains, after accumulating inputs for joins.
-- **Retained dispatch** — task dispatch uses retained MQTT messages (`state/dispatch/{task_id}`). Crash-proof: if supervisor dies between publish and spawn, retained message persists. Eliminates alive-triggered handshake.
-- **A2A-over-MQTT** — all topics follow the A2A draft v0.1 scheme. Event topics: `event/{org}/{unit}/{agent_id}/{event_type}`. Task IDs in payload, not topic. Agents discoverable via retained Agent Cards.
+- **Stateless gateway** — never calls an LLM. Creates sessions, pre-materializes dispatch specs for every task, publishes the session as a retained MQTT message, then spawns all workers upfront. Implemented in `skitter/gateway.py`.
+- **Self-coordinating workers** — each worker reads its session spec from retained MQTT, waits for upstream results (join coordination via subscribing to chain result topics), runs the agent CLI, and publishes results. No central coordinator needed after spawn.
+- **Immutable sessions** — the gateway publishes the session once; workers never mutate it. Per-task status is published to dedicated retained topics (`state/task/{session_id}/{task_id}`).
+- **Chain-based routing** — workers publish retained chain results for non-terminal tasks. Join workers subscribe to upstream chain result topics and block until all inputs arrive.
+- **A2A-over-MQTT** — all topics follow the A2A draft v0.1 scheme. Event topics: `event/{org}/{unit}/{agent_id}/{event_type}`. Task IDs in payload, not topic. Agents and workflows discoverable via retained discovery messages.
 - **MQTT as backbone** — retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
-- **Stateless recovery** — supervisor rebuilds from retained MQTT messages (sessions + chain results + dispatch) on restart.
-- **QA is a pipeline concern** — supervisor has no built-in QA logic. Add reviewer/fact-checker nodes to your pipeline YAML with dependencies on work tasks.
-- **Predefined agents** — YAML definitions in `~/.skitter/agents/`. Pipeline tasks reference agents by ID; supervisor resolves defaults. Supports `runtime: claude|codex` and custom `workspace`.
-- **Pipeline templates** — YAML chains in `~/.skitter/pipelines/`. Tasks have `id`, `next`, `needs` fields. Variables interpolated with `SafeFormatter`.
-- **Multi-runtime workers** — `claude` (claude-agent-sdk, default) or `codex` (OpenAI Codex CLI, authenticated via `codex login` or `OPENAI_API_KEY`).
-- **Toolsmith agent** — meta-agent that creates/modifies agent and pipeline YAML at runtime, triggers reload via `python -m skitter.reload`.
-- **Workers are subprocesses or Docker containers** — controlled by `SKITTER_WORKER_MODE` env var. Docker mode passes both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`.
+- **Crash recovery** — workers set MQTT LWT (Last Will and Testament). Gateway listens for dead events and respawns crashed workers. Retained session and chain results persist across crashes.
+- **QA is a workflow concern** — gateway has no built-in QA logic. Add reviewer/fact-checker nodes to your workflow YAML with dependencies on work tasks.
+- **Predefined agents** — YAML definitions in `~/.skitter/agents/`. Workflow tasks reference agents by ID; gateway resolves defaults. Supports `runtime: claude|codex` and custom `workspace`.
+- **Default agent** — the `skitter` agent is the default. CLI queries without `/agent` or `/workflow` prefix route to it. It serves as both a general-purpose assistant and a configuration manager for agents/workflows.
+- **Workflow templates** — YAML chains in `~/.skitter/workflows/`. Tasks have `id`, `next`, `needs` fields. Variables interpolated with `SafeFormatter`. Workflows are discoverable via retained MQTT discovery messages.
+- **Multi-runtime workers** — `claude` (Claude CLI, default) or `codex` (OpenAI Codex CLI, authenticated via `codex login` or `OPENAI_API_KEY`). Both invoked as subprocesses with JSONL stdout parsing.
+- **Workers are subprocesses or Docker containers** — controlled by `SKITTER_SPAWN_MODE` env var. Docker mode passes both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`.
+- **Completed sessions persist** — sessions remain as retained MQTT messages after all tasks finish, with the terminal task's result published to the caller and to the per-task status topic. The dashboard renders results as markdown with copy/download options.
 
 ## Key Modules
 
-- `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`PipelineDef`/`PipelineTask` dataclasses, `SafeFormatter`, `write_examples()` for `skitter init`.
-- `skitter/agents_cli.py` — `skitter agents list/show` subcommands.
-- `skitter/pipeline_cli.py` — `skitter pipeline list/show/run` subcommands.
-- `skitter/reload.py` — Publishes reload signal to supervisor via MQTT.
+- `skitter/gateway.py` — Stateless gateway: creates sessions, pre-materializes dispatch specs, publishes retained session, spawns all workers, listens for dead events to trigger respawn. Publishes agent/workflow discovery cards.
+- `skitter/worker.py` — Self-coordinating worker: reads retained session from MQTT, waits for upstream chain results (join coordination), invokes `claude` or `codex` CLI as subprocess, parses JSONL stdout, publishes chain results or terminal results. Handles cancellation via a separate MQTT control connection.
+- `skitter/spawn.py` — Worker spawn backends: subprocess (default) or Docker container, controlled by `SKITTER_SPAWN_MODE`.
+- `skitter/storage.py` — Config loading backends: filesystem (default), delegates to `config.py`. Abstraction point for future R2/cloud storage.
+- `skitter/respawn.py` — Handles LWT dead events by respawning crashed workers.
+- `skitter/mqtt.py` — MQTT connection settings, topic builders, and MQTTv5 property helpers.
+- `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`WorkflowDef`/`WorkflowTask` dataclasses, `SafeFormatter`, `write_examples()` for `skitter init`.
+- `skitter/agents_cli.py` — `skitter agents list/show/run` subcommands.
+- `skitter/workflow_cli.py` — `skitter workflow list/show/run` subcommands.
+- `skitter/__main__.py` — CLI dispatch. `skitter run "prompt"` and `skitter "prompt"` route to the default `skitter` agent.
+- `skitter/reload.py` — Publishes reload signal to gateway via MQTT.
+- `dashboard.html` — Single-file MQTT-connected dashboard. Agents/workflows clickable in sidebar; compose view in main area; session results rendered as markdown.
 
 ## Current Limitations
 
 - No auth/TLS (localhost-only PoC)
-- Workers run with `bypassPermissions`
-- Concurrent same-`session_id` messages overwrite
+- Workers run with `dangerouslySkipPermissions`
 - Worker errors passed as normal results
 - No conversation memory across sessions
+- Sessions not persisted to disk (only MQTT retained messages)
 
 ## Roadmap
 
 - Telegram bridge
 - Per-chat conversation history
 - Worker timeouts and exponential backoff
+- Persist sessions to `~/.skitter/` for durability beyond MQTT broker restarts
 
 ---
 

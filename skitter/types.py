@@ -168,8 +168,8 @@ class InboundMessage:
     sender: str
     session_id: str
     timestamp: float = field(default_factory=time.time)
-    pipeline_id: str = ""
-    pipeline_vars: dict[str, str] = field(default_factory=dict)
+    workflow_id: str = ""
+    workflow_vars: dict[str, str] = field(default_factory=dict)
     agent_id: str = ""
 
     def to_json(self) -> str:
@@ -179,10 +179,10 @@ class InboundMessage:
             "session_id": self.session_id,
             "timestamp": self.timestamp,
         }
-        if self.pipeline_id:
-            d["pipeline_id"] = self.pipeline_id
-        if self.pipeline_vars:
-            d["pipeline_vars"] = self.pipeline_vars
+        if self.workflow_id:
+            d["workflow_id"] = self.workflow_id
+        if self.workflow_vars:
+            d["workflow_vars"] = self.workflow_vars
         if self.agent_id:
             d["agent_id"] = self.agent_id
         return json.dumps(d)
@@ -195,8 +195,8 @@ class InboundMessage:
             sender=d["sender"],
             session_id=d["session_id"],
             timestamp=d.get("timestamp", time.time()),
-            pipeline_id=d.get("pipeline_id", ""),
-            pipeline_vars=d.get("pipeline_vars", {}),
+            workflow_id=d.get("workflow_id", ""),
+            workflow_vars=d.get("workflow_vars", {}),
             agent_id=d.get("agent_id", ""),
         )
 
@@ -343,13 +343,14 @@ class SessionTask:
 @dataclass
 class Session:
     session_id: str
-    pipeline_id: str = ""
+    workflow_id: str = ""
     agent_id: str = ""
     label: str = ""
     variables: dict[str, str] = field(default_factory=dict)
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     tasks: dict[str, SessionTask] = field(default_factory=dict)
+    task_dispatches: dict[str, dict] = field(default_factory=dict)
     spawn_request_id: str = ""
     result: str = ""
 
@@ -357,13 +358,14 @@ class Session:
         return json.dumps(
             {
                 "session_id": self.session_id,
-                "pipeline_id": self.pipeline_id,
+                "workflow_id": self.workflow_id,
                 "agent_id": self.agent_id,
                 "label": self.label,
                 "variables": self.variables,
                 "caller_reply_topic": self.caller_reply_topic,
                 "caller_correlation": self.caller_correlation,
                 "tasks": {k: v.to_dict() for k, v in self.tasks.items()},
+                "task_dispatches": self.task_dispatches,
                 "spawn_request_id": self.spawn_request_id,
                 "result": self.result,
             }
@@ -375,13 +377,14 @@ class Session:
         tasks = {k: SessionTask.from_dict(v) for k, v in d.get("tasks", {}).items()}
         return cls(
             session_id=d["session_id"],
-            pipeline_id=d.get("pipeline_id", ""),
+            workflow_id=d.get("workflow_id", ""),
             agent_id=d.get("agent_id", ""),
             label=d.get("label", ""),
             variables=d.get("variables", {}),
             caller_reply_topic=d.get("caller_reply_topic", ""),
             caller_correlation=d.get("caller_correlation", ""),
             tasks=tasks,
+            task_dispatches=d.get("task_dispatches", {}),
             spawn_request_id=d.get("spawn_request_id", ""),
             result=d.get("result", ""),
         )

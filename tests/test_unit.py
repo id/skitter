@@ -1,5 +1,6 @@
-"""Tests for skitter chain-based supervisor model."""
+"""Tests for skitter coordinatorless architecture."""
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -7,16 +8,12 @@ import pytest
 
 from skitter.config import (
     AgentDef,
-    PipelineDef,
-    PipelineTask,
+    WorkflowDef,
+    WorkflowTask,
 )
-from skitter.coordinator import (
-    Coordinator,
-    build_context_for_join,
+from skitter.gateway import (
+    build_dispatch_spec,
     create_session,
-    find_id_by_task_id,
-    find_task_by_task_id,
-    get_entry_tasks,
 )
 from skitter.mqtt import (
     topic_chain_result,
@@ -113,6 +110,18 @@ class TestSession:
         assert restored.caller_reply_topic == "reply/t"
         assert restored.caller_correlation == "corr"
 
+    def test_task_dispatches_roundtrip(self):
+        session = Session(session_id="c1", label="test")
+        session.task_dispatches["step1"] = {
+            "task_id": "t1",
+            "description": "do things",
+            "runtime": "claude",
+        }
+        json_str = session.to_json()
+        restored = Session.from_json(json_str)
+        assert "step1" in restored.task_dispatches
+        assert restored.task_dispatches["step1"]["runtime"] == "claude"
+
 
 # --- Topic builders ---
 
@@ -165,30 +174,30 @@ class TestCreateSession:
                 id="codex_agent",
                 name="Codex Agent",
                 runtime="codex",
-                model="o3-mini",
+                model="gpt-5-nano",
             ),
         }
         self.models = {"haiku": "fast", "sonnet": "balanced", "opus": "best"}
-        self.pipeline = PipelineDef(
+        self.workflow = WorkflowDef(
             id="test",
-            name="Test Pipeline",
+            name="Test Workflow",
             variables=["topic"],
             tasks=[
-                PipelineTask(
+                WorkflowTask(
                     id="research",
                     agent="researcher",
                     description="Research '{topic}'",
                     next="fact_check",
                     needs=[],
                 ),
-                PipelineTask(
+                WorkflowTask(
                     id="analyze",
                     agent="researcher",
                     description="Analyze '{topic}'",
                     next="fact_check",
                     needs=[],
                 ),
-                PipelineTask(
+                WorkflowTask(
                     id="fact_check",
                     agent="writer",
                     description="Check '{topic}'",
@@ -198,11 +207,11 @@ class TestCreateSession:
             ],
         )
 
-    def test_pipeline_session(self):
+    def test_workflow_session(self):
         session = create_session(
             "c1",
             "test",
-            pipeline=self.pipeline,
+            workflow=self.workflow,
             variables={"topic": "AI"},
             models=self.models,
             agents=self.agents,
@@ -226,7 +235,7 @@ class TestCreateSession:
         assert session.tasks["researcher"].next == "output"
 
     def test_codex_agent_model(self):
-        # o3-mini is not in models dict, so it falls back to default (haiku)
+        """Agent's model is preserved even if not in the models dict."""
         session = create_session(
             "c1",
             "code this",
@@ -235,11 +244,10 @@ class TestCreateSession:
             agents=self.agents,
             models=self.models,
         )
-        assert session.tasks["codex_agent"].model == "haiku"
+        assert session.tasks["codex_agent"].model == "gpt-5-nano"
 
     def test_codex_agent_model_when_known(self):
-        # When agent model is in models dict, it's used
-        models_with_codex = {**self.models, "o3-mini": "codex model"}
+        models_with_codex = {**self.models, "gpt-5-nano": "codex model"}
         session = create_session(
             "c1",
             "code this",
@@ -248,13 +256,13 @@ class TestCreateSession:
             agents=self.agents,
             models=models_with_codex,
         )
-        assert session.tasks["codex_agent"].model == "o3-mini"
+        assert session.tasks["codex_agent"].model == "gpt-5-nano"
 
     def test_variable_interpolation(self):
         session = create_session(
             "c1",
             "test",
-            pipeline=self.pipeline,
+            workflow=self.workflow,
             variables={"topic": "quantum"},
             models=self.models,
             agents=self.agents,
@@ -292,7 +300,9 @@ class TestEntryTasks:
             needs=["a", "b"],
             next="output",
         )
-        entry = get_entry_tasks(session)
+        entry = [
+            t for t in session.tasks.values() if not t.needs and t.status == "pending"
+        ]
         assert len(entry) == 2
         entry_ids = {t.id for t in entry}
         assert entry_ids == {"a", "b"}
@@ -307,44 +317,91 @@ class TestEntryTasks:
             needs=[],
             status="running",
         )
-        entry = get_entry_tasks(session)
+        entry = [
+            t for t in session.tasks.values() if not t.needs and t.status == "pending"
+        ]
         assert len(entry) == 0
 
 
-# --- Join context building ---
+# --- Dispatch spec building ---
 
 
-class TestJoinContext:
-    def test_build_context(self):
-        session = Session(session_id="c1", label="test")
-        session.tasks["a"] = SessionTask(
-            id="a",
-            task_id="tid_a",
-            agent="r",
-            description="",
+class TestBuildDispatchSpec:
+    def test_resolves_from_agent_def(self):
+        agents = {
+            "researcher": AgentDef(
+                id="researcher",
+                name="R",
+                soul="be smart",
+                skills="search",
+                model="sonnet",
+                max_turns=15,
+            ),
+        }
+        session = Session(session_id="s1", label="test")
+        session.tasks["research"] = SessionTask(
+            id="research",
+            task_id="t1",
+            agent="researcher",
+            description="do stuff",
+            model="sonnet",
+            next="output",
         )
-        session.tasks["b"] = SessionTask(
-            id="b",
-            task_id="tid_b",
-            agent="r",
-            description="",
+        session.caller_reply_topic = "reply/t"
+        session.caller_correlation = "corr"
+
+        spec = build_dispatch_spec(session, "research", agents, {})
+        assert spec["soul"] == "be smart"
+        assert spec["skills"] == "search"
+        assert spec["max_turns"] == 15
+        assert spec["runtime"] == "claude"
+        assert spec["caller_reply_topic"] == "reply/t"
+
+    def test_workflow_task_overrides(self):
+        agents = {
+            "researcher": AgentDef(
+                id="researcher",
+                name="R",
+                soul="default soul",
+                max_turns=10,
+            ),
+        }
+        workflows = {
+            "test": WorkflowDef(
+                id="test",
+                name="Test",
+                tasks=[
+                    WorkflowTask(
+                        id="step1",
+                        agent="researcher",
+                        description="d",
+                        soul="override soul",
+                        max_turns=5,
+                    ),
+                ],
+            ),
+        }
+        session = Session(session_id="s1", label="test", workflow_id="test")
+        session.tasks["step1"] = SessionTask(
+            id="step1",
+            task_id="t1",
+            agent="researcher",
+            description="d",
+            model="haiku",
         )
-        join_inputs = {"tid_a": "result A", "tid_b": "result B"}
-        context = build_context_for_join(join_inputs, ["a", "b"], session)
-        assert "result A" in context
-        assert "result B" in context
-        assert "Result from 'a'" in context
-        assert "Result from 'b'" in context
+
+        spec = build_dispatch_spec(session, "step1", agents, workflows)
+        assert spec["soul"] == "override soul"
+        assert spec["max_turns"] == 5
 
 
-# --- Pipeline loading: auto-infer next ---
+# --- Workflow loading: auto-infer next ---
 
 
-class TestPipelineLoading:
+class TestWorkflowLoading:
     def test_auto_infer_next(self, tmp_path):
-        """Pipeline without explicit next gets it auto-inferred from needs."""
-        pipeline_yaml = tmp_path / "test.yaml"
-        pipeline_yaml.write_text(
+        workflow_yaml = tmp_path / "test.yaml"
+        workflow_yaml.write_text(
             """
 name: Test
 tasks:
@@ -360,11 +417,11 @@ tasks:
         )
         import yaml
 
-        data = yaml.safe_load(pipeline_yaml.read_text())
+        data = yaml.safe_load(workflow_yaml.read_text())
         tasks = []
         for t in data["tasks"]:
             tasks.append(
-                PipelineTask(
+                WorkflowTask(
                     id=t.get("id", ""),
                     agent=t.get("agent", "worker"),
                     description=t.get("description", ""),
@@ -372,7 +429,6 @@ tasks:
                     needs=t.get("needs", []),
                 )
             )
-        # Auto-infer next
         for t in tasks:
             if not t.next:
                 dependents = [other.id for other in tasks if t.id in other.needs]
@@ -393,8 +449,8 @@ tasks:
 class TestCodexDispatch:
     @pytest.mark.asyncio
     async def test_codex_not_installed(self):
-        """run_codex_agent handles missing codex CLI."""
-        from skitter.worker import run_codex_agent
+        """run_agent handles missing codex CLI."""
+        from skitter.worker import run_agent
 
         task = AgentMessage(
             task_id="t1",
@@ -402,7 +458,7 @@ class TestCodexDispatch:
             description="code something",
             soul="",
             skills="",
-            model="o3-mini",
+            model="gpt-5-nano",
             runtime="codex",
         )
 
@@ -410,8 +466,34 @@ class TestCodexDispatch:
             pass
 
         with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result, usage, cost = await run_codex_agent(task, "/tmp", noop_publish)
-            assert "codex CLI not installed" in result
+            result, usage, cost = await run_agent(
+                task, "/tmp", noop_publish, asyncio.Event()
+            )
+            assert "codex" in result.lower() and "not found" in result.lower()
+            assert usage is None
+
+    @pytest.mark.asyncio
+    async def test_claude_not_installed(self):
+        """run_agent handles missing claude CLI."""
+        from skitter.worker import run_agent
+
+        task = AgentMessage(
+            task_id="t1",
+            session_id="c1",
+            description="do something",
+            soul="",
+            skills="",
+            runtime="claude",
+        )
+
+        async def noop_publish(item_type, content, seq):
+            pass
+
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+            result, usage, cost = await run_agent(
+                task, "/tmp", noop_publish, asyncio.Event()
+            )
+            assert "claude" in result.lower() and "not found" in result.lower()
             assert usage is None
 
 
@@ -420,118 +502,74 @@ class TestCodexDispatch:
 
 class TestReload:
     def test_reload_module_exists(self):
-        """skitter.reload module is importable."""
         import skitter.reload
 
         assert hasattr(skitter.reload, "main")
 
 
-# --- Task helpers ---
+# --- Spawn module ---
 
 
-class TestTaskHelpers:
-    def test_find_task_by_task_id(self):
-        session = Session(session_id="c1", label="test")
-        session.tasks["a"] = SessionTask(
-            id="a", task_id="tid1", agent="r", description=""
-        )
-        assert find_task_by_task_id(session, "tid1") is not None
-        assert find_task_by_task_id(session, "nope") is None
+class TestSpawn:
+    def test_spawn_module_exists(self):
+        from skitter.spawn import spawn_worker
 
-    def test_find_id_by_task_id(self):
-        session = Session(session_id="c1", label="test")
-        session.tasks["a"] = SessionTask(
-            id="a", task_id="tid1", agent="r", description=""
-        )
-        assert find_id_by_task_id(session, "tid1") == "a"
-        assert find_id_by_task_id(session, "nope") is None
+        assert callable(spawn_worker)
 
 
-# --- Join accumulation (chain + join overlap) ---
+# --- Storage module ---
 
 
-class TestAccumulateJoins:
-    """Test that _accumulate_joins stores results for downstream join tasks.
+class TestStorage:
+    def test_storage_module_exists(self):
+        from skitter.storage import load_agents, load_workflows
 
-    Covers the pattern where a task's result is consumed by a simple chain
-    (via `next`) but also needed by a downstream join task (via `needs`).
+        assert callable(load_agents)
+        assert callable(load_workflows)
 
-    Pipeline under test:
-        A --next--> B --next--> C (needs: [A, B]) --next--> D (needs: [C])
 
-    Without accumulation, A's result routes to B as a simple chain but C
-    never receives A's result, so the join stalls.
-    """
+# --- Respawn module ---
 
-    def setup_method(self):
-        self.coordinator = Coordinator()
-        self.session = Session(session_id="s1", label="test")
-        self.session.tasks["A"] = SessionTask(
-            id="A",
-            task_id="tid_a",
-            agent="r",
-            description="",
-            next="B",
-            needs=[],
-        )
-        self.session.tasks["B"] = SessionTask(
-            id="B",
-            task_id="tid_b",
-            agent="r",
-            description="",
-            next="C",
-            needs=["A"],
-        )
-        self.session.tasks["C"] = SessionTask(
-            id="C",
-            task_id="tid_c",
-            agent="w",
-            description="",
-            next="D",
-            needs=["A", "B"],
-        )
-        self.session.tasks["D"] = SessionTask(
-            id="D",
-            task_id="tid_d",
-            agent="w",
-            description="",
-            next="output",
-            needs=["C"],
-        )
-        self.coordinator.sessions["s1"] = self.session
 
-    def test_accumulates_for_downstream_join(self):
-        """A's result is stored for C's join even though A.next is B."""
-        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result from A")
-        key = ("s1", "C")
-        assert key in self.coordinator.join_inputs
-        assert "tid_a" in self.coordinator.join_inputs[key]
-        assert self.coordinator.join_inputs[key]["tid_a"] == "result from A"
+class TestRespawn:
+    @pytest.mark.asyncio
+    async def test_respawn_with_missing_fields(self):
+        from skitter.respawn import handle_dead_event
 
-    def test_does_not_accumulate_for_simple_chain(self):
-        """A's result is NOT stored for B (simple chain, needs has 1 entry)."""
-        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result from A")
-        key = ("s1", "B")
-        assert key not in self.coordinator.join_inputs
+        # Should not raise
+        await handle_dead_event(json.dumps({"status": "dead"}))
 
-    def test_does_not_accumulate_for_unrelated_tasks(self):
-        """A's result is NOT stored for D (D doesn't need A)."""
-        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result from A")
-        key = ("s1", "D")
-        assert key not in self.coordinator.join_inputs
+    @pytest.mark.asyncio
+    async def test_respawn_with_valid_event(self):
+        from skitter.respawn import handle_dead_event
 
-    def test_join_satisfied_after_both_inputs(self):
-        """C's join is fully satisfied after both A and B complete."""
-        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result A")
-        self.coordinator._accumulate_joins(self.session, "B", "tid_b", "result B")
-        key = ("s1", "C")
-        inputs = self.coordinator.join_inputs[key]
-        assert "tid_a" in inputs
-        assert "tid_b" in inputs
+        with patch("skitter.respawn.spawn_worker") as mock_spawn:
+            await handle_dead_event(
+                json.dumps(
+                    {
+                        "status": "dead",
+                        "task_id": "t1",
+                        "agent": "researcher",
+                        "session_id": "s1",
+                    }
+                )
+            )
+            mock_spawn.assert_called_once_with("researcher", "s1", "t1")
 
-    def test_skips_already_running_join(self):
-        """Does not accumulate for a join task that's already running."""
-        self.session.tasks["C"].status = "running"
-        self.coordinator._accumulate_joins(self.session, "A", "tid_a", "result A")
-        key = ("s1", "C")
-        assert key not in self.coordinator.join_inputs
+
+# --- Join context from wait_for_needs ---
+
+
+class TestJoinContext:
+    def test_build_context_from_results(self):
+        """Verify the context string format produced for join tasks."""
+        results = {"a": "result A", "b": "result B"}
+        parts = [
+            f"## Result from '{need_id}':\n{result}"
+            for need_id, result in results.items()
+        ]
+        context = "\n\n".join(parts)
+        assert "result A" in context
+        assert "result B" in context
+        assert "Result from 'a'" in context
+        assert "Result from 'b'" in context

@@ -23,9 +23,9 @@ from skitter.mqtt import (
     topic_chain_result,
     topic_event,
     topic_request_cancel,
-    topic_state_session,
-    topic_state_task,
-    topic_state_usage,
+    topic_session,
+    topic_task_status,
+    topic_usage,
 )
 from skitter.types import (
     AgentMessage,
@@ -176,7 +176,7 @@ async def read_retained_session(
     client: aiomqtt.Client, session_id: str
 ) -> Session | None:
     """Read the retained session spec from MQTT."""
-    session_topic = topic_state_session(session_id)
+    session_topic = topic_session(session_id)
     await client.subscribe(session_topic, qos=1)
 
     try:
@@ -206,7 +206,10 @@ async def wait_for_needs(
         if need_task:
             needed[need_task.task_id] = need_id
             await client.subscribe(
-                topic_chain_result(session.session_id, need_task.task_id), qos=1
+                topic_chain_result(
+                    need_task.agent, session.session_id, need_task.task_id
+                ),
+                qos=1,
             )
 
     if not needed:
@@ -242,7 +245,9 @@ async def wait_for_needs(
         need_task = session.tasks.get(need_id)
         if need_task:
             await client.unsubscribe(
-                topic_chain_result(session.session_id, need_task.task_id)
+                topic_chain_result(
+                    need_task.agent, session.session_id, need_task.task_id
+                )
             )
 
     parts = [
@@ -251,19 +256,20 @@ async def wait_for_needs(
     return "\n\n".join(parts)
 
 
-async def publish_task_status(
+async def publish_task_state(
     client: aiomqtt.Client,
+    agent: str,
     session_id: str,
     task_id: str,
     status: str,
     result: str = "",
 ) -> None:
-    """Publish per-task status as a retained message on its own topic."""
+    """Publish per-task status as a retained message on a suffixed event topic."""
     payload = {"task_id": task_id, "session_id": session_id, "status": status}
     if result:
         payload["result"] = result
     await client.publish(
-        topic_state_task(session_id, task_id),
+        topic_task_status(agent, session_id, task_id),
         json.dumps(payload),
         qos=1,
         retain=True,
@@ -301,7 +307,6 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
     alive_topic = topic_event(agent, "alive")
     done_topic = topic_event(agent, "done")
     lwt_topic = topic_event(agent, "dead")
-    usage_topic = topic_state_usage(session_id, task_id)
 
     lwt_payload = json.dumps(
         {
@@ -316,7 +321,7 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
     async with aiomqtt.Client(
         MQTT_HOST,
         MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id}",
+        identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}",
         will=will,
         protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
@@ -353,7 +358,7 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         my_task = session.tasks[task_name]
         context = ""
         if my_task.needs:
-            await publish_task_status(client, session_id, task_id, "waiting")
+            await publish_task_state(client, agent, session_id, task_id, "waiting")
             context = await wait_for_needs(client, session, task_name)
 
         # 3. Build AgentMessage from pre-materialized spec + context
@@ -370,7 +375,7 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
             caller_correlation=my_spec.get("caller_correlation", ""),
         )
 
-        await publish_task_status(client, session_id, task_id, "running")
+        await publish_task_state(client, agent, session_id, task_id, "running")
 
         log.info(
             "[worker:%s:%s] Processing (runtime=%s, model=%s): %.80s",
@@ -406,7 +411,7 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
                 async with aiomqtt.Client(
                     MQTT_HOST,
                     MQTT_PORT,
-                    identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id}-ctrl",
+                    identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}-ctrl",
                     protocol=aiomqtt.ProtocolVersion.V5,
                 ) as ctrl_client:
                     await ctrl_client.subscribe(cancel_topic, qos=1)
@@ -437,10 +442,10 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         listener_task = asyncio.create_task(cancel_listener())
 
         # 5. Run agent
-        usage: dict | None = None
+        usage_data: dict | None = None
         cost_usd: float | None = None
         try:
-            response_text, usage, cost_usd = await run_agent(
+            response_text, usage_data, cost_usd = await run_agent(
                 task_msg,
                 str(workspace),
                 publish_stream_item,
@@ -458,7 +463,7 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         if task_msg.next and task_msg.next != "output":
             # Non-terminal: publish retained chain result
             await client.publish(
-                topic_chain_result(session_id, task_id),
+                topic_chain_result(agent, session_id, task_id),
                 json.dumps(
                     {
                         "task_id": task_id,
@@ -476,14 +481,14 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
                 task_msg.next,
             )
 
-            await publish_task_status(
-                client, session_id, task_id, "done", result=response_text
+            await publish_task_state(
+                client, agent, session_id, task_id, "done", result=response_text
             )
         else:
             # Terminal: publish to caller
             await publish_terminal_result(client, session, task_name, response_text)
-            await publish_task_status(
-                client, session_id, task_id, "done", result=response_text
+            await publish_task_state(
+                client, agent, session_id, task_id, "done", result=response_text
             )
             log.info(
                 "[worker:%s:%s] Terminal result published",
@@ -492,16 +497,18 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
             )
 
         # Publish usage
-        if usage or cost_usd is not None:
+        if usage_data or cost_usd is not None:
             usage_payload = json.dumps(
                 {
                     "task_id": task_id,
                     "session_id": session_id,
-                    "usage": usage,
+                    "usage": usage_data,
                     "cost_usd": cost_usd,
                 }
             )
-            await client.publish(usage_topic, usage_payload, qos=1)
+            await client.publish(
+                topic_usage(agent, session_id, task_id), usage_payload, qos=1
+            )
 
         # Announce done
         await client.publish(

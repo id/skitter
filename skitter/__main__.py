@@ -6,7 +6,7 @@ def dispatch() -> None:
 
     Routes to the appropriate sub-module based on the first positional arg:
 
-        skitter                → gateway (default)
+        skitter                → supervisor (default)
         skitter chat  [...]    → interactive MQTT chat client
         skitter agents [...]   → manage predefined agents
         skitter workflow [...] → manage and run workflows
@@ -58,7 +58,7 @@ def dispatch() -> None:
         prompt = " ".join(sys.argv[1:])
         cmd_run("skitter", prompt)
     else:
-        from skitter.gateway import main
+        from skitter.supervisor import main
 
         main()
 

@@ -1,7 +1,8 @@
-"""Gateway — creates sessions, pre-materializes dispatch specs, spawns all workers.
+"""Supervisor — listens for agent requests via wildcard, creates sessions,
+spawns workers, monitors liveness via LWT events.
 
-In local mode, runs as a long-lived MQTT subscriber.
-In serverless mode, triggered by EMQX webhook (Phase 2).
+Not an A2A agent itself. Invisible infrastructure that subscribes to
+request/{o}/{u}/+ and event/{o}/{u}/+/+ wildcards.
 """
 
 import asyncio
@@ -14,7 +15,6 @@ import aiomqtt
 from skitter.config import (
     AgentDef,
     WorkflowDef,
-    agent_def_to_card,
     safe_format,
 )
 from skitter.mqtt import (
@@ -27,14 +27,17 @@ from skitter.mqtt import (
     make_properties,
     topic_discovery,
     topic_event_wildcard,
-    topic_request,
-    topic_state_session,
+    topic_reload,
+    topic_request_wildcard,
+    topic_session,
 )
 from skitter.respawn import handle_dead_event
 from skitter.spawn import spawn_worker
-from skitter.storage import load_agents, load_workflows
+from skitter.storage import load_agents, load_cards, load_workflows
 from skitter.types import (
     A2AResponse,
+    A2A_RESPONDER_UNAVAILABLE,
+    A2A_TRANSPORT_PROTOCOL_ERROR,
     InboundMessage,
     Session,
     SessionTask,
@@ -43,7 +46,7 @@ from skitter.types import (
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
 )
-log = logging.getLogger("skitter.gateway")
+log = logging.getLogger("skitter.supervisor")
 
 
 def build_dispatch_spec(
@@ -118,6 +121,12 @@ def create_session(
     return session
 
 
+def _parse_agent_id_from_topic(topic: str) -> str:
+    """Extract agent_id from $a2a/v1/request/{org}/{unit}/{agent_id}."""
+    parts = topic.split("/")
+    return parts[5] if len(parts) >= 6 else ""
+
+
 async def handle_request(
     client: aiomqtt.Client,
     payload: str,
@@ -125,6 +134,7 @@ async def handle_request(
     caller_correlation: str,
     agents: dict[str, AgentDef],
     workflows: dict[str, WorkflowDef],
+    agent_id: str = "",
 ) -> None:
     """Create session, pre-materialize all task specs, spawn all workers."""
     try:
@@ -146,6 +156,15 @@ async def handle_request(
             agent_id=data.get("agent_id", ""),
         )
 
+    # Agent ID comes from the topic, fall back to payload
+    if agent_id:
+        msg.agent_id = agent_id
+
+    # Check if this is a workflow request (agent_id starts with "workflow-")
+    if msg.agent_id and msg.agent_id.startswith("workflow-"):
+        msg.workflow_id = msg.agent_id.removeprefix("workflow-")
+        msg.agent_id = ""
+
     if msg.agent_id:
         if msg.agent_id not in agents:
             await _send_error(
@@ -153,6 +172,8 @@ async def handle_request(
                 caller_reply_topic,
                 caller_correlation,
                 f"Unknown agent: {msg.agent_id}",
+                code=A2A_RESPONDER_UNAVAILABLE,
+                a2a_error="responder_unavailable",
             )
             return
         session = create_session(
@@ -170,6 +191,8 @@ async def handle_request(
                 caller_reply_topic,
                 caller_correlation,
                 f"Unknown workflow: {msg.workflow_id}",
+                code=A2A_RESPONDER_UNAVAILABLE,
+                a2a_error="responder_unavailable",
             )
             return
         session = create_session(
@@ -208,9 +231,9 @@ async def handle_request(
             session, task_name, agents
         )
 
-    # Publish session as retained
+    # Publish session as retained event
     await client.publish(
-        topic_state_session(session.session_id),
+        topic_session(session.session_id),
         session.to_json(),
         qos=1,
         retain=True,
@@ -223,7 +246,7 @@ async def handle_request(
 
     # Re-publish session with updated statuses
     await client.publish(
-        topic_state_session(session.session_id),
+        topic_session(session.session_id),
         session.to_json(),
         qos=1,
         retain=True,
@@ -246,11 +269,15 @@ async def _send_error(
     correlation: str,
     message: str,
     code: int = -32602,
+    a2a_error: str = "",
 ) -> None:
     if reply_topic:
+        error_data: dict = {"code": code, "message": message}
+        if a2a_error:
+            error_data["data"] = {"a2a_error": a2a_error}
         resp = A2AResponse(
             id=correlation or "",
-            error={"code": code, "message": message},
+            error=error_data,
         )
         props = make_properties(correlation_data=correlation)
         await client.publish(reply_topic, resp.to_json(), qos=1, properties=props)
@@ -258,96 +285,43 @@ async def _send_error(
 
 async def _publish_discovery(
     client: aiomqtt.Client,
-    agents: dict[str, AgentDef],
-    workflows: dict[str, WorkflowDef],
+    cards: dict[str, str],
 ) -> None:
-    """Publish Agent Cards and Workflow Cards as retained discovery messages."""
-    for agent_id, agent_def in agents.items():
-        card = agent_def_to_card(agent_def)
+    """Publish pre-built Agent/Workflow Cards as retained discovery messages."""
+    for card_id, card_json in cards.items():
         await client.publish(
-            topic_discovery(agent_id),
-            card.to_json(),
+            topic_discovery(card_id),
+            card_json,
             qos=1,
             retain=True,
         )
-
-    # Gateway card
-    gateway_card = json.dumps(
-        {
-            "agent_id": "gateway",
-            "name": "Skitter Gateway",
-            "description": "Creates sessions and spawns workers",
-            "capabilities": ["orchestration", "spawn"],
-            "model": "",
-            "max_turns": 0,
-        }
-    )
-    await client.publish(
-        topic_discovery("gateway"),
-        gateway_card,
-        qos=1,
-        retain=True,
-    )
-
-    for workflow_id, workflow_def in workflows.items():
-        card_payload = json.dumps(
-            {
-                "workflow_id": workflow_id,
-                "name": workflow_def.name,
-                "description": workflow_def.description,
-                "variables": workflow_def.variables,
-                "tasks": [
-                    {
-                        "id": t.id,
-                        "agent": t.agent,
-                        "next": t.next or "",
-                        "needs": list(t.needs),
-                        "model": t.model or "",
-                    }
-                    for t in workflow_def.tasks
-                ],
-                "agents": list({t.agent for t in workflow_def.tasks}),
-            }
-        )
-        await client.publish(
-            topic_discovery(f"workflow/{workflow_id}"),
-            card_payload,
-            qos=1,
-            retain=True,
-        )
-
-    log.info(
-        "Published %d Agent Cards, %d Workflow Cards",
-        len(agents) + 1,
-        len(workflows),
-    )
+    log.info("Published %d discovery cards", len(cards))
 
 
 async def run() -> None:
-    """Run the gateway as a long-lived MQTT subscriber (local mode)."""
-    gateway_id = uuid.uuid4().hex[:12]
+    """Run the supervisor as a long-lived MQTT subscriber (local mode)."""
     agents = load_agents()
     workflows = load_workflows()
+    cards = load_cards()
 
     if agents:
         log.info("Loaded %d agents: %s", len(agents), ", ".join(agents))
     if workflows:
         log.info("Loaded %d workflows: %s", len(workflows), ", ".join(workflows))
 
-    request_topic = topic_request("gateway")
-
     async with aiomqtt.Client(
         MQTT_HOST,
         MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/gateway-{gateway_id}",
+        identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor",
         protocol=aiomqtt.ProtocolVersion.V5,
     ) as client:
-        await _publish_discovery(client, agents, workflows)
+        await _publish_discovery(client, cards)
 
-        # Subscribe to inbound requests and worker events
-        await client.subscribe(request_topic, qos=1)
+        # Subscribe to all agent requests, events (wildcards), and reload
+        await client.subscribe(topic_request_wildcard(), qos=1)
         await client.subscribe(topic_event_wildcard(), qos=1)
-        log.info("Gateway ready, listening on %s", request_topic)
+        await client.subscribe(topic_reload(), qos=1)
+        log.info("Supervisor ready, listening on request/+, event/+/+")
 
         async for mqtt_msg in client.messages:
             topic = str(mqtt_msg.topic)
@@ -355,7 +329,21 @@ async def run() -> None:
             if not payload:
                 continue
 
-            if topic == request_topic:
+            # Reload signal
+            if topic == topic_reload():
+                agents = load_agents()
+                workflows = load_workflows()
+                cards = load_cards()
+                await _publish_discovery(client, cards)
+                log.info(
+                    "Reloaded %d agents, %d workflows", len(agents), len(workflows)
+                )
+                continue
+
+            if "/request/" in topic and "/cancel" not in topic:
+                agent_id = _parse_agent_id_from_topic(topic)
+                if agent_id == "supervisor":
+                    continue
                 caller_reply = get_response_topic(mqtt_msg) or ""
                 caller_corr = get_correlation_data(mqtt_msg) or ""
                 if not caller_reply or not caller_corr:
@@ -366,7 +354,8 @@ async def run() -> None:
                             caller_reply,
                             caller_corr,
                             "Request must include MQTT v5 Response Topic and Correlation Data",
-                            code=-32005,
+                            code=A2A_TRANSPORT_PROTOCOL_ERROR,
+                            a2a_error="transport_protocol_error",
                         )
                     continue
                 await handle_request(
@@ -376,6 +365,7 @@ async def run() -> None:
                     caller_corr,
                     agents,
                     workflows,
+                    agent_id=agent_id,
                 )
 
             elif "/event/" in topic and topic.endswith("/dead"):
@@ -386,7 +376,7 @@ def main() -> None:
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        log.info("Gateway shutting down")
+        log.info("Supervisor shutting down")
 
 
 if __name__ == "__main__":

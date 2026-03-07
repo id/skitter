@@ -3,34 +3,12 @@ import json
 import time
 
 
-# --- A2A types ---
+# --- A2A error codes (§ Mandatory Binding-Specific Error Mapping) ---
 
-
-@dataclass
-class AgentCard:
-    """A2A Agent Card published as retained discovery message."""
-
-    agent_id: str
-    name: str
-    description: str = ""
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "agent_id": self.agent_id,
-                "name": self.name,
-                "description": self.description,
-            }
-        )
-
-    @classmethod
-    def from_json(cls, data: str) -> "AgentCard":
-        d = json.loads(data)
-        return cls(
-            agent_id=d["agent_id"],
-            name=d["name"],
-            description=d.get("description", ""),
-        )
+A2A_INVALID_PARAMS = -32602
+A2A_REQUEST_EXPIRED = -32003
+A2A_RESPONDER_UNAVAILABLE = -32004
+A2A_TRANSPORT_PROTOCOL_ERROR = -32005
 
 
 @dataclass
@@ -165,20 +143,6 @@ class InboundMessage:
 
 
 @dataclass
-class OutboundMessage:
-    text: str
-    session_id: str
-
-    def to_json(self) -> str:
-        return json.dumps({"text": self.text, "session_id": self.session_id})
-
-    @classmethod
-    def from_json(cls, data: str) -> "OutboundMessage":
-        d = json.loads(data)
-        return cls(text=d["text"], session_id=d["session_id"])
-
-
-@dataclass
 class AgentMessage:
     task_id: str
     session_id: str
@@ -188,7 +152,6 @@ class AgentMessage:
     model: str = ""
     runtime: str = "claude"
     next: str = ""
-    next_needs: list[str] = field(default_factory=list)
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     timestamp: float = field(default_factory=time.time)
@@ -204,7 +167,6 @@ class AgentMessage:
                 "model": self.model,
                 "runtime": self.runtime,
                 "next": self.next,
-                "next_needs": self.next_needs,
                 "caller_reply_topic": self.caller_reply_topic,
                 "caller_correlation": self.caller_correlation,
                 "timestamp": self.timestamp,
@@ -223,37 +185,8 @@ class AgentMessage:
             model=d.get("model", ""),
             runtime=d.get("runtime", "claude"),
             next=d.get("next", ""),
-            next_needs=d.get("next_needs", []),
             caller_reply_topic=d.get("caller_reply_topic", ""),
             caller_correlation=d.get("caller_correlation", ""),
-            timestamp=d.get("timestamp", time.time()),
-        )
-
-
-@dataclass
-class CancelSignal:
-    task_id: str
-    session_id: str
-    reason: str
-    timestamp: float = field(default_factory=time.time)
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "task_id": self.task_id,
-                "session_id": self.session_id,
-                "reason": self.reason,
-                "timestamp": self.timestamp,
-            }
-        )
-
-    @classmethod
-    def from_json(cls, data: str) -> "CancelSignal":
-        d = json.loads(data)
-        return cls(
-            task_id=d["task_id"],
-            session_id=d["session_id"],
-            reason=d["reason"],
             timestamp=d.get("timestamp", time.time()),
         )
 

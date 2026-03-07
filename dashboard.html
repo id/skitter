@@ -326,20 +326,20 @@
       const raw = payload.toString();
       const p = topic.split('/');
 
-      // Session state
-      if (p[2] === 'state' && p[5] === 'sessions' && p.length === 7) {
-        const sid = p[6];
+      // Session state: $a2a/v1/event/{org}/{unit}/supervisor/session/{sid}
+      if (p[2] === 'event' && p[5] === 'supervisor' && p[6] === 'session' && p.length === 8) {
+        const sid = p[7];
         if (!raw) { state.sessions.delete(sid); if (state.selectedSessionId === sid) state.selectedTaskId = null; }
         else { try { state.sessions.set(sid, JSON.parse(raw)); } catch(e) { return; } if (!state.selectedSessionId) state.selectedSessionId = sid; }
         renderAll();
         return;
       }
 
-      // Per-task status (retained): $a2a/v1/state/{org}/{unit}/task/{session_id}/{task_id}
-      if (p[2] === 'state' && p[5] === 'task' && p.length === 8 && raw) {
+      // Per-task status (retained): $a2a/v1/event/{org}/{unit}/{agent}/task-status/{sid}/{tid}
+      if (p[2] === 'event' && p[6] === 'task-status' && p.length === 9 && raw) {
         try {
           const m = JSON.parse(raw);
-          const sid = p[6], tid = p[7];
+          const sid = p[7], tid = p[8];
           state.taskStatus.set(`${sid}/${tid}`, m.status);
           if (m.result) state.taskResults.set(`${sid}/${tid}`, m.result);
         } catch(e) {}
@@ -347,8 +347,8 @@
         return;
       }
 
-      // Worker events (alive/done/dead)
-      if (p[2] === 'event' && raw) {
+      // Worker events (alive/done/dead): $a2a/v1/event/{org}/{unit}/{agent}/{event_type}
+      if (p[2] === 'event' && p.length === 6 && raw) {
         try {
           const ev = JSON.parse(raw);
           if (ev.task_id && ev.status) {
@@ -360,9 +360,9 @@
         return;
       }
 
-      // Usage
-      if (p[2] === 'state' && p[5] === 'usage' && p.length === 8 && raw) {
-        try { const m = JSON.parse(raw); state.taskUsage.set(`${p[6]}/${p[7]}`, { usage: m.usage, cost_usd: m.cost_usd }); } catch(e) {}
+      // Usage: $a2a/v1/event/{org}/{unit}/{agent}/usage/{sid}/{tid}
+      if (p[2] === 'event' && p[6] === 'usage' && p.length === 9 && raw) {
+        try { const m = JSON.parse(raw); state.taskUsage.set(`${p[7]}/${p[8]}`, { usage: m.usage, cost_usd: m.cost_usd }); } catch(e) {}
         renderTasks(); renderDetail();
         return;
       }
@@ -403,7 +403,7 @@
           if (card.workflow_id) {
             state.workflowCards.set(card.workflow_id, card);
             renderWorkflows();
-          } else if (card.agent_id && card.agent_id !== 'gateway') {
+          } else if (card.agent_id && card.agent_id !== 'supervisor') {
             state.agentCards.set(card.agent_id, card);
             renderAgents();
           }
@@ -728,7 +728,8 @@
         msg.text = text || (varSummary ? `${t.id}: ${varSummary}` : t.id);
       }
 
-      mqttClient.publish('$a2a/v1/request/skitter/default/gateway', JSON.stringify(msg), {
+      const target = t.type === 'agent' ? t.id : `workflow-${t.id}`;
+      mqttClient.publish(`$a2a/v1/request/skitter/default/${target}`, JSON.stringify(msg), {
         qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(sid) },
       });
 

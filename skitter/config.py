@@ -7,8 +7,6 @@ from pathlib import Path
 
 import yaml
 
-from skitter.types import AgentCard
-
 log = logging.getLogger("skitter.config")
 
 SKITTER_DIR = Path.home() / ".skitter"
@@ -195,18 +193,8 @@ EXAMPLE_CONFIG = (_EXAMPLES_DIR / "config.yaml").read_text()
 
 
 WORKSPACES_DIR = SKITTER_DIR / "workspaces"
+CARDS_DIR = SKITTER_DIR / "cards"
 DOCKER_CLAUDE_DIR = SKITTER_DIR / "docker-claude"
-
-
-def agent_def_to_card(agent: "AgentDef") -> AgentCard:
-    """Convert an AgentDef to an A2A Agent Card for discovery publishing."""
-    return AgentCard(
-        agent_id=agent.id,
-        name=agent.name,
-        description=agent.description,
-    )
-
-
 CLAUDE_AGENTS_DIR = Path.home() / ".claude" / "agents"
 
 

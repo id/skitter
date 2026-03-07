@@ -1,4 +1,4 @@
-"""Tests for skitter coordinatorless architecture."""
+"""Tests for skitter supervisor architecture."""
 
 import asyncio
 import json
@@ -11,19 +11,25 @@ from skitter.config import (
     WorkflowDef,
     WorkflowTask,
 )
-from skitter.gateway import (
+from skitter.supervisor import (
     build_dispatch_spec,
     create_session,
+    _parse_agent_id_from_topic,
 )
 from skitter.mqtt import (
     topic_chain_result,
-    topic_control_reload,
     topic_event,
     topic_event_wildcard,
-    topic_state_dispatch,
+    topic_reload,
+    topic_request,
+    topic_request_wildcard,
+    topic_session,
+    topic_task_status,
 )
 from skitter.types import (
     AgentMessage,
+    A2A_RESPONDER_UNAVAILABLE,
+    A2A_TRANSPORT_PROTOCOL_ERROR,
     Session,
     SessionTask,
 )
@@ -43,7 +49,6 @@ class TestAgentMessage:
             model="sonnet",
             runtime="claude",
             next="step2",
-            next_needs=["step1a", "step1b"],
             caller_reply_topic="reply/topic",
             caller_correlation="corr123",
         )
@@ -53,7 +58,6 @@ class TestAgentMessage:
         assert restored.agent == "researcher"
         assert restored.runtime == "claude"
         assert restored.next == "step2"
-        assert restored.next_needs == ["step1a", "step1b"]
         assert restored.caller_reply_topic == "reply/topic"
         assert restored.caller_correlation == "corr123"
 
@@ -70,7 +74,6 @@ class TestAgentMessage:
         assert msg.agent == ""
         assert msg.runtime == "claude"
         assert msg.next == ""
-        assert msg.next_needs == []
         assert msg.caller_reply_topic == ""
 
 
@@ -121,6 +124,15 @@ class TestSession:
         assert restored.task_dispatches["step1"]["runtime"] == "claude"
 
 
+# --- A2A error codes ---
+
+
+class TestErrorCodes:
+    def test_error_codes_defined(self):
+        assert A2A_RESPONDER_UNAVAILABLE == -32004
+        assert A2A_TRANSPORT_PROTOCOL_ERROR == -32005
+
+
 # --- Topic builders ---
 
 
@@ -135,17 +147,50 @@ class TestTopics:
         assert t.endswith("/+/+")
 
     def test_chain_result(self):
-        t = topic_chain_result("session1", "task1")
-        assert "/chain/session1/task1" in t
+        t = topic_chain_result("researcher", "session1", "task1")
+        assert "/event/" in t
+        assert "/researcher/chain-result/session1/task1" in t
 
-    def test_state_dispatch(self):
-        t = topic_state_dispatch("task1")
-        assert "/dispatch/task1" in t
+    def test_session_topic(self):
+        t = topic_session("session1")
+        assert "/event/" in t
+        assert "/supervisor/session/session1" in t
 
-    def test_control_reload(self):
-        t = topic_control_reload()
-        assert "/control/" in t
-        assert "/reload" in t
+    def test_task_status(self):
+        t = topic_task_status("researcher", "session1", "task1")
+        assert "/event/" in t
+        assert "/researcher/task-status/session1/task1" in t
+
+    def test_reload(self):
+        t = topic_reload()
+        assert "/request/" in t
+        assert "/supervisor/reload" in t
+
+    def test_request_wildcard(self):
+        t = topic_request_wildcard()
+        assert t.endswith("/+")
+        assert "/request/" in t
+
+    def test_request_per_agent(self):
+        t = topic_request("researcher")
+        assert "/request/" in t
+        assert "/researcher" in t
+
+
+# --- Topic parsing ---
+
+
+class TestTopicParsing:
+    def test_parse_agent_id(self):
+        topic = "$a2a/v1/request/skitter/default/researcher"
+        assert _parse_agent_id_from_topic(topic) == "researcher"
+
+    def test_parse_workflow_id(self):
+        topic = "$a2a/v1/request/skitter/default/workflow-quick-research"
+        assert _parse_agent_id_from_topic(topic) == "workflow-quick-research"
+
+    def test_parse_short_topic(self):
+        assert _parse_agent_id_from_topic("too/short") == ""
 
 
 # --- Session building ---
@@ -464,10 +509,11 @@ class TestSpawn:
 
 class TestStorage:
     def test_storage_module_exists(self):
-        from skitter.storage import load_agents, load_workflows
+        from skitter.storage import load_agents, load_workflows, load_cards
 
         assert callable(load_agents)
         assert callable(load_workflows)
+        assert callable(load_cards)
 
 
 # --- Respawn module ---

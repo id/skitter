@@ -5,7 +5,7 @@ import json
 
 import aiomqtt
 
-from skitter.mqtt import MQTT_HOST, MQTT_PORT, topic_control_reload
+from skitter.mqtt import MQTT_HOST, MQTT_PORT, topic_reload
 
 
 async def _reload() -> None:
@@ -13,7 +13,7 @@ async def _reload() -> None:
         MQTT_HOST, MQTT_PORT, protocol=aiomqtt.ProtocolVersion.V5
     ) as client:
         await client.publish(
-            topic_control_reload(),
+            topic_reload(),
             json.dumps({"action": "reload"}),
             qos=1,
         )

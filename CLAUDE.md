@@ -1,8 +1,8 @@
 # Skitter
 
-~1,700 lines of Python. MQTT-based personal AI assistant. A stateless gateway creates sessions and spawns all workers upfront; self-coordinating workers read their session spec from retained MQTT, wait for upstream results, invoke `claude` or `codex` CLI as subprocesses, and publish results. Agent identity (personality, model, tools, memory) is delegated to native CLI sub-agent systems (`~/.claude/agents/*.md` and `~/.codex/agents/*.toml`).
+~1,700 lines of Python. MQTT-based personal AI assistant. A stateless supervisor creates sessions and spawns all workers upfront; self-coordinating workers read their session spec from retained MQTT, wait for upstream results, invoke `claude` or `codex` CLI as subprocesses, and publish results. Agent identity (personality, model, tools, memory) is delegated to native CLI sub-agent systems (`~/.claude/agents/*.md` and `~/.codex/agents/*.toml`).
 
-Key files: `skitter/gateway.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `docs/architecture.md`.
+Key files: `skitter/supervisor.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `docs/architecture.md`.
 
 ## Planning and Implementation Process
 
@@ -10,7 +10,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 
 ### 1. Planning Phase
 - **Use a team of agents** for planning — delegate research and analysis to subagents.
-- **Evaluate fit** — research whether the request aligns with skitter's intended goals (minimal MQTT-based gateway, self-coordinating workers, small codebase). Push back on the user if a request conflicts with core architectural principles or adds unnecessary complexity.
+- **Evaluate fit** — research whether the request aligns with skitter's intended goals (minimal MQTT-based supervisor, self-coordinating workers, small codebase). Push back on the user if a request conflicts with core architectural principles or adds unnecessary complexity.
 - **Persist the plan** — write a markdown file under `docs/` with timestamp in the filename: `docs/YYYY-mm-DD-HH-MM-SS-<slug>.md`. Include: problem statement, proposed approach, affected files, risks, and open questions.
 
 ### 2. Implementation Phase
@@ -30,14 +30,15 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 
 ## Architecture Essentials
 
-- **Stateless gateway** — never calls an LLM. Creates sessions, pre-materializes dispatch specs for every task, publishes the session as a retained MQTT message, then spawns all workers upfront. Implemented in `skitter/gateway.py`.
+- **Stateless supervisor** — never calls an LLM. Listens on wildcard topics (`request/{o}/{u}/+` and `event/{o}/{u}/+/+`), creates sessions, pre-materializes dispatch specs for every task, publishes the session as a retained MQTT message, then spawns all workers upfront. Implemented in `skitter/supervisor.py`.
+- **Agents as A2A endpoints** — clients address agents directly via `$a2a/v1/request/{org}/{unit}/{agent_id}`. The supervisor intercepts via wildcard subscription — invisible infrastructure.
 - **Self-coordinating workers** — each worker reads its session spec from retained MQTT, waits for upstream results (join coordination via subscribing to chain result topics), runs the agent CLI, and publishes results. No central coordinator needed after spawn.
-- **Immutable sessions** — the gateway publishes the session once; workers never mutate it. Per-task status is published to dedicated retained topics (`state/task/{session_id}/{task_id}`).
-- **Chain-based routing** — workers publish retained chain results for non-terminal tasks. Join workers subscribe to upstream chain result topics and block until all inputs arrive.
-- **A2A-over-MQTT** — all topics follow the A2A draft v0.1 scheme. Event topics: `event/{org}/{unit}/{agent_id}/{event_type}`. Task IDs in payload, not topic. Agents and workflows discoverable via retained discovery messages.
+- **Immutable sessions** — the supervisor publishes the session once; workers never mutate it. Per-task status is published to dedicated retained event topics (`event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}`).
+- **Chain-based routing** — workers publish retained chain results to suffixed event topics (`event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}`). Join workers subscribe to upstream chain result topics and block until all inputs arrive.
+- **A2A-over-MQTT** — all topics follow the A2A draft v0.1 scheme with suffix extensions: `$a2a/v1/{method}/{org}/{unit}/{agent_id}/{...suffix}`. Agents and workflows discoverable via retained discovery messages. Pre-built agent cards stored in `~/.skitter/cards/*.json`.
 - **MQTT as backbone** — retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
-- **Crash recovery** — workers set MQTT LWT (Last Will and Testament). Gateway listens for dead events and respawns crashed workers. Retained session and chain results persist across crashes.
-- **QA is a workflow concern** — gateway has no built-in QA logic. Add reviewer/fact-checker nodes to your workflow YAML with dependencies on work tasks.
+- **Crash recovery** — workers set MQTT LWT (Last Will and Testament). Supervisor listens for dead events and respawns crashed workers. Retained session and chain results persist across crashes.
+- **QA is a workflow concern** — supervisor has no built-in QA logic. Add reviewer/fact-checker nodes to your workflow YAML with dependencies on work tasks.
 - **Native sub-agents** — agent identity (personality, model, tools, memory, MCP servers) is owned by native CLI sub-agent systems, not skitter. Claude agents: `~/.claude/agents/<name>.md` (YAML frontmatter + markdown prompt). Codex agents: `~/.codex/agents/<name>.toml`. Skitter invokes agents via `claude --agent <name>` or codex role dispatch.
 - **Slim agent YAML** — `~/.skitter/agents/*.yaml` contains only orchestration metadata: `name`, `description`, `runtime`, `workspace`. No personality, model, or tool config. The YAML filename stem must match the native sub-agent name.
 - **Default runtime** — `~/.skitter/config.yaml` sets `default_runtime: claude|codex`. Agents without explicit `runtime` in their YAML use this default.
@@ -49,18 +50,18 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 
 ## Key Modules
 
-- `skitter/gateway.py` — Stateless gateway: creates sessions, pre-materializes dispatch specs, publishes retained session, spawns all workers, listens for dead events to trigger respawn. Publishes agent/workflow discovery cards.
+- `skitter/supervisor.py` — Stateless supervisor: listens on wildcard request/event topics, creates sessions, pre-materializes dispatch specs, publishes retained session, spawns all workers, listens for dead events to trigger respawn. Publishes pre-built agent/workflow discovery cards.
 - `skitter/worker.py` — Self-coordinating worker: reads retained session from MQTT, waits for upstream chain results (join coordination), invokes `claude` or `codex` CLI as subprocess, parses JSONL stdout, publishes chain results or terminal results. Handles cancellation via a separate MQTT control connection.
 - `skitter/spawn.py` — Worker spawn backends: subprocess (default) or Docker container, controlled by `SKITTER_SPAWN_MODE`.
-- `skitter/storage.py` — Config loading backends: filesystem (default), delegates to `config.py`. Abstraction point for future R2/cloud storage.
+- `skitter/storage.py` — Config loading backends: filesystem (default), delegates to `config.py`. Loads pre-built agent cards from `~/.skitter/cards/*.json`.
 - `skitter/respawn.py` — Handles LWT dead events by respawning crashed workers.
-- `skitter/mqtt.py` — MQTT connection settings, topic builders, and MQTTv5 property helpers.
+- `skitter/mqtt.py` — MQTT connection settings, A2A-compliant topic builders with suffix extensions, and MQTTv5 property helpers.
 - `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`WorkflowDef`/`WorkflowTask` dataclasses, `SafeFormatter`, `load_default_runtime()`, `write_examples()` for `skitter init` (creates both `~/.skitter/agents/*.yaml` and `~/.claude/agents/*.md`).
-- `skitter/agents_cli.py` — `skitter agents list/show/run` subcommands.
-- `skitter/workflow_cli.py` — `skitter workflow list/show/run` subcommands.
+- `skitter/agents_cli.py` — `skitter agents list/show/run` subcommands. Sends requests directly to agent's request topic.
+- `skitter/workflow_cli.py` — `skitter workflow list/show/run` subcommands. Sends requests to `workflow-{id}` request topic.
 - `skitter/__main__.py` — CLI dispatch. `skitter run "prompt"` and `skitter "prompt"` route to the default `skitter` agent.
-- `skitter/reload.py` — Publishes reload signal to gateway via MQTT.
-- `dashboard.html` — Single-file MQTT-connected dashboard. Agents/workflows clickable in sidebar; compose view in main area; session results rendered as markdown.
+- `skitter/reload.py` — Publishes reload signal to supervisor via MQTT.
+- `dashboard.html` — Single-file MQTT-connected dashboard. Agents/workflows clickable in sidebar; compose view in main area; session results rendered as markdown. Sends requests directly to agent/workflow request topics.
 
 ## Current Limitations
 

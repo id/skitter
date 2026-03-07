@@ -1,17 +1,17 @@
-"""E2E tests for skitter gateway with self-coordinating workers.
+"""E2E tests for skitter supervisor with self-coordinating workers.
 
 Requires a running MQTT broker on localhost:1883 with MQTT v5 support.
 Start one with: docker compose up -d
 
 NOTE: These tests need updating for the coordinatorless architecture.
-The gateway spawns all workers upfront, and workers self-coordinate
+The supervisor spawns all workers upfront, and workers self-coordinate
 via MQTT retained messages. Mock workers need to simulate this flow.
 """
 
 from __future__ import annotations
 
 from skitter.config import AgentDef, WorkflowDef, WorkflowTask
-from skitter.gateway import create_session
+from skitter.supervisor import create_session
 from skitter.types import (
     Session,
     SessionTask,
@@ -195,11 +195,11 @@ class TestCreateSessionFromAgent:
 # ---------------------------------------------------------------------------
 # E2E tests — TODO: rewrite for coordinatorless architecture
 # ---------------------------------------------------------------------------
-# The e2e tests below need to be rewritten to work with the new gateway +
+# The e2e tests below need to be rewritten to work with the new supervisor +
 # self-coordinating worker architecture. The old coordinator-based tests
 # used monkeypatch on coordinator internals which no longer exist.
 # New tests should:
-#   1. Start the gateway
+#   1. Start the supervisor
 #   2. Send inbound request
 #   3. Mock spawn_worker to create simulated workers that:
 #      - Read session spec from retained MQTT

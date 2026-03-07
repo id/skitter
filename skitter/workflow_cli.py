@@ -106,7 +106,7 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
 
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
-    gateway_request = topic_request("gateway")
+    workflow_request = topic_request(f"workflow-{workflow_id}")
 
     async def run_workflow() -> None:
         async with aiomqtt.Client(
@@ -123,7 +123,7 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
                 correlation_data=session_id,
             )
             await client.publish(
-                gateway_request,
+                workflow_request,
                 msg.to_json(),
                 qos=1,
                 properties=props,

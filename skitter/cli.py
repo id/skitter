@@ -22,7 +22,7 @@ from skitter.types import InboundMessage, StreamItem, TaskStatusUpdate
 async def run_chat(session_id: str) -> None:
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
-    gateway_request = topic_request("gateway")
+    default_request = topic_request("skitter")
 
     print(f"Connecting to {MQTT_HOST}:{MQTT_PORT}")
     print(f"Session ID: {session_id}")
@@ -138,12 +138,20 @@ async def run_chat(session_id: str) -> None:
                     agent_id=agent_id,
                 )
 
+                # Route to the correct agent/workflow request topic
+                if workflow_id:
+                    request_topic = topic_request(f"workflow-{workflow_id}")
+                elif agent_id:
+                    request_topic = topic_request(agent_id)
+                else:
+                    request_topic = default_request
+
                 props = make_properties(
                     response_topic=reply_t,
                     correlation_data=session_id,
                 )
                 await client.publish(
-                    gateway_request,
+                    request_topic,
                     msg.to_json(),
                     qos=1,
                     properties=props,

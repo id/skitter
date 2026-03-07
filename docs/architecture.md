@@ -2,40 +2,43 @@
 
 ## Design Principles
 
-1. **Stateless gateway.** The gateway makes no AI calls. It creates sessions with pre-materialized dispatch specs for every task, publishes the session as a retained MQTT message, and spawns all workers upfront. No dispatch loop, no join accumulation, no state tracking.
+1. **Stateless supervisor.** The supervisor makes no AI calls. It listens on wildcard topics (`request/{o}/{u}/+` and `event/{o}/{u}/+/+`), creates sessions with pre-materialized dispatch specs for every task, publishes the session as a retained MQTT message, and spawns all workers upfront. No dispatch loop, no join accumulation, no state tracking.
 
-2. **Self-coordinating workers.** Workers read their spec from the retained session message, wait for upstream chain results if they have `needs`, run the agent, and publish results. No supervisor dispatches tasks -- workers coordinate among themselves via retained MQTT messages.
+2. **Agents as A2A endpoints.** Clients address agents directly via `$a2a/v1/request/{org}/{unit}/{agent_id}`. The supervisor intercepts via wildcard subscription — invisible infrastructure.
 
-3. **Chain-based routing.** Non-terminal workers publish retained chain results. Downstream workers with `needs` subscribe to upstream chain result topics and block until all inputs arrive. Terminal workers publish results directly to the caller.
+3. **Self-coordinating workers.** Workers read their spec from the retained session message, wait for upstream chain results if they have `needs`, run the agent, and publish results. No supervisor dispatches tasks -- workers coordinate among themselves via retained MQTT messages.
 
-4. **Immutable session spec.** The retained session message is written once by the gateway and never modified. Per-task status is published to separate retained topics (`task/{session_id}/{task_id}`). The dashboard merges per-task status over the session spec.
+4. **Chain-based routing.** Non-terminal workers publish retained chain results to suffixed event topics. Downstream workers with `needs` subscribe to upstream chain result topics and block until all inputs arrive. Terminal workers publish results directly to the caller.
 
-5. **MQTT v5 as the backbone.** The broker is the single source of truth. Retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
+5. **Immutable session spec.** The retained session message is written once by the supervisor and never modified. Per-task status is published to separate retained event topics (`event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}`). The dashboard merges per-task status over the session spec.
 
-6. **A2A-over-MQTT.** All topics follow the A2A draft v0.1 scheme. Agents are discoverable via retained Agent Cards. Requests use JSON-RPC 2.0 envelopes with v5 correlation.
+6. **MQTT v5 as the backbone.** The broker is the single source of truth. Retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
 
-7. **QA is a workflow concern.** The gateway has no built-in QA logic. If you want fact-checking or review, add a reviewer task node to your workflow that depends on the work task.
+7. **A2A-over-MQTT.** All topics follow the A2A draft v0.1 scheme with application-defined suffixes after the agent ID. Agents are discoverable via retained Agent Cards. Pre-built cards stored in `~/.skitter/cards/*.json`. Requests use v5 Response Topic + Correlation Data for reply routing.
 
-8. **Multi-runtime workers.** Workers invoke `claude` or `codex` as CLI subprocesses, parsing JSONL stdout for streaming events. No SDK imports in the worker process.
+8. **QA is a workflow concern.** The supervisor has no built-in QA logic. If you want fact-checking or review, add a reviewer task node to your workflow that depends on the work task.
+
+9. **Multi-runtime workers.** Workers invoke `claude` or `codex` as CLI subprocesses, parsing JSONL stdout for streaming events. No SDK imports in the worker process.
 
 ## A2A Topic Scheme
 
 ```
 $a2a/v1/
-  discovery/{org}/{unit}/{agent_id}                  # Retained Agent Cards
-  discovery/{org}/{unit}/workflow/{workflow_id}       # Retained Workflow Cards
-  request/{org}/{unit}/{agent_id}                    # Requests (incl. gateway)
-  request/{org}/{unit}/{agent_id}/cancel             # Cancel signal for agent
-  reply/{org}/{unit}/{agent_id}/{suffix}             # Replies (Response Topic)
-  event/{org}/{unit}/{agent_id}/{event_type}         # Agent events (alive/done/dead)
-  state/{org}/{unit}/sessions/{session_id}           # Retained session spec (immutable)
-  state/{org}/{unit}/task/{session_id}/{task_id}     # Retained per-task status
-  state/{org}/{unit}/chain/{session_id}/{task_id}    # Retained chain results
-  state/{org}/{unit}/usage/{session_id}/{task_id}    # Usage tracking
-  control/{org}/{unit}/reload                        # Reload agents/workflows signal
+  discovery/{org}/{unit}/{agent_id}                              # Retained Agent/Workflow Cards
+  request/{org}/{unit}/{agent_id}                                # Requests (clients address agents directly)
+  request/{org}/{unit}/{agent_id}/cancel                         # Cancel signal for agent
+  request/{org}/{unit}/supervisor/reload                         # Reload agents/workflows signal
+  reply/{org}/{unit}/{agent_id}/{suffix}                         # Replies (Response Topic)
+  event/{org}/{unit}/{agent_id}/{event_type}                     # Agent events (alive/done/dead)
+  event/{org}/{unit}/supervisor/session/{session_id}             # Retained session spec (immutable)
+  event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}          # Retained per-task status
+  event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}         # Retained chain results
+  event/{org}/{unit}/{agent_id}/usage/{sid}/{tid}                # Usage tracking
 ```
 
 Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A_ORG` / `SKITTER_A2A_UNIT`).
+
+The supervisor subscribes to `request/{o}/{u}/+` (wildcard for all agent requests) and `event/{o}/{u}/+/+` (wildcard for all agent events). It also subscribes explicitly to `request/{o}/{u}/supervisor/reload` (since the suffixed topic doesn't match the single-level `+` wildcard).
 
 ## Chain-Based Execution
 
@@ -44,14 +47,15 @@ Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A
 ```mermaid
 sequenceDiagram
     participant C as Caller
-    participant G as Gateway
+    participant S as Supervisor
     participant B as MQTT Broker
     participant W as Worker
 
-    C->>G: Request (agent_id, text)
-    G->>G: Create session + dispatch specs
-    G->>B: Retain session spec
-    G->>W: Spawn process
+    C->>B: Request to agent's topic
+    B->>S: Wildcard match (request/+)
+    S->>S: Create session + dispatch specs
+    S->>B: Retain session spec
+    S->>W: Spawn process
     W->>B: Read retained session
     W->>W: Run agent (claude/codex CLI)
     W->>C: Stream items (QoS 0)
@@ -63,14 +67,14 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant G as Gateway
+    participant S as Supervisor
     participant B as MQTT Broker
     participant W1 as Worker A
     participant W2 as Worker B
 
-    G->>B: Retain session (specs for A + B)
-    G->>W1: Spawn A
-    G->>W2: Spawn B
+    S->>B: Retain session (specs for A + B)
+    S->>W1: Spawn A
+    S->>W2: Spawn B
     W1->>B: Read retained session
     W2->>B: Read retained session
     W2->>B: Subscribe to chain result for A
@@ -86,16 +90,16 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant G as Gateway
+    participant S as Supervisor
     participant B as MQTT Broker
     participant WA as Worker A
     participant WB as Worker B
     participant WJ as Worker Join
 
-    G->>B: Retain session (specs for A, B, Join)
-    G->>WA: Spawn A
-    G->>WB: Spawn B
-    G->>WJ: Spawn Join
+    S->>B: Retain session (specs for A, B, Join)
+    S->>WA: Spawn A
+    S->>WB: Spawn B
+    S->>WJ: Spawn Join
     WA->>B: Read session, run agent
     WB->>B: Read session, run agent
     WJ->>B: Read session, subscribe to A + B chain results
@@ -110,35 +114,37 @@ All workers are spawned immediately. Entry tasks (no `needs`) start work right a
 
 ### Direct-to-Caller Streaming
 
-Workers stream `StreamItem` directly to the caller's Response Topic (QoS 0), bypassing the gateway entirely.
+Workers stream `StreamItem` directly to the caller's Response Topic (QoS 0), bypassing the supervisor entirely.
 
-## Gateway
+## Supervisor
 
-The gateway (`skitter/gateway.py`) is a long-lived MQTT subscriber that:
+The supervisor (`skitter/supervisor.py`) is a long-lived MQTT subscriber that:
 
-1. Subscribes to `$a2a/v1/request/{org}/{unit}/gateway`
-2. On inbound request: creates a `Session` with `SessionTask` entries and pre-materialized `task_dispatches` dict
-3. Publishes the session as a retained message on `state/{org}/{unit}/sessions/{session_id}`
-4. Spawns all workers (subprocess or Docker) -- every task gets a worker immediately
-5. Subscribes to `event/+/dead` for crash detection and respawns dead workers
+1. Subscribes to `$a2a/v1/request/{org}/{unit}/+` (wildcard for all agent requests)
+2. Subscribes to `$a2a/v1/event/{org}/{unit}/+/+` (wildcard for all agent events)
+3. Subscribes to `$a2a/v1/request/{org}/{unit}/supervisor/reload` (explicit)
+4. On inbound request: extracts `agent_id` from the topic, creates a `Session` with `SessionTask` entries and pre-materialized `task_dispatches` dict
+5. Publishes the session as a retained message on `event/{org}/{unit}/supervisor/session/{session_id}`
+6. Spawns all workers (subprocess or Docker) -- every task gets a worker immediately
+7. Listens for dead events (`event/+/+` ending in `/dead`) for crash detection and respawns dead workers
 
-The gateway holds no in-memory state about running sessions. It is restartable at any time.
+The supervisor holds no in-memory state about running sessions. It is restartable at any time.
 
 ## Worker Self-Coordination
 
 Each worker (`skitter/worker.py`) runs as an independent process:
 
-1. Connect to MQTT with LWT on `event/{agent_id}/dead`
-2. Read the retained session spec from `state/{org}/{unit}/sessions/{session_id}`
+1. Connect to MQTT with LWT on `event/{org}/{unit}/{agent_id}/dead`
+2. Read the retained session spec from `event/{org}/{unit}/supervisor/session/{session_id}`
 3. Find own task by `task_id` in the session's `tasks` dict
 4. Read dispatch spec from `session.task_dispatches[task_name]`
-5. If task has `needs`: subscribe to upstream `chain/{session_id}/{upstream_task_id}` topics, block until all arrive
+5. If task has `needs`: subscribe to upstream `event/{org}/{unit}/{upstream_agent}/chain-result/{sid}/{tid}` topics, block until all arrive
 6. Build `AgentMessage` from spec + upstream context
 7. Run agent as CLI subprocess (`claude` or `codex`), parse JSONL stdout
 8. Publish result:
-   - Non-terminal: retain chain result on `chain/{session_id}/{task_id}`
+   - Non-terminal: retain chain result on `event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}`
    - Terminal: publish `TaskStatusUpdate` to caller's Response Topic
-9. Publish per-task status (retained) on `task/{session_id}/{task_id}`
+9. Publish per-task status (retained) on `event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}`
 10. Announce done, disconnect
 
 ## Workflow Templates
@@ -180,15 +186,11 @@ tasks:
 # ~/.skitter/agents/researcher.yaml
 name: Research Specialist
 description: Deep research with source citation
-soul: |
-  You are a research specialist.
-skills: |
-  Search broadly before going deep.
-model: sonnet
-max_turns: 15
 runtime: claude    # "claude" or "codex"
 workspace: ""      # custom cwd (default: ~/.skitter/workspaces/{task_id})
 ```
+
+Agent identity (personality, model, tools, memory) is owned by native CLI sub-agent systems (`~/.claude/agents/*.md` for Claude, `~/.codex/agents/*.toml` for Codex), not skitter. The YAML stub contains only orchestration metadata.
 
 ## CLI Runtimes
 
@@ -196,7 +198,7 @@ Workers invoke AI agents as CLI subprocesses:
 
 **Claude** (`runtime: claude`):
 - Spawns `claude -p "{description}" --output-format stream-json --verbose --max-turns {n} --dangerously-skip-permissions`
-- Appends system prompt (soul + skills + context + budget) via `--append-system-prompt`
+- Appends upstream context via `--append-system-prompt`
 - Parses JSONL: `assistant` events for text/tool_use, `result` events for usage/cost
 
 **Codex** (`runtime: codex`):
@@ -204,18 +206,18 @@ Workers invoke AI agents as CLI subprocesses:
 - Auth via `OPENAI_API_KEY` env var
 - Parses JSONL: `item.completed` for agent messages, `turn.completed` for usage
 
-## Toolsmith Agent
+## Configuration Manager
 
-A meta-agent that creates/modifies agent and workflow YAML definitions at runtime:
+The default `skitter` agent can create/modify agent and workflow YAML definitions at runtime:
 - Works in `~/.skitter/` directory
-- After writing files, runs `python -m skitter.reload` to notify the gateway
-- Gateway re-reads all YAML files and re-publishes discovery cards
+- After writing files, runs `python -m skitter.reload` to notify the supervisor
+- Supervisor re-reads all YAML files, reloads cards, and re-publishes discovery messages
 
 ## Recovery
 
-**Gateway crash:** The gateway is stateless. On restart it re-publishes discovery cards and resumes listening. It does not need to recover sessions -- all session state lives in retained MQTT messages, and workers are self-coordinating.
+**Supervisor crash:** The supervisor is stateless. On restart it re-publishes discovery cards and resumes listening. It does not need to recover sessions -- all session state lives in retained MQTT messages, and workers are self-coordinating.
 
-**Worker crash:** LWT fires on `event/{agent_id}/dead`. The gateway receives the dead event and respawns the worker. The new worker reads the same retained session spec, waits for any upstream results (which may already be retained on the broker), and re-runs the task from scratch.
+**Worker crash:** LWT fires on `event/{org}/{unit}/{agent_id}/dead`. The supervisor receives the dead event and respawns the worker. The new worker reads the same retained session spec, waits for any upstream results (which may already be retained on the broker), and re-runs the task from scratch.
 
 **Broker restart:** Sessions and chain results are lost (retained messages are in-memory by default). Planned: persist sessions to `~/.skitter/` for durability beyond broker restarts.
 

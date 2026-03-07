@@ -5,7 +5,7 @@
 
 Skitter is a personal AI assistant built on MQTT.
 
-Instead of a monolithic agent process that tries to handle orchestration, LLM calls, and chat I/O all in one place, Skitter completely decouples the stack. A stateless gateway creates sessions, pre-materializes dispatch specs, and spawns all workers upfront. Workers are self-coordinating: they read session specs from retained MQTT, wait for upstream results (joins), and route chain results themselves. Agent identity (personality, model, tools, memory) is delegated to native CLI sub-agent systems. Both Claude Code CLI and OpenAI's Codex CLI are supported as runtimes.
+Instead of a monolithic agent process that tries to handle orchestration, LLM calls, and chat I/O all in one place, Skitter completely decouples the stack. A stateless supervisor intercepts agent requests via wildcard MQTT subscriptions, creates sessions, pre-materializes dispatch specs, and spawns all workers upfront. Workers are self-coordinating: they read session specs from retained MQTT, wait for upstream results (joins), and route chain results themselves. Agent identity (personality, model, tools, memory) is delegated to native CLI sub-agent systems. Both Claude Code CLI and OpenAI's Codex CLI are supported as runtimes.
 
 Small Python codebase.
 
@@ -24,7 +24,7 @@ Small Python codebase.
    docker compose up -d
    ```
 
-2. **Install dependencies and start the gateway**
+2. **Install dependencies and start the supervisor**
    ```bash
    uv sync
    uv run python -m skitter
@@ -60,7 +60,7 @@ Small Python codebase.
 
 5. **Watch it work.** Open `dashboard.html` in a browser to see jobs, tasks, and chain execution in real time. Connects to the broker's WebSocket endpoint (`ws://localhost:8083/mqtt`) using MQTT v5, no backend required.
 
-*You can also use any MQTT v5 client directly (`mqttx`, `mosquitto_pub`/`mosquitto_sub`, custom Telegram/Slack bots, etc). Publish JSON requests to the gateway's request topic with MQTT v5 Response Topic and Correlation Data properties.*
+*You can also use any MQTT v5 client directly (`mqttx`, `mosquitto_pub`/`mosquitto_sub`, custom Telegram/Slack bots, etc). Publish JSON requests to an agent's request topic with MQTT v5 Response Topic and Correlation Data properties. The supervisor intercepts via wildcard subscription — clients never need to know it exists.*
 
 ## Agent Configuration
 
@@ -216,7 +216,7 @@ The login flow saves OAuth credentials to `~/.skitter/docker-claude/`. The sync 
 ### Running
 
 ```bash
-# Start the gateway in Docker mode
+# Start the supervisor in Docker mode
 SKITTER_SPAWN_MODE=docker uv run python -m skitter
 ```
 
@@ -250,41 +250,41 @@ In a typical HTTP-based AI system, the orchestrator handles routing, retries, fa
     │              ├────▶│  Broker   │◀───────────▶┌── Worker B ──┐       │
     │   Web UI ────┤     │           │             │  (codex)     │       │
     │              │     │  routing  │             └──────────────┘       │
-    │   Gateway ───┘     │  fan-out  │◀───────────▶┌── Worker C ──┐       │
-    │   (stateless,      │  state    │             │  (claude)    │       │
-    │    just spawns)    │  LWT      │             └──────────────┘       │
+    │  Supervisor ─┘     │  fan-out  │◀───────────▶┌── Worker C ──┐       │
+    │  (stateless,       │  state    │             │  (claude)    │       │
+    │   just spawns)     │  LWT      │             └──────────────┘       │
     │                    └───────────┘                                    │
     │              The broker IS the infrastructure.                      │
-    │              Workers self-coordinate. Gateway just spawns.          │
+    │              Workers self-coordinate. Supervisor just spawns.       │
     └─────────────────────────────────────────────────────────────────────┘
 ```
 
 What this means in practice:
 
-* **Zero-code UI integrations:** To connect Telegram or WhatsApp, you just write a tiny ~100-line bridge script that publishes A2A requests to the gateway's request topic and subscribes to a reply topic. The gateway never changes.
+* **Zero-code UI integrations:** To connect Telegram or WhatsApp, you just write a tiny ~100-line bridge script that publishes requests to the agent's request topic and subscribes to a reply topic. The supervisor is invisible.
 * **Run workers anywhere:** Workers can be local processes, Docker containers, or cloud functions. As long as they can reach the broker, they work.
-* **Serverless gateway:** The gateway is a stateless session creator. It pre-materializes dispatch specs and spawns workers upfront. Workers self-coordinate from there. The gateway can run on AWS Lambda or Cloud Run.
+* **Serverless supervisor:** The supervisor is a stateless session creator. It pre-materializes dispatch specs and spawns workers upfront. Workers self-coordinate from there. The supervisor can run on AWS Lambda or Cloud Run.
 * **Free monitoring:** Subscribe to `$a2a/v1/#` using any MQTT client and watch every job spec, task assignment, and result flow in real-time.
 
 ## How It Works
 
-Skitter uses the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) topic scheme for agent communication. Every message (requests, results, streaming, liveness, state) flows through MQTT v5 topics:
+Skitter uses the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) topic scheme for agent communication. Every message (requests, results, streaming, liveness, coordination state) flows through MQTT v5 topics with application-defined suffixes after the agent ID:
 
 ```
 $a2a/v1/
-├── discovery/{org}/{unit}/{agent_id}                    # Retained Agent Cards (who can do what)
-├── request/{org}/{unit}/{agent_id}                      # Requests (JSON)
-├── request/{org}/{unit}/{agent_id}/cancel               # Cancel signals
-├── reply/{org}/{unit}/{agent_id}/{session}              # Replies (per-caller session)
-├── event/{org}/{unit}/{agent_id}/{event_type}           # Agent events (alive/done/dead)
-├── state/{org}/{unit}/sessions/{session_id}             # Retained session specs (immutable)
-├── state/{org}/{unit}/task/{session_id}/{task_id}       # Per-task status (retained, set by workers)
-├── state/{org}/{unit}/chain/{session_id}/{task_id}      # Retained chain results (for joins)
-├── state/{org}/{unit}/usage/{session_id}/{task_id}      # Usage tracking
-└── control/{org}/{unit}/reload                          # Reload agents/workflows signal
+├── discovery/{org}/{unit}/{agent_id}                              # Retained Agent/Workflow Cards
+├── request/{org}/{unit}/{agent_id}                                # Requests (clients address agents directly)
+├── request/{org}/{unit}/{agent_id}/cancel                         # Cancel signals
+├── request/{org}/{unit}/supervisor/reload                         # Reload agents/workflows signal
+├── reply/{org}/{unit}/{agent_id}/{suffix}                         # Replies (per-caller session)
+├── event/{org}/{unit}/{agent_id}/{event_type}                     # Agent events (alive/done/dead)
+├── event/{org}/{unit}/supervisor/session/{session_id}             # Retained session specs (immutable)
+├── event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}          # Per-task status (retained)
+├── event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}         # Retained chain results (for joins)
+└── event/{org}/{unit}/{agent_id}/usage/{sid}/{tid}                # Usage tracking
 ```
 
-The gateway never calls an LLM. It creates sessions, pre-materializes dispatch specs as retained messages, and spawns all workers upfront. Workers self-coordinate: they read their dispatch spec from retained MQTT, wait for upstream results if needed (joins), and route chain results themselves.
+The supervisor never calls an LLM. It listens on wildcard topics (`request/{o}/{u}/+` and `event/{o}/{u}/+/+`), creates sessions, pre-materializes dispatch specs as retained messages, and spawns all workers upfront. Clients address agents directly — the supervisor is invisible infrastructure.
 
 ### Chain-Based Execution
 
@@ -294,11 +294,11 @@ The gateway never calls an LLM. It creates sessions, pre-materializes dispatch s
   Telegram bot, etc.)
                             ┌──────────────────────────┐
    JSON request              │                          │
-  ──────────────────────────▶  request/.../gateway     │
+  ──────────────────────────▶  request/.../agent_id    │
    (v5 Response Topic +     │          │               │
     Correlation Data)       │          ▼               │
                             │   ┌─────────────┐        │
-                            │   │   Gateway   │        │     ┌──────────────┐
+                            │   │ Supervisor  │        │     ┌──────────────┐
                             │   │  (no LLM)   │        │     │  Worker A    │
                             │   └──────┬──────┘        │  ┌──│  (sonnet)    │──┐
                             │          │               │  │  └──────────────┘  │
@@ -325,16 +325,16 @@ The gateway never calls an LLM. It creates sessions, pre-materializes dispatch s
                             └──────────────────────────┘
 ```
 
-1. **Request:** Any MQTT v5 client publishes a JSON request to `$a2a/v1/request/.../gateway` with a `Response Topic` (where to send the answer) and `Correlation Data` (to match replies). The request includes either `agent_id` (direct call) or `workflow_id` (chain execution).
-2. **Build session:** For `agent_id`: the gateway creates a single-task session. For `workflow_id`: it resolves the workflow template and interpolates variables. Every task is a regular agent (research, review, synthesis, anything).
-3. **Pre-materialize and spawn:** The gateway publishes the session spec and per-task dispatch specs as retained MQTT messages, then spawns all workers upfront. Workers read their dispatch spec from retained MQTT on startup. Workers with upstream dependencies (joins) wait for chain results to arrive before executing.
-4. **Direct-to-caller streaming:** Workers stream text deltas and tool events directly to the caller's reply topic at QoS 0. The gateway is not in the streaming path.
-5. **Self-coordinating chain routing:** When a worker finishes, it publishes a retained chain result. Downstream workers subscribed to their upstream dependencies detect when all inputs arrive and begin execution. Terminal tasks publish their result directly to the caller.
+1. **Request:** Any MQTT v5 client publishes a JSON request to `$a2a/v1/request/{org}/{unit}/{agent_id}` (or `workflow-{id}` for workflows) with a `Response Topic` (where to send the answer) and `Correlation Data` (to match replies). The supervisor intercepts via wildcard subscription.
+2. **Build session:** For agents: the supervisor creates a single-task session. For workflows: it resolves the workflow template and interpolates variables. Every task is a regular agent (research, review, synthesis, anything).
+3. **Pre-materialize and spawn:** The supervisor publishes the session spec as a retained event message, then spawns all workers upfront. Workers read the session from retained MQTT on startup. Workers with upstream dependencies (joins) wait for chain results to arrive before executing.
+4. **Direct-to-caller streaming:** Workers stream text deltas and tool events directly to the caller's reply topic at QoS 0. The supervisor is not in the streaming path.
+5. **Self-coordinating chain routing:** When a worker finishes, it publishes a retained chain result to a suffixed event topic. Downstream workers subscribed to their upstream dependencies detect when all inputs arrive and begin execution. Terminal tasks publish their result directly to the caller.
 6. **Multi-runtime:** Workers invoke the `claude` binary (Claude Code CLI) or `codex` binary (OpenAI Codex CLI) as subprocesses, parsing JSONL stdout from both. Workers use `--agent <name>` to invoke the appropriate native sub-agent.
 
 ### Agent Discovery
 
-On startup, the gateway publishes an **Agent Card** (retained) for each agent defined in `~/.skitter/agents/`:
+On startup, the supervisor publishes pre-built **Agent Cards** (retained) from `~/.skitter/cards/*.json`:
 
 ```
 $a2a/v1/discovery/skitter/default/researcher  →  {"agent_id":"researcher","name":"Research Specialist",...}
@@ -344,16 +344,16 @@ Any MQTT client can discover available agents by subscribing to `$a2a/v1/discove
 
 ### Crash Recovery
 
-Session specs and dispatch specs are published as **retained messages**. Since the session spec is immutable after creation and workers self-coordinate, the gateway is crash-safe: restarting it has no effect on in-flight sessions. Workers set LWT messages for crash detection. When the TCP connection drops, the broker fires the will message and the gateway can respawn the worker.
+Session specs are published as **retained messages**. Since the session spec is immutable after creation and workers self-coordinate, the supervisor is crash-safe: restarting it has no effect on in-flight sessions. Workers set LWT messages for crash detection. When the TCP connection drops, the broker fires the will message and the supervisor can respawn the worker.
 
 ### A2A-over-MQTT Conformance
 
 Skitter uses the A2A-over-MQTT topic scheme (`$a2a/v1/discovery/`, `$a2a/v1/request/`, `$a2a/v1/reply/`, `$a2a/v1/event/`) and MQTT v5 `Response Topic` + `Correlation Data` for request/reply correlation. Differences from the [spec](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/):
 
 - **Request payloads are plain JSON**, not JSON-RPC 2.0. Requests carry `{text, sender, session_id, agent_id, workflow_id}` instead of `{jsonrpc, method, params, id}`.
-- **Error replies use JSON-RPC error objects** (`{jsonrpc, id, error: {code, message}}`), matching the spec.
+- **Error replies use JSON-RPC error objects** (`{jsonrpc, id, error: {code, message, data}}`), matching the spec. A2A error codes: `-32004` (responder unavailable), `-32005` (transport protocol error).
 - **No `Task.id` in responses.** The spec requires responders to return a server-generated task ID. Skitter uses session-scoped task IDs embedded in the session spec instead.
-- **Retained state topics** (`$a2a/v1/state/...`) for sessions, per-task status, chain results, and usage are skitter-specific extensions not defined in the spec.
+- **Suffixed event topics** (`event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}`, etc.) for coordination state are application-defined extensions using the spec's suffix mechanism.
 - **No retry/timeout profile.** Clients don't implement the spec's `reply_first_timeout_ms`, `stream_idle_timeout_ms`, or exponential backoff.
 - **No auth/TLS.** The spec requires TLS for bearer tokens and supports OAuth 2.0 via User Properties. Skitter currently runs unauthenticated on localhost.
 
@@ -382,4 +382,4 @@ Copy `.env.example` to `.env` to override defaults:
 - **Cost:** Each workflow run triggers one LLM API call per task. Keep an eye on your usage limits!
 - **State overwrites:** Concurrent messages with the same `session_id` currently overwrite each other.
 - **Error handling:** Worker errors (API failures, quota hits) are currently passed back as normal results to downstream tasks.
-- **Incomplete crash recovery:** Gateway crashes are safe (workers self-coordinate), but worker crashes require respawning. Accumulated stream data is lost on worker re-run.
+- **Incomplete crash recovery:** Supervisor crashes are safe (workers self-coordinate), but worker crashes require respawning. Accumulated stream data is lost on worker re-run.

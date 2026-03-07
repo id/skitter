@@ -293,7 +293,7 @@ The supervisor never calls an LLM. It listens on wildcard topics (`request/{o}/{
  (CLI, dashboard,                (Docker, port 1883)        (claude CLI / codex CLI)
   Telegram bot, etc.)
                             ┌──────────────────────────┐
-   JSON request              │                          │
+   JSON request             │                          │
   ──────────────────────────▶  request/.../agent_id    │
    (v5 Response Topic +     │          │               │
     Correlation Data)       │          ▼               │

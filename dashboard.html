@@ -634,7 +634,7 @@
       let inputHtml = '';
       if (isAgent) {
         inputHtml = `<div class="compose-input-wrap">
-            <textarea class="compose-textarea" id="compose-text" placeholder="Message ${esc(name)}..." rows="1"></textarea>
+            <textarea class="compose-textarea" id="compose-text" placeholder="Message ${esc(name)}..." rows="3"></textarea>
             <button class="compose-send" id="compose-btn" title="Send (Enter)">&#9654;</button>
           </div>
           <div class="compose-hint">Enter to send, Shift+Enter for newline</div>`;
@@ -647,7 +647,7 @@
           varsHtml += `<div style="display:flex;align-items:center;gap:8px">
             <label style="font-size:12px;font-weight:500;color:var(--text-sec);min-width:80px">${esc(v)}</label>
             <div style="flex:1;position:relative">
-              <input type="text" class="compose-var" data-var="${esc(v)}" placeholder="${esc(v)}" style="width:100%;padding:8px 10px;${isLast ? 'padding-right:42px;' : ''}border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:var(--sans);outline:none;color:var(--text);transition:border-color .15s">
+              <textarea class="compose-var" data-var="${esc(v)}" placeholder="${esc(v)}" rows="2" style="width:100%;padding:8px 10px;${isLast ? 'padding-right:42px;' : ''}border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:var(--sans);outline:none;color:var(--text);transition:border-color .15s;resize:none;line-height:1.5;min-height:36px;max-height:150px"></textarea>
               ${isLast ? '<button class="compose-send" id="compose-btn" title="Send (Enter)" style="position:absolute;right:4px;top:50%;transform:translateY(-50%)">&#9654;</button>' : ''}
             </div>
           </div>`;
@@ -656,7 +656,7 @@
           varsHtml = `<div><button class="compose-send" id="compose-btn" title="Run workflow" style="position:static;width:auto;padding:8px 20px;font-size:12px;border-radius:6px">Run &#9654;</button></div>`;
         }
         inputHtml = `<div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">${varsHtml}</div>
-          <div class="compose-hint" style="margin-top:8px">Enter to run</div>`;
+          <div class="compose-hint" style="margin-top:8px">Enter to run, Shift+Enter for newline</div>`;
       }
 
       area.innerHTML = `<div class="compose-view">
@@ -689,7 +689,11 @@
       // Enter to submit from var inputs, focus styling
       area.querySelectorAll('.compose-var').forEach(inp => {
         inp.addEventListener('keydown', e => {
-          if (e.key === 'Enter') { e.preventDefault(); submitCompose(); }
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitCompose(); }
+        });
+        inp.addEventListener('input', () => {
+          inp.style.height = 'auto';
+          inp.style.height = Math.min(inp.scrollHeight, 150) + 'px';
         });
         inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--blue)'; inp.style.boxShadow = '0 0 0 3px rgba(37,99,235,.08)'; });
         inp.addEventListener('blur', () => { inp.style.borderColor = 'var(--border)'; inp.style.boxShadow = 'none'; });

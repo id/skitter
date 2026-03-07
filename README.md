@@ -228,14 +228,14 @@ In a typical HTTP-based AI system, the orchestrator handles routing, retries, fa
 
 ```
     ┌─────────────────────────────────────────────────────────────────────┐
-    │                        TYPICAL HTTP STACK                          │
+    │                        TYPICAL HTTP STACK                           │
     │                                                                     │
-    │   Telegram ──┐                              ┌── Agent A            │
-    │              ▼                              │                      │
-    │   Slack ───▶ Orchestrator ◀── routing ──────┼── Agent B            │
-    │              ▲   │  ▲   retries, fan-out,   │                      │
-    │   Web UI ───┘    │  │   load balancing,     └── Agent C            │
-    │                  │  │   state management                           │
+    │   Telegram ──┐                              ┌── Agent A             │
+    │              ▼                              │                       │
+    │   Slack ───▶ Orchestrator ◀── routing ──────┼── Agent B             │
+    │              ▲   │  ▲   retries, fan-out,   │                       │
+    │   Web UI ───┘    │  │   load balancing,     └── Agent C             │
+    │                  │  │   state management                            │
     │                  │  │                                               │
     │              Everything goes through the orchestrator.              │
     │              It's the bottleneck AND the brain.                     │

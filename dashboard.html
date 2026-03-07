@@ -367,31 +367,34 @@
         return;
       }
 
-      // Reply (stream items + results)
+      // Reply (TaskStatusUpdateEvent — streaming + terminal)
       if (p[2] === 'reply' && raw) {
         try {
           const m = JSON.parse(raw);
-          if (m.seq != null && m.type) {
-            const sid = findSessionForTask(m.task_id);
-            if (sid) {
-              const k = `${sid}/${m.task_id}`;
+          const r = m.result || {};
+          if (r.type === 'TaskStatusUpdateEvent') {
+            const taskId = r.taskId;
+            const st = (r.status || {}).state;
+            const msg = (r.status || {}).message || '';
+            const artifact = ((r.artifact || {}).parts || [])[0]?.text || '';
+            const sid = findSessionForTask(taskId);
+            if (st === 'working' && msg && sid) {
+              const k = `${sid}/${taskId}`;
               if (!state.streamChunks.has(k)) state.streamChunks.set(k, []);
               const ch = state.streamChunks.get(k);
-              // Dedup
-              if (!ch.some(c => c.task_id === m.task_id && c.seq === m.seq)) {
-                ch.push(m);
-                if (ch.length > 200) ch.splice(0, ch.length - 200);
-              }
+              // Map message prefix to chunk type for rendering
+              let type = 'text', content = msg;
+              if (msg.startsWith('[tool_use] ')) { type = 'tool_use'; content = msg.slice(11); }
+              ch.push({ task_id: taskId, type, content });
+              if (ch.length > 200) ch.splice(0, ch.length - 200);
+              scheduleStreamRender();
+            } else if (st === 'completed' || st === 'failed' || st === 'cancelled') {
+              if (sid && artifact) state.taskResults.set(`${sid}/${taskId}`, artifact);
+              renderDetail();
             }
-            scheduleStreamRender();
-            return;
           }
-          if (m.state && m.task_id) {
-            const sid = findSessionForTask(m.task_id);
-            if (sid) state.taskResults.set(`${sid}/${m.task_id}`, m.result);
-            renderDetail();
-            return;
-          }
+          // Error response
+          if (m.error) { renderDetail(); }
         } catch(e) {}
         return;
       }
@@ -716,20 +719,23 @@
         if (inp.value.trim()) vars[inp.dataset.var] = inp.value.trim();
       });
 
-      const msg = { sender: 'dashboard', session_id: sid, timestamp: Date.now() / 1000 };
-
-      if (t.type === 'agent') {
-        msg.agent_id = t.id;
-        msg.text = text;
-      } else {
-        msg.workflow_id = t.id;
-        if (Object.keys(vars).length) msg.workflow_vars = vars;
+      let msgText = text;
+      const metadata = { sender: 'dashboard' };
+      if (t.type !== 'agent') {
+        if (Object.keys(vars).length) metadata.variables = vars;
         const varSummary = Object.values(vars).join(', ');
-        msg.text = text || (varSummary ? `${t.id}: ${varSummary}` : t.id);
+        if (!msgText) msgText = varSummary ? `${t.id}: ${varSummary}` : t.id;
       }
+      const rpcMsg = {
+        jsonrpc: '2.0', id: sid, method: 'tasks/send',
+        params: {
+          message: { role: 'user', parts: [{ type: 'text', text: msgText }] },
+          metadata,
+        },
+      };
 
       const target = t.type === 'agent' ? t.id : `workflow-${t.id}`;
-      mqttClient.publish(`$a2a/v1/request/skitter/default/${target}`, JSON.stringify(msg), {
+      mqttClient.publish(`$a2a/v1/request/skitter/default/${target}`, JSON.stringify(rpcMsg), {
         qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(sid) },
       });
 
@@ -850,8 +856,6 @@
         for (const c of chunks.slice(isRunning ? -50 : -200)) {
           if (c.type === 'text') sh += esc(c.content);
           else if (c.type === 'tool_use') sh += `<span class="tool">[${esc(c.content)}]</span>\n`;
-          else if (c.type === 'tool_result') sh += `<span class="tool">  \u2192 ${esc(trunc(c.content, 150))}</span>\n`;
-          else if (c.type === 'error') sh += `<span class="err">[ERROR: ${esc(c.content)}]</span>\n`;
         }
         const label = isRunning ? '<span class="stream-dot"></span> Live Output' : 'Activity Log';
         h += `<div class="det-section"><div class="det-label">${label}</div><div class="det-stream">${sh}</div></div>`;

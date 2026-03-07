@@ -346,16 +346,16 @@ Any MQTT client can discover available agents by subscribing to `$a2a/v1/discove
 
 Session specs are published as **retained messages**. Since the session spec is immutable after creation and workers self-coordinate, the supervisor is crash-safe: restarting it has no effect on in-flight sessions. Workers set LWT messages for crash detection. When the TCP connection drops, the broker fires the will message and the supervisor can respawn the worker.
 
-### A2A-over-MQTT Conformance
+### Spec Deviations
 
-Skitter uses the A2A-over-MQTT topic scheme (`$a2a/v1/discovery/`, `$a2a/v1/request/`, `$a2a/v1/reply/`, `$a2a/v1/event/`) and MQTT v5 `Response Topic` + `Correlation Data` for request/reply correlation. Differences from the [spec](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/):
+Deviations from the [A2A-over-MQTT spec](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/):
 
-- **Request payloads are plain JSON**, not JSON-RPC 2.0. Requests carry `{text, sender, session_id, agent_id, workflow_id}` instead of `{jsonrpc, method, params, id}`.
-- **Error replies use JSON-RPC error objects** (`{jsonrpc, id, error: {code, message, data}}`), matching the spec. A2A error codes: `-32004` (responder unavailable), `-32005` (transport protocol error).
-- **No `Task.id` in responses.** The spec requires responders to return a server-generated task ID. Skitter uses session-scoped task IDs embedded in the session spec instead.
-- **Suffixed event topics** (`event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}`, etc.) for coordination state are application-defined extensions using the spec's suffix mechanism.
-- **No retry/timeout profile.** Clients don't implement the spec's `reply_first_timeout_ms`, `stream_idle_timeout_ms`, or exponential backoff.
-- **No auth/TLS.** The spec requires TLS for bearer tokens and supports OAuth 2.0 via User Properties. Skitter currently runs unauthenticated on localhost.
+| Area | Spec | Skitter |
+|---|---|---|
+| Streaming replies | Separate `TaskStatusUpdateEvent` + `TaskArtifactUpdateEvent` | `TaskStatusUpdateEvent` for both streaming (`working` state with `message`) and terminal (`completed` state with `artifact`) |
+| Event topics | Bare `event/{org}/{unit}/{agent_id}` for lifecycle | Suffixed extensions: `event/…/{agent_id}/chain-result/{sid}/{tid}`, `…/task-status/{sid}/{tid}`, `…/usage/{sid}/{tid}` |
+| Retry / timeout | `reply_first_timeout_ms`, `stream_idle_timeout_ms`, exponential backoff | Not implemented |
+| Auth / TLS | TLS required, OAuth 2.0 via User Properties | Unauthenticated localhost only |
 
 ## Configuration
 

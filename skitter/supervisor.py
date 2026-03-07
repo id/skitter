@@ -6,7 +6,6 @@ request/{o}/{u}/+ and event/{o}/{u}/+/+ wildcards.
 """
 
 import asyncio
-import json
 import logging
 import uuid
 
@@ -35,10 +34,10 @@ from skitter.respawn import handle_dead_event
 from skitter.spawn import spawn_worker
 from skitter.storage import load_agents, load_cards, load_workflows
 from skitter.types import (
+    A2ARequest,
     A2AResponse,
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
-    InboundMessage,
     Session,
     SessionTask,
 )
@@ -138,68 +137,53 @@ async def handle_request(
 ) -> None:
     """Create session, pre-materialize all task specs, spawn all workers."""
     try:
-        data = json.loads(payload)
+        req = A2ARequest.from_json(payload)
     except Exception as e:
-        log.error("Bad inbound JSON: %s", e)
+        log.error("Bad inbound JSON-RPC: %s", e)
         return
 
-    # Standard inbound request
-    try:
-        msg = InboundMessage.from_json(payload)
-    except Exception:
-        msg = InboundMessage(
-            text=data.get("text", ""),
-            sender=data.get("sender", "unknown"),
-            session_id=data.get("session_id", f"req-{uuid.uuid4().hex[:8]}"),
-            workflow_id=data.get("workflow_id", ""),
-            workflow_vars=data.get("workflow_vars", {}),
-            agent_id=data.get("agent_id", ""),
-        )
-
-    # Agent ID comes from the topic, fall back to payload
-    if agent_id:
-        msg.agent_id = agent_id
-
+    # Agent ID comes from the topic
     # Check if this is a workflow request (agent_id starts with "workflow-")
-    if msg.agent_id and msg.agent_id.startswith("workflow-"):
-        msg.workflow_id = msg.agent_id.removeprefix("workflow-")
-        msg.agent_id = ""
+    workflow_id = ""
+    if agent_id.startswith("workflow-"):
+        workflow_id = agent_id.removeprefix("workflow-")
+        agent_id = ""
 
-    if msg.agent_id:
-        if msg.agent_id not in agents:
+    if agent_id:
+        if agent_id not in agents:
             await _send_error(
                 client,
                 caller_reply_topic,
                 caller_correlation,
-                f"Unknown agent: {msg.agent_id}",
+                f"Unknown agent: {agent_id}",
                 code=A2A_RESPONDER_UNAVAILABLE,
                 a2a_error="responder_unavailable",
             )
             return
         session = create_session(
-            msg.session_id,
-            msg.text,
-            agent_id=msg.agent_id,
-            text=msg.text,
+            req.session_id,
+            req.text,
+            agent_id=agent_id,
+            text=req.text,
             agents=agents,
         )
-    elif msg.workflow_id:
-        workflow = workflows.get(msg.workflow_id)
+    elif workflow_id:
+        workflow = workflows.get(workflow_id)
         if not workflow:
             await _send_error(
                 client,
                 caller_reply_topic,
                 caller_correlation,
-                f"Unknown workflow: {msg.workflow_id}",
+                f"Unknown workflow: {workflow_id}",
                 code=A2A_RESPONDER_UNAVAILABLE,
                 a2a_error="responder_unavailable",
             )
             return
         session = create_session(
-            msg.session_id,
-            msg.text,
+            req.session_id,
+            req.text,
             workflow=workflow,
-            variables=msg.workflow_vars,
+            variables=req.variables,
             agents=agents,
         )
     else:
@@ -213,12 +197,12 @@ async def handle_request(
                 "or run 'skitter init' to create the default agent.",
             )
             return
-        msg.agent_id = default_agent
+        agent_id = default_agent
         session = create_session(
-            msg.session_id,
-            msg.text,
-            agent_id=msg.agent_id,
-            text=msg.text,
+            req.session_id,
+            req.text,
+            agent_id=agent_id,
+            text=req.text,
             agents=agents,
         )
 
@@ -252,9 +236,7 @@ async def handle_request(
         retain=True,
     )
 
-    label = (
-        f"agent '{msg.agent_id}'" if msg.agent_id else f"workflow '{msg.workflow_id}'"
-    )
+    label = f"agent '{agent_id}'" if agent_id else f"workflow '{workflow_id}'"
     log.info(
         "%s started for %s (%d tasks, all spawned)",
         label.capitalize(),

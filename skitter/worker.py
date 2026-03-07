@@ -30,8 +30,7 @@ from skitter.mqtt import (
 from skitter.types import (
     AgentMessage,
     Session,
-    StreamItem,
-    TaskStatusUpdate,
+    make_status_event,
 )
 
 logging.basicConfig(
@@ -108,7 +107,6 @@ async def run_agent(
     texts: list[str] = []
     usage: dict | None = None
     cost_usd: float | None = None
-    seq = 0
 
     assert proc.stdout is not None
     async for line in proc.stdout:
@@ -124,7 +122,6 @@ async def run_agent(
         except json.JSONDecodeError:
             continue
 
-        seq += 1
         event_type = event.get("type", "")
 
         # Claude stream-json: {"type":"assistant","message":{"content":[...]}}
@@ -134,12 +131,11 @@ async def run_agent(
                 if block.get("type") == "text":
                     text = block.get("text", "")
                     texts.append(text)
-                    await publish_stream_item("text", text, seq)
+                    await publish_stream_item("text", text)
                 elif block.get("type") == "tool_use":
                     await publish_stream_item(
                         "tool_use",
                         f"{block.get('name', '?')}: {str(block.get('input', ''))[:100]}",
-                        seq,
                     )
         # Codex JSONL: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
         elif event_type == "item.completed":
@@ -148,7 +144,7 @@ async def run_agent(
                 text = item.get("text", "")
                 if text:
                     texts.append(text)
-                    await publish_stream_item("text", text, seq)
+                    await publish_stream_item("text", text)
         # Codex: {"type":"turn.completed","usage":{...}}
         elif event_type == "turn.completed":
             usage = event.get("usage")
@@ -282,20 +278,20 @@ async def publish_terminal_result(
     task_name: str,
     result: str,
 ) -> None:
-    """Publish result to caller."""
+    """Publish terminal TaskStatusUpdateEvent to caller."""
     my_task = session.tasks[task_name]
-    status = TaskStatusUpdate(
+    event = make_status_event(
+        request_id=session.caller_correlation,
         task_id=my_task.task_id,
         state="completed",
-        result=result,
+        artifact_text=result,
     )
 
-    # Publish to caller
     if session.caller_reply_topic:
         props = make_properties(correlation_data=session.caller_correlation)
         await client.publish(
             session.caller_reply_topic,
-            status.to_json(),
+            event,
             qos=1,
             properties=props,
         )
@@ -394,12 +390,19 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         stream_topic = task_msg.caller_reply_topic
         stream_correlation = task_msg.caller_correlation
 
-        async def publish_stream_item(item_type: str, content: str, seq: int) -> None:
+        async def publish_stream_item(item_type: str, content: str) -> None:
             if not stream_topic:
                 return
-            item = StreamItem(task_id=task_id, seq=seq, type=item_type, content=content)
+            # item_type is "text" or "tool_use" — pack as working status message
+            prefix = "" if item_type == "text" else f"[{item_type}] "
+            event = make_status_event(
+                request_id=stream_correlation,
+                task_id=task_id,
+                state="working",
+                message=f"{prefix}{content}",
+            )
             props = make_properties(correlation_data=stream_correlation)
-            await client.publish(stream_topic, item.to_json(), qos=0, properties=props)
+            await client.publish(stream_topic, event, qos=0, properties=props)
 
         # Cancel listener
         cancel_event = asyncio.Event()

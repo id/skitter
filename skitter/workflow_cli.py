@@ -20,7 +20,7 @@ from skitter.mqtt import (
     topic_reply,
     topic_request,
 )
-from skitter.types import InboundMessage, StreamItem, TaskStatusUpdate
+from skitter.types import A2ARequest, parse_status_event
 
 console = Console()
 
@@ -96,12 +96,11 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
         var_str = ", ".join(f"{k}={v}" for k, v in variables.items())
         description += f" with {var_str}"
 
-    msg = InboundMessage(
+    req = A2ARequest(
         text=description,
-        sender="cli",
         session_id=session_id,
-        workflow_id=workflow_id,
-        workflow_vars=variables,
+        sender="cli",
+        variables=variables,
     )
 
     mqtt_session = uuid.uuid4().hex[:12]
@@ -124,7 +123,7 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
             )
             await client.publish(
                 workflow_request,
-                msg.to_json(),
+                req.to_json(),
                 qos=1,
                 properties=props,
             )
@@ -135,7 +134,6 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
 
             console.print("Waiting for result... (Ctrl+C to detach)\n")
 
-            seen_seqs: set[tuple[str, int]] = set()
             try:
                 async with asyncio.timeout(600.0):
                     async for mqtt_msg in client.messages:
@@ -147,31 +145,25 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
                         except Exception:
                             continue
 
-                        # Stream item (with dedup for QoS 1 redelivery)
-                        if "seq" in data and "type" in data:
-                            item = StreamItem.from_json(payload)
-                            dedup_key = (item.task_id, item.seq)
-                            if dedup_key in seen_seqs:
-                                continue
-                            seen_seqs.add(dedup_key)
-                            if item.type == "text":
-                                console.print(item.content, end="")
-                            elif item.type == "tool_use":
-                                console.print(f"  [dim][tool] {item.content}[/dim]")
-                            continue
-
-                        # Terminal status
-                        if "state" in data and "task_id" in data:
-                            status = TaskStatusUpdate.from_json(payload)
-                            console.print(f"\n\n{status.result}")
-                            return
-
                         # Error
                         if "error" in data:
                             console.print(
                                 f"[red]Error: {data['error'].get('message', data['error'])}[/red]"
                             )
                             return
+
+                        # TaskStatusUpdateEvent
+                        result = data.get("result", {})
+                        if result.get("type") == "TaskStatusUpdateEvent":
+                            _, state, message, artifact = parse_status_event(data)
+                            if state == "working" and message:
+                                if message.startswith("[tool_use] "):
+                                    console.print(f"  [dim][tool] {message[11:]}[/dim]")
+                                else:
+                                    console.print(message, end="")
+                            elif state in ("completed", "failed", "cancelled"):
+                                console.print(f"\n\n{artifact}")
+                                return
             except TimeoutError:
                 console.print("[yellow]Timed out waiting for result[/yellow]")
 

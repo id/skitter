@@ -27,15 +27,87 @@ from skitter.mqtt import (
     topic_task_status,
 )
 from skitter.types import (
+    A2ARequest,
     AgentMessage,
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
     Session,
     SessionTask,
+    make_status_event,
+    parse_status_event,
 )
 
 
 # --- Foundation types ---
+
+
+class TestA2ARequest:
+    def test_roundtrip(self):
+        req = A2ARequest(
+            text="Research quantum computing",
+            session_id="req-abc123",
+            sender="cli",
+            variables={"topic": "quantum"},
+        )
+        j = req.to_json()
+        d = json.loads(j)
+        assert d["jsonrpc"] == "2.0"
+        assert d["id"] == "req-abc123"
+        assert d["method"] == "tasks/send"
+        assert (
+            d["params"]["message"]["parts"][0]["text"] == "Research quantum computing"
+        )
+        assert d["params"]["metadata"]["sender"] == "cli"
+        assert d["params"]["metadata"]["variables"]["topic"] == "quantum"
+
+        restored = A2ARequest.from_json(j)
+        assert restored.text == "Research quantum computing"
+        assert restored.session_id == "req-abc123"
+        assert restored.sender == "cli"
+        assert restored.variables == {"topic": "quantum"}
+
+    def test_minimal(self):
+        req = A2ARequest(text="hello", session_id="s1")
+        j = req.to_json()
+        d = json.loads(j)
+        assert "metadata" not in d["params"]
+
+        restored = A2ARequest.from_json(j)
+        assert restored.text == "hello"
+        assert restored.sender == ""
+        assert restored.variables == {}
+
+
+class TestStatusEvent:
+    def test_working_roundtrip(self):
+        event = make_status_event("req-1", "t-abc", "working", message="hello world")
+        d = json.loads(event)
+        assert d["jsonrpc"] == "2.0"
+        assert d["id"] == "req-1"
+        assert d["result"]["type"] == "TaskStatusUpdateEvent"
+        assert d["result"]["taskId"] == "t-abc"
+        assert d["result"]["status"]["state"] == "working"
+        assert d["result"]["status"]["message"] == "hello world"
+        assert "artifact" not in d["result"]
+
+        task_id, state, message, artifact = parse_status_event(d)
+        assert task_id == "t-abc"
+        assert state == "working"
+        assert message == "hello world"
+        assert artifact == ""
+
+    def test_terminal_with_artifact(self):
+        event = make_status_event(
+            "req-2", "t-xyz", "completed", artifact_text="Final answer"
+        )
+        d = json.loads(event)
+        assert d["result"]["status"]["state"] == "completed"
+        assert d["result"]["artifact"]["parts"][0]["text"] == "Final answer"
+
+        task_id, state, message, artifact = parse_status_event(d)
+        assert task_id == "t-xyz"
+        assert state == "completed"
+        assert artifact == "Final answer"
 
 
 class TestAgentMessage:

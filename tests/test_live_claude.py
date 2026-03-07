@@ -16,7 +16,7 @@ import uuid
 import pytest
 
 from skitter.mqtt import topic_request
-from skitter.types import InboundMessage
+from skitter.types import A2ARequest
 
 from .conftest import (
     clean_retained,
@@ -51,28 +51,26 @@ class TestLiveClaude:
     @pytest.mark.asyncio
     async def test_single_agent(self, supervisor):
         await clean_retained()
-        msg = InboundMessage(
+        req = A2ARequest(
             text="What is 2+2? Reply with just the number.",
-            sender="test",
             session_id=f"live-claude-{uuid.uuid4().hex[:8]}",
-            agent_id="test_claude",
+            sender="test",
         )
-        result = await send_and_collect(topic_request("test_claude"), msg, timeout=30.0)
+        result = await send_and_collect(topic_request("test_claude"), req, timeout=30.0)
         assert result and "4" in result
         print(f"\nResult: {result}")
 
     @pytest.mark.asyncio
     async def test_workflow_fan_out_join(self, supervisor):
         await clean_retained()
-        msg = InboundMessage(
+        req = A2ARequest(
             text="Workflow 'Test Workflow' with topic=Python",
-            sender="test",
             session_id=f"live-workflow-{uuid.uuid4().hex[:8]}",
-            workflow_id="test_workflow",
-            workflow_vars={"topic": "Python"},
+            sender="test",
+            variables={"topic": "Python"},
         )
         result = await send_and_collect(
-            topic_request("workflow-test_workflow"), msg, timeout=120.0
+            topic_request("workflow-test_workflow"), req, timeout=120.0
         )
         assert result and len(result) > 0
         assert not result.startswith("("), f"Workflow failed: {result}"
@@ -81,13 +79,12 @@ class TestLiveClaude:
 
     @pytest.mark.asyncio
     async def test_unknown_agent_rejected(self, supervisor):
-        msg = InboundMessage(
+        req = A2ARequest(
             text="Hello",
-            sender="test",
             session_id=f"live-unknown-{uuid.uuid4().hex[:8]}",
-            agent_id="nonexistent_agent",
+            sender="test",
         )
         result = await send_and_collect(
-            topic_request("nonexistent_agent"), msg, timeout=10.0
+            topic_request("nonexistent_agent"), req, timeout=10.0
         )
         assert "Unknown agent" in result

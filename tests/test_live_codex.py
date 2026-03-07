@@ -16,7 +16,7 @@ import uuid
 import pytest
 
 from skitter.mqtt import topic_request
-from skitter.types import InboundMessage
+from skitter.types import A2ARequest
 
 from .conftest import (
     clean_retained,
@@ -50,13 +50,12 @@ class TestLiveCodex:
     @pytest.mark.asyncio
     async def test_single_agent(self, supervisor):
         await clean_retained()
-        msg = InboundMessage(
+        req = A2ARequest(
             text="What is 2+2? Reply with just the number.",
-            sender="test",
             session_id=f"live-codex-{uuid.uuid4().hex[:8]}",
-            agent_id="test_codex",
+            sender="test",
         )
-        result = await send_and_collect(topic_request("test_codex"), msg, timeout=30.0)
+        result = await send_and_collect(topic_request("test_codex"), req, timeout=30.0)
         assert result and len(result) > 0
         assert not result.startswith("("), f"Codex failed: {result}"
         assert "error" not in result.lower() or "4" in result, f"Codex error: {result}"
@@ -65,15 +64,14 @@ class TestLiveCodex:
     @pytest.mark.asyncio
     async def test_workflow_fan_out_join(self, supervisor):
         await clean_retained()
-        msg = InboundMessage(
+        req = A2ARequest(
             text="Workflow with topic=Python",
-            sender="test",
             session_id=f"live-codex-wf-{uuid.uuid4().hex[:8]}",
-            workflow_id="test_codex_workflow",
-            workflow_vars={"topic": "Python"},
+            sender="test",
+            variables={"topic": "Python"},
         )
         result = await send_and_collect(
-            topic_request("workflow-test_codex_workflow"), msg, timeout=120.0
+            topic_request("workflow-test_codex_workflow"), req, timeout=120.0
         )
         assert result and len(result) > 0
         assert not result.startswith("("), f"Workflow failed: {result}"

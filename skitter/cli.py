@@ -16,7 +16,7 @@ from skitter.mqtt import (
     topic_reply,
     topic_request,
 )
-from skitter.types import InboundMessage, StreamItem, TaskStatusUpdate
+from skitter.types import A2ARequest, parse_status_event
 
 
 async def run_chat(session_id: str) -> None:
@@ -39,7 +39,6 @@ async def run_chat(session_id: str) -> None:
         await client.subscribe(reply_t, qos=1)
 
         async def listen() -> None:
-            seen_seqs: set[tuple[str, int]] = set()
             async for msg in client.messages:
                 try:
                     payload = msg.payload.decode() if msg.payload else ""
@@ -47,35 +46,26 @@ async def run_chat(session_id: str) -> None:
                         continue
                     data = json.loads(payload)
 
-                    # Stream item (with dedup for QoS 1 redelivery)
-                    if "seq" in data and "type" in data:
-                        item = StreamItem.from_json(payload)
-                        dedup_key = (item.task_id, item.seq)
-                        if dedup_key in seen_seqs:
-                            continue
-                        seen_seqs.add(dedup_key)
-                        if item.type == "text":
-                            print(f"\r\033[K{item.content}", end="", flush=True)
-                        elif item.type == "tool_use":
-                            print(f"\r\033[K  [tool] {item.content}")
-                        elif item.type == "tool_result":
-                            print(f"\r\033[K  [result] {item.content[:80]}")
-                        continue
-
-                    # Terminal status
-                    if "state" in data and "task_id" in data:
-                        status = TaskStatusUpdate.from_json(payload)
-                        print(f"\r\033[K\n{status.result}")
-                        print("> ", end="", flush=True)
-                        continue
-
-                    # Error response (A2AResponse)
+                    # Error response
                     if "error" in data:
                         print(
                             f"\r\033[KError: {data['error'].get('message', data['error'])}"
                         )
                         print("> ", end="", flush=True)
                         continue
+
+                    # TaskStatusUpdateEvent (streaming or terminal)
+                    result = data.get("result", {})
+                    if result.get("type") == "TaskStatusUpdateEvent":
+                        _, state, message, artifact = parse_status_event(data)
+                        if state == "working" and message:
+                            if message.startswith("[tool_use] "):
+                                print(f"\r\033[K  [tool] {message[11:]}")
+                            else:
+                                print(f"\r\033[K{message}", end="", flush=True)
+                        elif state in ("completed", "failed", "cancelled"):
+                            print(f"\r\033[K\n{artifact}")
+                            print("> ", end="", flush=True)
 
                 except Exception:
                     pass
@@ -129,13 +119,11 @@ async def run_chat(session_id: str) -> None:
                         continue
                 # else: no prefix — goes to default agent (skitter)
 
-                msg = InboundMessage(
+                req = A2ARequest(
                     text=text,
-                    sender="cli",
                     session_id=session_id,
-                    workflow_id=workflow_id,
-                    workflow_vars=workflow_vars,
-                    agent_id=agent_id,
+                    sender="cli",
+                    variables=workflow_vars,
                 )
 
                 # Route to the correct agent/workflow request topic
@@ -152,7 +140,7 @@ async def run_chat(session_id: str) -> None:
                 )
                 await client.publish(
                     request_topic,
-                    msg.to_json(),
+                    req.to_json(),
                     qos=1,
                     properties=props,
                 )

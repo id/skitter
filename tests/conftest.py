@@ -29,7 +29,7 @@ from skitter.mqtt import (
     topic_reply,
     topic_session_wildcard,
 )
-from skitter.types import InboundMessage, StreamItem, TaskStatusUpdate
+from skitter.types import A2ARequest, parse_status_event
 
 AGENTS_DIR = Path.home() / ".skitter" / "agents"
 WORKFLOWS_DIR = Path.home() / ".skitter" / "workflows"
@@ -193,7 +193,7 @@ async def clean_retained():
 
 async def send_and_collect(
     request_topic: str,
-    msg: InboundMessage,
+    msg: A2ARequest,
     timeout: float = 60.0,
 ) -> str:
     """Publish request via MQTT with v5 properties, collect reply."""
@@ -230,21 +230,20 @@ async def send_and_collect(
                     except Exception:
                         continue
 
-                    if "seq" in data and "type" in data:
-                        item = StreamItem.from_json(payload)
-                        if item.type == "text":
-                            print(item.content, end="", flush=True)
-                        elif item.type == "tool_use":
-                            print(f"\n  [tool] {item.content}", flush=True)
-                        continue
-
-                    if "state" in data and "task_id" in data:
-                        status = TaskStatusUpdate.from_json(payload)
-                        print()
-                        return status.result
-
                     if "error" in data:
                         return f"Error: {data['error'].get('message', data['error'])}"
+
+                    result = data.get("result", {})
+                    if result.get("type") == "TaskStatusUpdateEvent":
+                        _, state, message, artifact = parse_status_event(data)
+                        if state == "working" and message:
+                            if message.startswith("[tool_use] "):
+                                print(f"\n  [tool] {message[11:]}", flush=True)
+                            else:
+                                print(message, end="", flush=True)
+                        elif state in ("completed", "failed", "cancelled"):
+                            print()
+                            return artifact
         except TimeoutError:
             pytest.fail(f"Timed out after {timeout}s waiting for result")
 

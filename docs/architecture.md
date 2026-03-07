@@ -14,7 +14,7 @@
 
 6. **MQTT v5 as the backbone.** The broker is the single source of truth. Retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
 
-7. **A2A-over-MQTT.** All topics follow the A2A draft v0.1 scheme with application-defined suffixes after the agent ID. Agents are discoverable via retained Agent Cards. Pre-built cards stored in `~/.skitter/cards/*.json`. Requests use v5 Response Topic + Correlation Data for reply routing.
+7. **A2A-over-MQTT.** All topics follow the A2A draft v0.1 scheme with application-defined suffixes after the agent ID. Agents are discoverable via retained Agent Cards. Pre-built cards stored in `~/.skitter/cards/*.json`. Requests are JSON-RPC 2.0 (`tasks/send`). Replies are `TaskStatusUpdateEvent` JSON-RPC responses. MQTT v5 Response Topic + Correlation Data for reply routing.
 
 8. **QA is a workflow concern.** The supervisor has no built-in QA logic. If you want fact-checking or review, add a reviewer task node to your workflow that depends on the work task.
 
@@ -58,8 +58,8 @@ sequenceDiagram
     S->>W: Spawn process
     W->>B: Read retained session
     W->>W: Run agent (claude/codex CLI)
-    W->>C: Stream items (QoS 0)
-    W->>C: TaskStatusUpdate (terminal)
+    W->>C: TaskStatusUpdateEvent (working, QoS 0)
+    W->>C: TaskStatusUpdateEvent (completed, QoS 1)
     W->>B: Retain per-task status (done)
 ```
 
@@ -82,7 +82,7 @@ sequenceDiagram
     W1->>B: Retain chain result (A)
     B->>W2: Deliver chain result (A)
     W2->>W2: Run agent (with A's result as context)
-    W2->>Caller: TaskStatusUpdate (terminal)
+    W2->>Caller: TaskStatusUpdateEvent (completed)
     W2->>B: Retain per-task status (done)
 ```
 
@@ -107,14 +107,14 @@ sequenceDiagram
     WB->>B: Retain chain result (B)
     B->>WJ: Deliver A + B results
     WJ->>WJ: Run agent (context = A + B results)
-    WJ->>Caller: TaskStatusUpdate (terminal)
+    WJ->>Caller: TaskStatusUpdateEvent (completed)
 ```
 
 All workers are spawned immediately. Entry tasks (no `needs`) start work right away. Join tasks block on `wait_for_needs()`, subscribing to upstream chain result topics until all inputs arrive via MQTT retained messages.
 
 ### Direct-to-Caller Streaming
 
-Workers stream `StreamItem` directly to the caller's Response Topic (QoS 0), bypassing the supervisor entirely.
+Workers stream `TaskStatusUpdateEvent` (state `working`) directly to the caller's Response Topic (QoS 0), bypassing the supervisor entirely.
 
 ## Supervisor
 
@@ -143,7 +143,7 @@ Each worker (`skitter/worker.py`) runs as an independent process:
 7. Run agent as CLI subprocess (`claude` or `codex`), parse JSONL stdout
 8. Publish result:
    - Non-terminal: retain chain result on `event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}`
-   - Terminal: publish `TaskStatusUpdate` to caller's Response Topic
+   - Terminal: publish `TaskStatusUpdateEvent` (completed) to caller's Response Topic
 9. Publish per-task status (retained) on `event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}`
 10. Announce done, disconnect
 

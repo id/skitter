@@ -37,108 +37,95 @@ class A2AResponse:
         )
 
 
-@dataclass
-class TaskStatusUpdate:
-    """Terminal status update published on the Response Topic (QoS 1)."""
+def make_status_event(
+    request_id: str,
+    task_id: str,
+    state: str,
+    message: str = "",
+    artifact_text: str = "",
+) -> str:
+    """Build a TaskStatusUpdateEvent JSON-RPC response (A2A streaming reply).
 
-    task_id: str
-    state: str  # "completed", "failed", "cancelled"
-    result: str = ""
-    timestamp: float = field(default_factory=time.time)
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "task_id": self.task_id,
-                "state": self.state,
-                "result": self.result,
-                "timestamp": self.timestamp,
-            }
-        )
-
-    @classmethod
-    def from_json(cls, data: str) -> "TaskStatusUpdate":
-        d = json.loads(data)
-        return cls(
-            task_id=d["task_id"],
-            state=d["state"],
-            result=d.get("result", ""),
-            timestamp=d.get("timestamp", time.time()),
-        )
-
-
-@dataclass
-class StreamItem:
-    """A single streaming item published to the Response Topic (QoS 0)."""
-
-    task_id: str
-    seq: int
-    type: str  # "text", "tool_use", "tool_result", "thinking", "error"
-    content: str
-    timestamp: float = field(default_factory=time.time)
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "task_id": self.task_id,
-                "seq": self.seq,
-                "type": self.type,
-                "content": self.content,
-                "timestamp": self.timestamp,
-            }
-        )
-
-    @classmethod
-    def from_json(cls, data: str) -> "StreamItem":
-        d = json.loads(data)
-        return cls(
-            task_id=d["task_id"],
-            seq=d["seq"],
-            type=d["type"],
-            content=d["content"],
-            timestamp=d.get("timestamp", time.time()),
-        )
-
-
-# --- Core messaging types (kept from pre-A2A) ---
-
-
-@dataclass
-class InboundMessage:
-    text: str
-    sender: str
-    session_id: str
-    timestamp: float = field(default_factory=time.time)
-    workflow_id: str = ""
-    workflow_vars: dict[str, str] = field(default_factory=dict)
-    agent_id: str = ""
-
-    def to_json(self) -> str:
-        d: dict = {
-            "text": self.text,
-            "sender": self.sender,
-            "session_id": self.session_id,
-            "timestamp": self.timestamp,
+    Used for both streaming updates (state="working") and terminal results
+    (state="completed"/"failed"/"cancelled").
+    """
+    status: dict = {"state": state}
+    if message:
+        status["message"] = message
+    result: dict = {
+        "type": "TaskStatusUpdateEvent",
+        "taskId": task_id,
+        "status": status,
+    }
+    if artifact_text:
+        result["artifact"] = {
+            "parts": [{"type": "text", "text": artifact_text}],
         }
-        if self.workflow_id:
-            d["workflow_id"] = self.workflow_id
-        if self.workflow_vars:
-            d["workflow_vars"] = self.workflow_vars
-        if self.agent_id:
-            d["agent_id"] = self.agent_id
-        return json.dumps(d)
+    return json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+
+def parse_status_event(data: dict) -> tuple[str, str, str, str]:
+    """Parse a TaskStatusUpdateEvent. Returns (task_id, state, message, artifact_text)."""
+    result = data.get("result", {})
+    task_id = result.get("taskId", "")
+    status = result.get("status", {})
+    state = status.get("state", "")
+    message = status.get("message", "")
+    artifact = result.get("artifact", {})
+    parts = artifact.get("parts", [])
+    artifact_text = parts[0].get("text", "") if parts else ""
+    return task_id, state, message, artifact_text
+
+
+# --- Core messaging types ---
+
+
+@dataclass
+class A2ARequest:
+    """JSON-RPC 2.0 request for A2A tasks/send."""
+
+    text: str
+    session_id: str
+    sender: str = ""
+    variables: dict[str, str] = field(default_factory=dict)
+
+    def to_json(self) -> str:
+        metadata: dict = {}
+        if self.sender:
+            metadata["sender"] = self.sender
+        if self.variables:
+            metadata["variables"] = self.variables
+        params: dict = {
+            "message": {
+                "role": "user",
+                "parts": [{"type": "text", "text": self.text}],
+            },
+        }
+        if metadata:
+            params["metadata"] = metadata
+        return json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": self.session_id,
+                "method": "tasks/send",
+                "params": params,
+            }
+        )
 
     @classmethod
-    def from_json(cls, data: str) -> "InboundMessage":
+    def from_json(cls, data: str) -> "A2ARequest":
         d = json.loads(data)
+        params = d.get("params", {})
+        message = params.get("message", {})
+        metadata = params.get("metadata", {})
+        # Extract text from A2A message parts
+        parts = message.get("parts", [])
+        text = parts[0].get("text", "") if parts else ""
         return cls(
-            text=d["text"],
-            sender=d["sender"],
-            session_id=d["session_id"],
-            timestamp=d.get("timestamp", time.time()),
-            workflow_id=d.get("workflow_id", ""),
-            workflow_vars=d.get("workflow_vars", {}),
-            agent_id=d.get("agent_id", ""),
+            text=text,
+            session_id=d.get("id", f"req-{time.time_ns()}"),
+            sender=metadata.get("sender", ""),
+            variables=metadata.get("variables", {}),
         )
 
 

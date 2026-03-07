@@ -13,7 +13,7 @@ import sys
 
 import aiomqtt
 
-from skitter.config import AGENT_HOMES_DIR, WORKSPACES_DIR
+from skitter.config import WORKSPACES_DIR
 from skitter.mqtt import (
     MQTT_HOST,
     MQTT_PORT,
@@ -40,35 +40,6 @@ logging.basicConfig(
 log = logging.getLogger("skitter.worker")
 
 
-def resolve_agent_home(agent_id: str) -> str:
-    """Return the agent's home directory path."""
-    home = AGENT_HOMES_DIR / agent_id
-    home.mkdir(parents=True, exist_ok=True)
-    return str(home)
-
-
-def build_system_prompt(task: AgentMessage) -> str:
-    """Build system prompt from soul + skills + context + budget."""
-    parts = []
-    if task.soul:
-        parts.append(f"# Identity\n{task.soul}")
-    if task.skills:
-        parts.append(f"# Skills & Constraints\n{task.skills}")
-    if task.context:
-        parts.append(f"# Context from upstream tasks\n{task.context}")
-    if task.max_turns > 0:
-        parts.append(
-            f"# Resource Budget\n"
-            f"You have {task.max_turns} tool-use turns. "
-            f"After that, your execution stops immediately.\n\n"
-            f"Plan accordingly:\n"
-            f"- Do NOT spend all turns on gathering — reserve time to write up findings.\n"
-            f"- Your FINAL text output IS your deliverable. Tool results alone are not visible to reviewers.\n"
-            f"- When ~2 turns remain, stop gathering and write a comprehensive summary of everything you found."
-        )
-    return "\n\n".join(parts)
-
-
 async def run_agent(
     task: AgentMessage,
     workspace: str,
@@ -77,22 +48,25 @@ async def run_agent(
 ) -> tuple[str, dict | None, float | None]:
     """Run any agent runtime as a subprocess, parse JSONL stdout."""
     if task.runtime == "codex":
-        # Build prompt from soul + skills + context + description
+        # Codex CLI — personality lives in ~/.codex/ role config
         prompt_parts = []
-        if task.soul:
-            prompt_parts.append(task.soul)
-        if task.skills:
-            prompt_parts.append(task.skills)
         if task.context:
             prompt_parts.append(f"Context:\n{task.context}")
         prompt_parts.append(task.description)
         prompt = "\n\n".join(prompt_parts)
 
-        cmd = ["codex", "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt]
+        cmd = [
+            "codex",
+            "exec",
+            "--json",
+            "--full-auto",
+            "--skip-git-repo-check",
+            prompt,
+        ]
         if task.model:
             cmd.extend(["--model", task.model])
     else:
-        # Claude CLI
+        # Claude CLI — personality lives in ~/.claude/agents/<agent>.md
         cmd = [
             "claude",
             "-p",
@@ -100,18 +74,19 @@ async def run_agent(
             "--output-format",
             "stream-json",
             "--verbose",
-            "--max-turns",
-            str(task.max_turns),
             "--dangerously-skip-permissions",
         ]
+        if task.agent:
+            cmd.extend(["--agent", task.agent])
         if task.model:
             cmd.extend(["--model", task.model])
-        if task.max_turns == 0:
-            cmd.extend(["--allowedTools", ""])
-
-        system_prompt = build_system_prompt(task)
-        if system_prompt:
-            cmd.extend(["--append-system-prompt", system_prompt])
+        if task.context:
+            cmd.extend(
+                [
+                    "--append-system-prompt",
+                    f"# Context from upstream tasks\n{task.context}",
+                ]
+            )
 
     # Filter CLAUDECODE to allow nested claude sessions
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -320,7 +295,6 @@ async def publish_terminal_result(
         )
 
 
-
 async def run(agent: str, session_id: str, task_id: str) -> None:
     log.info("[worker:%s:%s] Starting", agent, task_id)
 
@@ -383,44 +357,33 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
             context = await wait_for_needs(client, session, task_name)
 
         # 3. Build AgentMessage from pre-materialized spec + context
-        spec_with_context = {**my_spec, "context": context}
         task_msg = AgentMessage(
-            task_id=spec_with_context["task_id"],
-            session_id=spec_with_context["session_id"],
-            description=spec_with_context["description"],
-            soul=spec_with_context.get("soul", ""),
-            skills=spec_with_context.get("skills", ""),
-            context=spec_with_context.get("context", ""),
-            max_turns=spec_with_context.get("max_turns", 10),
-            model=spec_with_context.get("model", ""),
-            runtime=spec_with_context.get("runtime", "claude"),
-            next=spec_with_context.get("next", ""),
-            caller_reply_topic=spec_with_context.get("caller_reply_topic", ""),
-            caller_correlation=spec_with_context.get("caller_correlation", ""),
+            task_id=my_spec["task_id"],
+            session_id=my_spec["session_id"],
+            description=my_spec["description"],
+            agent=my_spec.get("agent", ""),
+            context=context,
+            model=my_spec.get("model", ""),
+            runtime=my_spec.get("runtime", "claude"),
+            next=my_spec.get("next", ""),
+            caller_reply_topic=my_spec.get("caller_reply_topic", ""),
+            caller_correlation=my_spec.get("caller_correlation", ""),
         )
 
         await publish_task_status(client, session_id, task_id, "running")
 
         log.info(
-            "[worker:%s:%s] Processing (runtime=%s, model=%s, max_turns=%d): %.80s",
+            "[worker:%s:%s] Processing (runtime=%s, model=%s): %.80s",
             agent,
             task_id,
             task_msg.runtime,
             task_msg.model or "default",
-            task_msg.max_turns,
             task_msg.description,
         )
 
         # 4. Resolve workspace
         workspace = WORKSPACES_DIR / task_id
         workspace.mkdir(parents=True, exist_ok=True)
-
-        # Per-agent HOME (only used in docker mode to isolate agent configs)
-        # In subprocess mode, keep the real HOME so claude CLI finds OAuth creds
-        worker_mode = os.environ.get("SKITTER_WORKER_MODE", "subprocess")
-        if worker_mode == "docker":
-            agent_home = resolve_agent_home(agent)
-            os.environ["HOME"] = agent_home
 
         # Streaming target
         stream_topic = task_msg.caller_reply_topic
@@ -471,8 +434,7 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
                     "[worker:%s:%s] Cancel listener error: %s", agent, task_id, e
                 )
 
-        if task_msg.max_turns != 0:
-            listener_task = asyncio.create_task(cancel_listener())
+        listener_task = asyncio.create_task(cancel_listener())
 
         # 5. Run agent
         usage: dict | None = None

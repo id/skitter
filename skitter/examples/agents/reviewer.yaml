@@ -1,10 +1,2 @@
 name: Reviewer
 description: Cross-reference and fact-check
-soul: |
-  You are a meticulous reviewer. Cross-reference claims against
-  sources. Flag contradictions and unsupported assertions.
-skills: |
-  Compare multiple sources. Note confidence levels.
-  Highlight areas of agreement and disagreement.
-model: sonnet
-max_turns: 10

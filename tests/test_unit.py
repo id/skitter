@@ -38,10 +38,8 @@ class TestAgentMessage:
             task_id="t1",
             session_id="c1",
             description="do stuff",
-            soul="be good",
-            skills="search",
+            agent="researcher",
             context="prior result",
-            max_turns=5,
             model="sonnet",
             runtime="claude",
             next="step2",
@@ -52,6 +50,7 @@ class TestAgentMessage:
         json_str = msg.to_json()
         restored = AgentMessage.from_json(json_str)
         assert restored.task_id == "t1"
+        assert restored.agent == "researcher"
         assert restored.runtime == "claude"
         assert restored.next == "step2"
         assert restored.next_needs == ["step1a", "step1b"]
@@ -65,11 +64,10 @@ class TestAgentMessage:
                     "task_id": "t",
                     "session_id": "c",
                     "description": "d",
-                    "soul": "",
-                    "skills": "",
                 }
             )
         )
+        assert msg.agent == ""
         assert msg.runtime == "claude"
         assert msg.next == ""
         assert msg.next_needs == []
@@ -159,25 +157,19 @@ class TestCreateSession:
             "researcher": AgentDef(
                 id="researcher",
                 name="Researcher",
-                soul="research soul",
-                skills="search",
-                model="sonnet",
-                max_turns=15,
+                runtime="claude",
             ),
             "writer": AgentDef(
                 id="writer",
                 name="Writer",
-                soul="writer soul",
-                model="haiku",
+                runtime="claude",
             ),
             "codex_agent": AgentDef(
                 id="codex_agent",
                 name="Codex Agent",
                 runtime="codex",
-                model="gpt-5-nano",
             ),
         }
-        self.models = {"haiku": "fast", "sonnet": "balanced", "opus": "best"}
         self.workflow = WorkflowDef(
             id="test",
             name="Test Workflow",
@@ -213,7 +205,6 @@ class TestCreateSession:
             "test",
             workflow=self.workflow,
             variables={"topic": "AI"},
-            models=self.models,
             agents=self.agents,
         )
         assert "research" in session.tasks
@@ -229,34 +220,9 @@ class TestCreateSession:
             agent_id="researcher",
             text="test",
             agents=self.agents,
-            models=self.models,
         )
         assert "researcher" in session.tasks
         assert session.tasks["researcher"].next == "output"
-
-    def test_codex_agent_model(self):
-        """Agent's model is preserved even if not in the models dict."""
-        session = create_session(
-            "c1",
-            "code this",
-            agent_id="codex_agent",
-            text="code this",
-            agents=self.agents,
-            models=self.models,
-        )
-        assert session.tasks["codex_agent"].model == "gpt-5-nano"
-
-    def test_codex_agent_model_when_known(self):
-        models_with_codex = {**self.models, "gpt-5-nano": "codex model"}
-        session = create_session(
-            "c1",
-            "code this",
-            agent_id="codex_agent",
-            text="code this",
-            agents=self.agents,
-            models=models_with_codex,
-        )
-        assert session.tasks["codex_agent"].model == "gpt-5-nano"
 
     def test_variable_interpolation(self):
         session = create_session(
@@ -264,7 +230,6 @@ class TestCreateSession:
             "test",
             workflow=self.workflow,
             variables={"topic": "quantum"},
-            models=self.models,
             agents=self.agents,
         )
         assert "quantum" in session.tasks["research"].description
@@ -332,10 +297,7 @@ class TestBuildDispatchSpec:
             "researcher": AgentDef(
                 id="researcher",
                 name="R",
-                soul="be smart",
-                skills="search",
-                model="sonnet",
-                max_turns=15,
+                runtime="claude",
             ),
         }
         session = Session(session_id="s1", label="test")
@@ -350,49 +312,32 @@ class TestBuildDispatchSpec:
         session.caller_reply_topic = "reply/t"
         session.caller_correlation = "corr"
 
-        spec = build_dispatch_spec(session, "research", agents, {})
-        assert spec["soul"] == "be smart"
-        assert spec["skills"] == "search"
-        assert spec["max_turns"] == 15
+        spec = build_dispatch_spec(session, "research", agents)
+        assert spec["agent"] == "researcher"
         assert spec["runtime"] == "claude"
+        assert spec["model"] == "sonnet"
         assert spec["caller_reply_topic"] == "reply/t"
 
-    def test_workflow_task_overrides(self):
+    def test_codex_runtime(self):
         agents = {
-            "researcher": AgentDef(
-                id="researcher",
-                name="R",
-                soul="default soul",
-                max_turns=10,
+            "coder": AgentDef(
+                id="coder",
+                name="C",
+                runtime="codex",
             ),
         }
-        workflows = {
-            "test": WorkflowDef(
-                id="test",
-                name="Test",
-                tasks=[
-                    WorkflowTask(
-                        id="step1",
-                        agent="researcher",
-                        description="d",
-                        soul="override soul",
-                        max_turns=5,
-                    ),
-                ],
-            ),
-        }
-        session = Session(session_id="s1", label="test", workflow_id="test")
-        session.tasks["step1"] = SessionTask(
-            id="step1",
+        session = Session(session_id="s1", label="test")
+        session.tasks["code"] = SessionTask(
+            id="code",
             task_id="t1",
-            agent="researcher",
-            description="d",
-            model="haiku",
+            agent="coder",
+            description="write code",
+            next="output",
         )
 
-        spec = build_dispatch_spec(session, "step1", agents, workflows)
-        assert spec["soul"] == "override soul"
-        assert spec["max_turns"] == 5
+        spec = build_dispatch_spec(session, "code", agents)
+        assert spec["runtime"] == "codex"
+        assert spec["agent"] == "coder"
 
 
 # --- Workflow loading: auto-infer next ---
@@ -456,8 +401,6 @@ class TestCodexDispatch:
             task_id="t1",
             session_id="c1",
             description="code something",
-            soul="",
-            skills="",
             model="gpt-5-nano",
             runtime="codex",
         )
@@ -481,8 +424,7 @@ class TestCodexDispatch:
             task_id="t1",
             session_id="c1",
             description="do something",
-            soul="",
-            skills="",
+            agent="researcher",
             runtime="claude",
         )
 

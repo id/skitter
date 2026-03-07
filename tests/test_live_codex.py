@@ -65,8 +65,6 @@ AGENTS = {
         id="test_codex",
         name="Test Codex Agent",
         description="Minimal codex test agent",
-        model=CODEX_MODEL,
-        max_turns=0,
         runtime="codex",
     ),
 }
@@ -83,6 +81,7 @@ WORKFLOW = WorkflowDef(
             description="In one sentence, name one fact about '{topic}'.",
             next="synthesize",
             needs=[],
+            model=CODEX_MODEL,
         ),
         WorkflowTask(
             id="research_b",
@@ -90,6 +89,7 @@ WORKFLOW = WorkflowDef(
             description="In one sentence, name a different fact about '{topic}'.",
             next="synthesize",
             needs=[],
+            model=CODEX_MODEL,
         ),
         WorkflowTask(
             id="synthesize",
@@ -97,6 +97,7 @@ WORKFLOW = WorkflowDef(
             description="Combine the facts about '{topic}' into a single sentence.",
             next="output",
             needs=["research_a", "research_b"],
+            model=CODEX_MODEL,
         ),
     ],
 )

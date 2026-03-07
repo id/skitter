@@ -68,8 +68,6 @@ AGENTS = {
         id="test_claude",
         name="Test Claude Agent",
         description="Minimal test agent",
-        model=CLAUDE_MODEL,
-        max_turns=0,
         runtime="claude",
     ),
 }
@@ -86,6 +84,7 @@ WORKFLOW = WorkflowDef(
             description="In one sentence, name one fact about '{topic}'.",
             next="synthesize",
             needs=[],
+            model=CLAUDE_MODEL,
         ),
         WorkflowTask(
             id="research_b",
@@ -93,6 +92,7 @@ WORKFLOW = WorkflowDef(
             description="In one sentence, name a different fact about '{topic}'.",
             next="synthesize",
             needs=[],
+            model=CLAUDE_MODEL,
         ),
         WorkflowTask(
             id="synthesize",
@@ -100,6 +100,7 @@ WORKFLOW = WorkflowDef(
             description="Combine the facts about '{topic}' into a single sentence.",
             next="output",
             needs=["research_a", "research_b"],
+            model=CLAUDE_MODEL,
         ),
     ],
 )

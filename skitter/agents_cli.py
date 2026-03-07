@@ -34,14 +34,12 @@ def cmd_list() -> None:
     table = Table(title="Predefined Agents")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
-    table.add_column("Model", style="green")
-    table.add_column("Max Turns", justify="right")
+    table.add_column("Runtime", style="green")
     for agent_id, agent in agents.items():
         table.add_row(
             agent_id,
             agent.name,
-            agent.model or "(default)",
-            str(agent.max_turns),
+            agent.runtime,
         )
     console.print(table)
 
@@ -57,16 +55,34 @@ def cmd_show(agent_id: str) -> None:
     data = {
         "name": agent.name,
         "description": agent.description,
-        "soul": agent.soul,
-        "skills": agent.skills,
-        "model": agent.model,
-        "max_turns": agent.max_turns,
         "runtime": agent.runtime,
         "workspace": agent.workspace,
     }
-    # Remove empty fields for cleaner output
     data = {k: v for k, v in data.items() if v}
     console.print(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+    # Show native sub-agent definition
+    from pathlib import Path
+
+    runtime = agent.runtime or "claude"
+    if runtime == "claude":
+        agent_file = Path.home() / ".claude" / "agents" / f"{agent_id}.md"
+        if agent_file.is_file():
+            console.print(f"[dim]{agent_file}[/dim]")
+            console.print(agent_file.read_text())
+        else:
+            console.print(
+                f"[yellow]No Claude sub-agent definition at {agent_file}[/yellow]"
+            )
+    elif runtime == "codex":
+        agent_file = Path.home() / ".codex" / "agents" / f"{agent_id}.toml"
+        if agent_file.is_file():
+            console.print(f"[dim]{agent_file}[/dim]")
+            console.print(agent_file.read_text())
+        else:
+            console.print(
+                f"[yellow]No Codex sub-agent definition at {agent_file}[/yellow]"
+            )
 
 
 def cmd_run(agent_id: str, description: str) -> None:

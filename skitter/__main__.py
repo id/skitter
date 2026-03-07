@@ -26,6 +26,10 @@ def dispatch() -> None:
         from skitter.workflow_cli import main
 
         main()
+    elif subcmd == "docker":
+        from skitter.docker_cli import main
+
+        main()
     elif subcmd == "init":
         from skitter.config import write_examples
 

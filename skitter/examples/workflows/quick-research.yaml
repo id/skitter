@@ -7,27 +7,23 @@ tasks:
     agent: researcher
     description: "Research '{topic}' using web sources."
     model: haiku
-    max_turns: 5
     next: fact_check
     needs: []
   - id: research_academic
     agent: researcher
     description: "Research '{topic}' focusing on academic papers and technical docs."
     model: haiku
-    max_turns: 5
     next: fact_check
     needs: []
   - id: fact_check
     agent: reviewer
     description: "Cross-reference findings about '{topic}'. Flag contradictions."
     model: haiku
-    max_turns: 3
     next: synthesize
     needs: [research_web, research_academic]
   - id: synthesize
     agent: writer
     description: "Combine all research findings about '{topic}' into a clear, coherent response."
     model: haiku
-    max_turns: 3
     next: output
     needs: [fact_check]

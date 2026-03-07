@@ -1,6 +1,6 @@
 # Skitter
 
-~2,600 lines of Python. MQTT-based personal AI assistant. A stateless gateway creates sessions and spawns all workers upfront; self-coordinating workers read their session spec from retained MQTT, wait for upstream results, invoke `claude` or `codex` CLI as subprocesses, and publish results.
+~1,700 lines of Python. MQTT-based personal AI assistant. A stateless gateway creates sessions and spawns all workers upfront; self-coordinating workers read their session spec from retained MQTT, wait for upstream results, invoke `claude` or `codex` CLI as subprocesses, and publish results. Agent identity (personality, model, tools, memory) is delegated to native CLI sub-agent systems (`~/.claude/agents/*.md` and `~/.codex/agents/*.toml`).
 
 Key files: `skitter/gateway.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `docs/architecture.md`.
 
@@ -38,10 +38,12 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 - **MQTT as backbone** — retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
 - **Crash recovery** — workers set MQTT LWT (Last Will and Testament). Gateway listens for dead events and respawns crashed workers. Retained session and chain results persist across crashes.
 - **QA is a workflow concern** — gateway has no built-in QA logic. Add reviewer/fact-checker nodes to your workflow YAML with dependencies on work tasks.
-- **Predefined agents** — YAML definitions in `~/.skitter/agents/`. Workflow tasks reference agents by ID; gateway resolves defaults. Supports `runtime: claude|codex` and custom `workspace`.
+- **Native sub-agents** — agent identity (personality, model, tools, memory, MCP servers) is owned by native CLI sub-agent systems, not skitter. Claude agents: `~/.claude/agents/<name>.md` (YAML frontmatter + markdown prompt). Codex agents: `~/.codex/agents/<name>.toml`. Skitter invokes agents via `claude --agent <name>` or codex role dispatch.
+- **Slim agent YAML** — `~/.skitter/agents/*.yaml` contains only orchestration metadata: `name`, `description`, `runtime`, `workspace`. No personality, model, or tool config. The YAML filename stem must match the native sub-agent name.
+- **Default runtime** — `~/.skitter/config.yaml` sets `default_runtime: claude|codex`. Agents without explicit `runtime` in their YAML use this default.
 - **Default agent** — the `skitter` agent is the default. CLI queries without `/agent` or `/workflow` prefix route to it. It serves as both a general-purpose assistant and a configuration manager for agents/workflows.
-- **Workflow templates** — YAML chains in `~/.skitter/workflows/`. Tasks have `id`, `next`, `needs` fields. Variables interpolated with `SafeFormatter`. Workflows are discoverable via retained MQTT discovery messages.
-- **Multi-runtime workers** — `claude` (Claude CLI, default) or `codex` (OpenAI Codex CLI, authenticated via `codex login` or `OPENAI_API_KEY`). Both invoked as subprocesses with JSONL stdout parsing.
+- **Workflow templates** — YAML chains in `~/.skitter/workflows/`. Tasks have `id`, `next`, `needs` fields. Variables interpolated with `SafeFormatter`. Workflows support per-task `model` overrides (passed as CLI flag, overriding the sub-agent's default). Workflows are discoverable via retained MQTT discovery messages.
+- **Multi-runtime workers** — `claude` (Claude CLI, default) or `codex` (OpenAI Codex CLI, authenticated via `codex login` or `OPENAI_API_KEY`). Both invoked as subprocesses with JSONL stdout parsing. Context from upstream tasks injected via `--append-system-prompt`.
 - **Workers are subprocesses or Docker containers** — controlled by `SKITTER_SPAWN_MODE` env var. Docker mode passes both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`.
 - **Completed sessions persist** — sessions remain as retained MQTT messages after all tasks finish, with the terminal task's result published to the caller and to the per-task status topic. The dashboard renders results as markdown with copy/download options.
 
@@ -53,7 +55,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 - `skitter/storage.py` — Config loading backends: filesystem (default), delegates to `config.py`. Abstraction point for future R2/cloud storage.
 - `skitter/respawn.py` — Handles LWT dead events by respawning crashed workers.
 - `skitter/mqtt.py` — MQTT connection settings, topic builders, and MQTTv5 property helpers.
-- `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`WorkflowDef`/`WorkflowTask` dataclasses, `SafeFormatter`, `write_examples()` for `skitter init`.
+- `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`WorkflowDef`/`WorkflowTask` dataclasses, `SafeFormatter`, `load_default_runtime()`, `write_examples()` for `skitter init` (creates both `~/.skitter/agents/*.yaml` and `~/.claude/agents/*.md`).
 - `skitter/agents_cli.py` — `skitter agents list/show/run` subcommands.
 - `skitter/workflow_cli.py` — `skitter workflow list/show/run` subcommands.
 - `skitter/__main__.py` — CLI dispatch. `skitter run "prompt"` and `skitter "prompt"` route to the default `skitter` agent.
@@ -65,7 +67,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 - No auth/TLS (localhost-only PoC)
 - Workers run with `dangerouslySkipPermissions`
 - Worker errors passed as normal results
-- No conversation memory across sessions
+- Per-agent memory via Claude Code's `memory: user` (persistent across sessions, not cross-agent)
 - Sessions not persisted to disk (only MQTT retained messages)
 
 ## Roadmap
@@ -222,14 +224,14 @@ Python library. 100+ LLM providers. 37k+ GitHub stars. MIT license.
 | Language | Python | TypeScript | TypeScript | Python | Rust | Zig |
 | LOC | ~1,000 | ~500,000 | ~5,000 | ~4,000 | N/A | ~110 files |
 | Coordination | MQTT broker | WebSocket Gateway | Single process | Single process | N/A | Single binary |
-| Agent runtime | claude-agent-sdk | pi-mono embedded | Claude Agent SDK | Custom async | Trait-based | vtable-based |
-| Multi-provider | No (Claude only) | Yes (via pi-ai) | No (Claude only) | Yes (22+) | Yes (pluggable) | Yes (22+) |
+| Agent runtime | Native CLI sub-agents | pi-mono embedded | Claude Agent SDK | Custom async | Trait-based | vtable-based |
+| Multi-provider | Claude + Codex | Yes (via pi-ai) | No (Claude only) | Yes (22+) | Yes (pluggable) | Yes (22+) |
 | Multi-channel | Any MQTT client | 10+ built-in | 5 built-in | 10+ built-in | Pluggable | 18 built-in |
 | DAG orchestration | Yes | No | No | No | No | No |
 | Crash recovery | Yes (MQTT retained + LWT) | Session persistence | Container restart | No | No | No |
 | Parallel execution | Yes (DAG fan-out) | No (single agent) | Agent swarms | No | No | No |
 | QA feedback loop | Yes | No | No | No | No | No |
-| Memory | Planned | SQLite + vector | Per-group CLAUDE.md | Custom | N/A | SQLite FTS5 + vector |
+| Memory | Per-agent (Claude native) | SQLite + vector | Per-group CLAUDE.md | Custom | N/A | SQLite FTS5 + vector |
 | Edge deployment | No | No | No | No | Yes (<5MB RAM) | Yes (678KB binary) |
 
 **Skitter's unique position:** Only project with broker-mediated DAG orchestration and crash recovery. The MQTT architecture is genuinely differentiated — no other project in this space uses a message broker as the coordination backbone. The trade-off is that skitter is currently Claude-only and has no channel integrations (by design — bridges are ~100-line scripts).

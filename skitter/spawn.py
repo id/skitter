@@ -10,6 +10,7 @@ log = logging.getLogger("skitter.spawn")
 SPAWN_MODE = os.environ.get("SKITTER_SPAWN_MODE", "subprocess")
 WORKER_IMAGE = os.environ.get("SKITTER_WORKER_IMAGE", "skitter-worker:latest")
 DOCKER_NETWORK = os.environ.get("SKITTER_DOCKER_NETWORK", "skitter")
+DOCKER_USER_HOME = "/home/skitter"
 
 
 def spawn_worker(agent: str, session_id: str, task_id: str) -> None:
@@ -38,6 +39,15 @@ def _spawn_docker(agent: str, session_id: str, task_id: str) -> None:
         val = os.environ.get(key, "")
         if val:
             env_args.extend(["-e", f"{key}={val}"])
+
+    # Mount docker-claude dir (OAuth credentials + agent definitions + memory)
+    # Created by `skitter docker login` + `skitter docker sync`
+    from skitter.config import DOCKER_CLAUDE_DIR
+
+    volume_args: list[str] = []
+    if DOCKER_CLAUDE_DIR.is_dir():
+        volume_args.extend(["-v", f"{DOCKER_CLAUDE_DIR}:{DOCKER_USER_HOME}/.claude:ro"])
+
     subprocess.Popen(
         [
             "docker",
@@ -46,6 +56,7 @@ def _spawn_docker(agent: str, session_id: str, task_id: str) -> None:
             "--network",
             DOCKER_NETWORK,
             *env_args,
+            *volume_args,
             WORKER_IMAGE,
             agent,
             session_id,

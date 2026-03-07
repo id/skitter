@@ -13,9 +13,6 @@ class AgentCard:
     agent_id: str
     name: str
     description: str = ""
-    capabilities: list[str] = field(default_factory=list)
-    model: str = ""
-    max_turns: int = 10
 
     def to_json(self) -> str:
         return json.dumps(
@@ -23,9 +20,6 @@ class AgentCard:
                 "agent_id": self.agent_id,
                 "name": self.name,
                 "description": self.description,
-                "capabilities": self.capabilities,
-                "model": self.model,
-                "max_turns": self.max_turns,
             }
         )
 
@@ -36,9 +30,6 @@ class AgentCard:
             agent_id=d["agent_id"],
             name=d["name"],
             description=d.get("description", ""),
-            capabilities=d.get("capabilities", []),
-            model=d.get("model", ""),
-            max_turns=d.get("max_turns", 10),
         )
 
 
@@ -192,10 +183,8 @@ class AgentMessage:
     task_id: str
     session_id: str
     description: str
-    soul: str
-    skills: str
+    agent: str = ""
     context: str = ""
-    max_turns: int = 10
     model: str = ""
     runtime: str = "claude"
     next: str = ""
@@ -210,10 +199,8 @@ class AgentMessage:
                 "task_id": self.task_id,
                 "session_id": self.session_id,
                 "description": self.description,
-                "soul": self.soul,
-                "skills": self.skills,
+                "agent": self.agent,
                 "context": self.context,
-                "max_turns": self.max_turns,
                 "model": self.model,
                 "runtime": self.runtime,
                 "next": self.next,
@@ -231,10 +218,8 @@ class AgentMessage:
             task_id=d["task_id"],
             session_id=d["session_id"],
             description=d["description"],
-            soul=d["soul"],
-            skills=d["skills"],
+            agent=d.get("agent", ""),
             context=d.get("context", ""),
-            max_turns=d.get("max_turns", 10),
             model=d.get("model", ""),
             runtime=d.get("runtime", "claude"),
             next=d.get("next", ""),

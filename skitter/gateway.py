@@ -7,7 +7,6 @@ In serverless mode, triggered by EMQX webhook (Phase 2).
 import asyncio
 import json
 import logging
-import os
 import uuid
 
 import aiomqtt
@@ -46,56 +45,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("skitter.gateway")
 
-DEFAULT_MODELS = "haiku:Fast and cheap|sonnet:Balanced|opus:Most capable"
-
-
-def _load_models() -> dict[str, str]:
-    raw = os.environ.get("SKITTER_MODELS", DEFAULT_MODELS)
-    return {
-        name.strip(): desc.strip()
-        for entry in raw.split("|")
-        if ":" in entry
-        for name, desc in [entry.split(":", 1)]
-    }
-
 
 def build_dispatch_spec(
     session: Session,
     task_name: str,
     agents: dict[str, AgentDef],
-    workflows: dict[str, WorkflowDef],
 ) -> dict:
-    """Pre-materialize a task's full dispatch spec (AgentMessage fields as dict)."""
+    """Pre-materialize a task's dispatch spec (AgentMessage fields as dict)."""
     st = session.tasks[task_name]
     agent_def = agents.get(st.agent)
-
-    # Resolve workflow task overrides
-    pt = None
-    if session.workflow_id:
-        workflow = workflows.get(session.workflow_id)
-        if workflow:
-            pt = next((t for t in workflow.tasks if t.id == task_name), None)
-
-    soul = (pt.soul if pt and pt.soul else agent_def.soul if agent_def else "") or ""
-    skills = (
-        pt.skills if pt and pt.skills else agent_def.skills if agent_def else ""
-    ) or ""
-    max_turns = (
-        pt.max_turns
-        if pt and pt.max_turns
-        else agent_def.max_turns
-        if agent_def
-        else 10
-    )
     runtime = (agent_def.runtime if agent_def else "claude") or "claude"
 
     return {
         "task_id": st.task_id,
         "session_id": session.session_id,
         "description": st.description,
-        "soul": soul,
-        "skills": skills,
-        "max_turns": max_turns,
+        "agent": st.agent,
         "model": st.model,
         "runtime": runtime,
         "next": st.next,
@@ -111,14 +76,11 @@ def create_session(
     variables: dict[str, str] | None = None,
     agent_id: str = "",
     text: str = "",
-    models: dict[str, str] | None = None,
     agents: dict[str, AgentDef] | None = None,
 ) -> Session:
     """Create a Session with SessionTasks."""
-    models = models or {}
     agents = agents or {}
     variables = variables or {}
-    default_model = list(models.keys())[0] if models else ""
 
     session = Session(
         session_id=session_id,
@@ -131,30 +93,25 @@ def create_session(
     if workflow:
         for pt in workflow.tasks:
             task_id = uuid.uuid4().hex[:12]
-            agent_def = agents.get(pt.agent)
             description = safe_format(pt.description, variables)
-            model = pt.model or (agent_def.model if agent_def else default_model)
 
             session.tasks[pt.id] = SessionTask(
                 id=pt.id,
                 task_id=task_id,
                 agent=pt.agent,
                 description=description,
-                model=model,
+                model=pt.model,
                 next=pt.next,
                 needs=list(pt.needs),
             )
     else:
         task_id = uuid.uuid4().hex[:12]
-        agent_def = agents.get(agent_id)
-        model = agent_def.model if agent_def else default_model
 
         session.tasks[agent_id] = SessionTask(
             id=agent_id,
             task_id=task_id,
             agent=agent_id,
             description=text,
-            model=model,
             next="output",
         )
 
@@ -189,8 +146,6 @@ async def handle_request(
             agent_id=data.get("agent_id", ""),
         )
 
-    models = _load_models()
-
     if msg.agent_id:
         if msg.agent_id not in agents:
             await _send_error(
@@ -206,7 +161,6 @@ async def handle_request(
             agent_id=msg.agent_id,
             text=msg.text,
             agents=agents,
-            models=models,
         )
     elif msg.workflow_id:
         workflow = workflows.get(msg.workflow_id)
@@ -223,7 +177,6 @@ async def handle_request(
             msg.text,
             workflow=workflow,
             variables=msg.workflow_vars,
-            models=models,
             agents=agents,
         )
     else:
@@ -244,7 +197,6 @@ async def handle_request(
             agent_id=msg.agent_id,
             text=msg.text,
             agents=agents,
-            models=models,
         )
 
     session.caller_reply_topic = caller_reply_topic
@@ -253,7 +205,7 @@ async def handle_request(
     # Pre-materialize dispatch specs for every task
     for task_name in session.tasks:
         session.task_dispatches[task_name] = build_dispatch_spec(
-            session, task_name, agents, workflows
+            session, task_name, agents
         )
 
     # Publish session as retained

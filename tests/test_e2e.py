@@ -78,15 +78,11 @@ class TestGetEntryTasks:
 class TestCreateSessionFromWorkflow:
     """Verify workflow building with variable interpolation and agent defaults."""
 
-    MODELS = {"haiku": "fast", "sonnet": "balanced"}
     AGENTS = {
         "researcher": AgentDef(
             id="researcher",
             name="Research Specialist",
-            soul="Be thorough.",
-            skills="Cite sources.",
-            model="sonnet",
-            max_turns=15,
+            runtime="claude",
         ),
     }
 
@@ -109,32 +105,11 @@ class TestCreateSessionFromWorkflow:
             "test",
             workflow=workflow,
             variables={"topic": "MQTT"},
-            models=self.MODELS,
             agents=self.AGENTS,
         )
         assert session.tasks["r1"].description == "Research 'MQTT' in depth."
 
-    def test_agent_defaults_applied(self):
-        workflow = WorkflowDef(
-            id="test",
-            name="Test",
-            tasks=[
-                WorkflowTask(
-                    id="r1", agent="researcher", description="Go", next="output"
-                ),
-            ],
-        )
-        session = create_session(
-            "c1",
-            "test",
-            workflow=workflow,
-            models=self.MODELS,
-            agents=self.AGENTS,
-        )
-        t = session.tasks["r1"]
-        assert t.model == "sonnet"
-
-    def test_workflow_task_override_beats_agent(self):
+    def test_workflow_task_model_override(self):
         workflow = WorkflowDef(
             id="test",
             name="Test",
@@ -144,7 +119,6 @@ class TestCreateSessionFromWorkflow:
                     agent="researcher",
                     description="Quick check",
                     model="haiku",
-                    max_turns=3,
                     next="output",
                 ),
             ],
@@ -153,7 +127,6 @@ class TestCreateSessionFromWorkflow:
             "c1",
             "test",
             workflow=workflow,
-            models=self.MODELS,
             agents=self.AGENTS,
         )
         t = session.tasks["r1"]
@@ -179,7 +152,6 @@ class TestCreateSessionFromWorkflow:
             "test",
             workflow=workflow,
             variables={"topic": "AI"},
-            models=self.MODELS,
         )
         assert session.tasks["r1"].description == "Research AI, output as {format}."
 
@@ -187,15 +159,11 @@ class TestCreateSessionFromWorkflow:
 class TestCreateSessionFromAgent:
     """Verify direct agent session building."""
 
-    MODELS = {"haiku": "fast", "sonnet": "balanced"}
     AGENTS = {
         "researcher": AgentDef(
             id="researcher",
             name="Research Specialist",
-            soul="Be thorough.",
-            skills="Cite sources.",
-            model="sonnet",
-            max_turns=15,
+            runtime="claude",
         ),
     }
 
@@ -206,37 +174,22 @@ class TestCreateSessionFromAgent:
             agent_id="researcher",
             text="What is MQTT?",
             agents=self.AGENTS,
-            models=self.MODELS,
         )
         assert len(session.tasks) == 1
         assert "researcher" in session.tasks
 
-    def test_agent_defaults_applied(self):
+    def test_agent_session_fields(self):
         session = create_session(
             "c1",
             "What is MQTT?",
             agent_id="researcher",
             text="What is MQTT?",
             agents=self.AGENTS,
-            models=self.MODELS,
         )
         t = session.tasks["researcher"]
         assert t.agent == "researcher"
         assert t.description == "What is MQTT?"
-        assert t.model == "sonnet"
         assert t.next == "output"
-
-    def test_unknown_agent_uses_defaults(self):
-        session = create_session(
-            "c1",
-            "Do something",
-            agent_id="unknown_agent",
-            text="Do something",
-            agents={},
-            models=self.MODELS,
-        )
-        t = session.tasks["unknown_agent"]
-        assert t.model == "haiku"  # first model
 
 
 # ---------------------------------------------------------------------------

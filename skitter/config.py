@@ -21,11 +21,7 @@ class AgentDef:
     id: str
     name: str
     description: str = ""
-    soul: str = ""
-    skills: str = ""
-    model: str = ""
-    max_turns: int = 10
-    runtime: str = "claude"  # "claude" or "codex"
+    runtime: str = ""  # "claude" or "codex"; empty = use default_runtime
     workspace: str = ""  # custom cwd for worker
 
 
@@ -36,11 +32,8 @@ class WorkflowTask:
     description: str
     next: str = ""  # target task id, or "output" for terminal
     needs: list[str] = field(default_factory=list)
-    # Per-task overrides (empty = use agent default)
-    soul: str = ""
-    skills: str = ""
+    # Per-task overrides (empty = use sub-agent default)
     model: str = ""
-    max_turns: int = 0  # 0 = use agent default
 
 
 @dataclass
@@ -92,12 +85,28 @@ def safe_format(template: str, variables: dict[str, str]) -> str:
     return _safe_fmt.vformat(template, (), variables)
 
 
+CONFIG_FILE = SKITTER_DIR / "config.yaml"
+
+
+def load_default_runtime() -> str:
+    """Read default_runtime from ~/.skitter/config.yaml. Falls back to 'claude'."""
+    if CONFIG_FILE.is_file():
+        try:
+            data = yaml.safe_load(CONFIG_FILE.read_text())
+            if isinstance(data, dict):
+                return data.get("default_runtime", "claude")
+        except Exception as e:
+            log.warning("Failed to read %s: %s", CONFIG_FILE, e)
+    return "claude"
+
+
 def ensure_dirs() -> None:
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_agents() -> dict[str, AgentDef]:
+def load_agents(default_runtime: str = "") -> dict[str, AgentDef]:
+    default_runtime = default_runtime or load_default_runtime()
     agents: dict[str, AgentDef] = {}
     if not AGENTS_DIR.is_dir():
         return agents
@@ -111,11 +120,7 @@ def load_agents() -> dict[str, AgentDef]:
                 id=agent_id,
                 name=data.get("name", agent_id),
                 description=data.get("description", ""),
-                soul=data.get("soul", ""),
-                skills=data.get("skills", ""),
-                model=data.get("model", ""),
-                max_turns=data.get("max_turns", 10),
-                runtime=data.get("runtime", "claude"),
+                runtime=data.get("runtime", "") or default_runtime,
                 workspace=data.get("workspace", ""),
             )
         except Exception as e:
@@ -144,10 +149,7 @@ def load_workflows() -> dict[str, WorkflowDef]:
                         description=t.get("description", ""),
                         next=t.get("next", ""),
                         needs=needs,
-                        soul=t.get("soul", ""),
-                        skills=t.get("skills", ""),
                         model=t.get("model", ""),
-                        max_turns=t.get("max_turns", 0),
                     )
                 )
             # Auto-infer `next` from reverse dependency graph if absent
@@ -176,42 +178,42 @@ def load_workflows() -> dict[str, WorkflowDef]:
 _EXAMPLES_DIR = Path(__file__).parent / "examples"
 
 
-def _load_examples(subdir: str) -> dict[str, str]:
-    """Load example YAML files from skitter/examples/{subdir}/."""
+def _load_examples(subdir: str, ext: str = "*.yaml") -> dict[str, str]:
+    """Load example files from skitter/examples/{subdir}/."""
     examples: dict[str, str] = {}
     d = _EXAMPLES_DIR / subdir
     if d.is_dir():
-        for path in sorted(d.glob("*.yaml")):
+        for path in sorted(d.glob(ext)):
             examples[path.stem] = path.read_text()
     return examples
 
 
 EXAMPLE_AGENTS = _load_examples("agents")
 EXAMPLE_WORKFLOWS = _load_examples("workflows")
+EXAMPLE_CLAUDE_AGENTS = _load_examples("claude-agents", "*.md")
+EXAMPLE_CONFIG = (_EXAMPLES_DIR / "config.yaml").read_text()
 
 
 WORKSPACES_DIR = SKITTER_DIR / "workspaces"
-AGENT_HOMES_DIR = SKITTER_DIR / "agent-homes"
+DOCKER_CLAUDE_DIR = SKITTER_DIR / "docker-claude"
 
 
 def agent_def_to_card(agent: "AgentDef") -> AgentCard:
     """Convert an AgentDef to an A2A Agent Card for discovery publishing."""
-    capabilities: list[str] = []
-    if agent.max_turns > 0:
-        capabilities.append("tool_use")
     return AgentCard(
         agent_id=agent.id,
         name=agent.name,
         description=agent.description,
-        capabilities=capabilities,
-        model=agent.model,
-        max_turns=agent.max_turns,
     )
+
+
+CLAUDE_AGENTS_DIR = Path.home() / ".claude" / "agents"
 
 
 def write_examples() -> tuple[list[str], list[str]]:
     """Write example agent and workflow files. Returns (agents_written, workflows_written)."""
     ensure_dirs()
+    CLAUDE_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     agents_written: list[str] = []
     workflows_written: list[str] = []
     for name, content in EXAMPLE_AGENTS.items():
@@ -224,4 +226,12 @@ def write_examples() -> tuple[list[str], list[str]]:
         if not path.exists():
             path.write_text(content)
             workflows_written.append(name)
+    # Claude sub-agent definitions
+    for name, content in EXAMPLE_CLAUDE_AGENTS.items():
+        path = CLAUDE_AGENTS_DIR / f"{name}.md"
+        if not path.exists():
+            path.write_text(content)
+    # Global config
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text(EXAMPLE_CONFIG)
     return agents_written, workflows_written

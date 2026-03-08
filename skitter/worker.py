@@ -390,19 +390,20 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         stream_topic = task_msg.caller_reply_topic
         stream_correlation = task_msg.caller_correlation
 
+        # Pre-build MQTT properties (constant for the lifetime of this task)
+        stream_props = make_properties(correlation_data=stream_correlation)
+
         async def publish_stream_item(item_type: str, content: str) -> None:
             if not stream_topic:
                 return
-            # item_type is "text" or "tool_use" — pack as working status message
-            prefix = "" if item_type == "text" else f"[{item_type}] "
             event = make_status_event(
                 request_id=stream_correlation,
                 task_id=task_id,
                 state="working",
-                message=f"{prefix}{content}",
+                message=content,
+                message_type=item_type,
             )
-            props = make_properties(correlation_data=stream_correlation)
-            await client.publish(stream_topic, event, qos=0, properties=props)
+            await client.publish(stream_topic, event, qos=0, properties=stream_props)
 
         # Cancel listener
         cancel_event = asyncio.Event()

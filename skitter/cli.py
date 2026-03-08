@@ -16,7 +16,14 @@ from skitter.mqtt import (
     topic_reply,
     topic_request,
 )
-from skitter.types import A2ARequest, parse_status_event
+from skitter.types import (
+    A2ARequest,
+    REPLY_ERROR,
+    REPLY_TERMINAL,
+    REPLY_TEXT,
+    REPLY_TOOL,
+    classify_reply,
+)
 
 
 async def run_chat(session_id: str) -> None:
@@ -46,26 +53,17 @@ async def run_chat(session_id: str) -> None:
                         continue
                     data = json.loads(payload)
 
-                    # Error response
-                    if "error" in data:
-                        print(
-                            f"\r\033[KError: {data['error'].get('message', data['error'])}"
-                        )
+                    kind, content = classify_reply(data)
+                    if kind == REPLY_TEXT:
+                        print(f"\r\033[K{content}", end="", flush=True)
+                    elif kind == REPLY_TOOL:
+                        print(f"\r\033[K  [tool] {content}")
+                    elif kind == REPLY_TERMINAL:
+                        print(f"\r\033[K\n{content}")
                         print("> ", end="", flush=True)
-                        continue
-
-                    # TaskStatusUpdateEvent (streaming or terminal)
-                    result = data.get("result", {})
-                    if result.get("type") == "TaskStatusUpdateEvent":
-                        _, state, message, artifact = parse_status_event(data)
-                        if state == "working" and message:
-                            if message.startswith("[tool_use] "):
-                                print(f"\r\033[K  [tool] {message[11:]}")
-                            else:
-                                print(f"\r\033[K{message}", end="", flush=True)
-                        elif state in ("completed", "failed", "cancelled"):
-                            print(f"\r\033[K\n{artifact}")
-                            print("> ", end="", flush=True)
+                    elif kind == REPLY_ERROR:
+                        print(f"\r\033[KError: {content}")
+                        print("> ", end="", flush=True)
 
                 except Exception:
                     pass

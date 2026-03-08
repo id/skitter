@@ -31,10 +31,14 @@ from skitter.types import (
     AgentMessage,
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
+    REPLY_ERROR,
+    REPLY_TERMINAL,
+    REPLY_TEXT,
+    REPLY_TOOL,
     Session,
     SessionTask,
+    classify_reply,
     make_status_event,
-    parse_status_event,
 )
 
 
@@ -79,22 +83,35 @@ class TestA2ARequest:
 
 
 class TestStatusEvent:
-    def test_working_roundtrip(self):
-        event = make_status_event("req-1", "t-abc", "working", message="hello world")
+    def test_working_text(self):
+        event = make_status_event("req-1", "t-abc", "working", message="hello")
         d = json.loads(event)
         assert d["jsonrpc"] == "2.0"
         assert d["id"] == "req-1"
         assert d["result"]["type"] == "TaskStatusUpdateEvent"
         assert d["result"]["taskId"] == "t-abc"
         assert d["result"]["status"]["state"] == "working"
-        assert d["result"]["status"]["message"] == "hello world"
+        assert d["result"]["status"]["message"] == "hello"
         assert "artifact" not in d["result"]
 
-        task_id, state, message, artifact = parse_status_event(d)
-        assert task_id == "t-abc"
-        assert state == "working"
-        assert message == "hello world"
-        assert artifact == ""
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TEXT
+        assert content == "hello"
+
+    def test_working_tool_use(self):
+        event = make_status_event(
+            "req-1",
+            "t-abc",
+            "working",
+            message="Read: file.py",
+            message_type="tool_use",
+        )
+        d = json.loads(event)
+        assert d["result"]["status"]["metadata"]["type"] == "tool_use"
+
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TOOL
+        assert content == "Read: file.py"
 
     def test_terminal_with_artifact(self):
         event = make_status_event(
@@ -104,10 +121,21 @@ class TestStatusEvent:
         assert d["result"]["status"]["state"] == "completed"
         assert d["result"]["artifact"]["parts"][0]["text"] == "Final answer"
 
-        task_id, state, message, artifact = parse_status_event(d)
-        assert task_id == "t-xyz"
-        assert state == "completed"
-        assert artifact == "Final answer"
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TERMINAL
+        assert content == "Final answer"
+
+    def test_error_reply(self):
+        kind, content = classify_reply(
+            {"error": {"code": -32004, "message": "Unknown agent"}}
+        )
+        assert kind == REPLY_ERROR
+        assert content == "Unknown agent"
+
+    def test_unknown_message(self):
+        kind, content = classify_reply({"something": "else"})
+        assert kind == ""
+        assert content == ""
 
 
 class TestAgentMessage:

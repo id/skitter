@@ -19,14 +19,12 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 - **No backward compatibility** — rewrite and drop old code freely. Don't add shims, re-exports, or deprecation warnings. If something is replaced, delete the old version.
 
 ### 3. Quality Phase
-- **Lint and format** — always run `uvx ruff format` and `uvx ruff check` on changed files. Fix all issues.
-- **Unit tests** — run `uv run python -m pytest tests/test_unit.py -q`.
-- **Live tests** — run `tests/test_live_claude.py` and `tests/test_live_codex.py` for end-to-end verification (standalone agent + workflow). Use an MQTT spy to confirm message flow.
-- **Dashboard** — verify `dashboard.html` still works with any changes to session state, discovery, or MQTT topics. Rewrite dashboard sections if the data model changed.
-
-### 4. Review Phase
-- **Correctness review** — review as a staff-level Python developer. Look for: correctness of async/MQTT interactions, edge cases in worker self-coordination and join waiting, state consistency across crash/recovery.
-- **Simplification review** — separate pass focused on removing unnecessary logic and finding opportunities to simplify. Look for: dead code paths, redundant checks, over-abstracted helpers that are called once, conditionals that can't trigger, code that defends against impossible states, and any logic that exists "just in case." If two code paths do nearly the same thing, merge them. If a function wraps a single call, inline it. Prefer deleting code over explaining why it's needed.
+1. **`/simplify`** — run the simplify skill to review changed code for reuse, quality, and efficiency. Fix all findings.
+2. **Staff-engineer review** — run the `staff-engineer` agent to review changed Python code. Fix all findings.
+3. **Lint and format** — run `uvx ruff format` and `uvx ruff check` on changed files. Fix all issues.
+4. **Unit tests** — run `uv run python -m pytest tests/test_unit.py -q`.
+5. **Live tests** — run `tests/test_live_claude.py` and `tests/test_live_codex.py` for end-to-end verification (standalone agent + workflow). Confirm with user before running live tests.
+6. **Dashboard** — verify `dashboard.html` still works with any changes to session state, discovery, or MQTT topics. Rewrite dashboard sections if the data model changed.
 
 ## Architecture Essentials
 

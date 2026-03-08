@@ -374,18 +374,17 @@
           const r = m.result || {};
           if (r.type === 'TaskStatusUpdateEvent') {
             const taskId = r.taskId;
-            const st = (r.status || {}).state;
-            const msg = (r.status || {}).message || '';
+            const status = r.status || {};
+            const st = status.state;
+            const msg = status.message || '';
+            const msgType = (status.metadata || {}).type || 'text';
             const artifact = ((r.artifact || {}).parts || [])[0]?.text || '';
             const sid = findSessionForTask(taskId);
             if (st === 'working' && msg && sid) {
               const k = `${sid}/${taskId}`;
               if (!state.streamChunks.has(k)) state.streamChunks.set(k, []);
               const ch = state.streamChunks.get(k);
-              // Map message prefix to chunk type for rendering
-              let type = 'text', content = msg;
-              if (msg.startsWith('[tool_use] ')) { type = 'tool_use'; content = msg.slice(11); }
-              ch.push({ task_id: taskId, type, content });
+              ch.push({ task_id: taskId, type: msgType, content: msg });
               if (ch.length > 200) ch.splice(0, ch.length - 200);
               scheduleStreamRender();
             } else if (st === 'completed' || st === 'failed' || st === 'cancelled') {

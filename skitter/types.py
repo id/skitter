@@ -42,6 +42,7 @@ def make_status_event(
     task_id: str,
     state: str,
     message: str = "",
+    message_type: str = "",
     artifact_text: str = "",
 ) -> str:
     """Build a TaskStatusUpdateEvent JSON-RPC response (A2A streaming reply).
@@ -52,6 +53,8 @@ def make_status_event(
     status: dict = {"state": state}
     if message:
         status["message"] = message
+    if message_type:
+        status["metadata"] = {"type": message_type}
     result: dict = {
         "type": "TaskStatusUpdateEvent",
         "taskId": task_id,
@@ -64,17 +67,46 @@ def make_status_event(
     return json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
 
 
-def parse_status_event(data: dict) -> tuple[str, str, str, str]:
-    """Parse a TaskStatusUpdateEvent. Returns (task_id, state, message, artifact_text)."""
+# --- Reply classification (used by all consumers) ---
+
+REPLY_TEXT = "text"
+REPLY_TOOL = "tool_use"
+REPLY_TERMINAL = "terminal"
+REPLY_ERROR = "error"
+
+
+def classify_reply(data: dict) -> tuple[str, str]:
+    """Classify an A2A reply message. Returns (kind, content).
+
+    kind is one of: REPLY_TEXT, REPLY_TOOL, REPLY_TERMINAL, REPLY_ERROR,
+    or "" for unrecognized messages.
+    """
+    if "error" in data:
+        err = data["error"]
+        return REPLY_ERROR, err.get("message", str(err))
+
     result = data.get("result", {})
-    task_id = result.get("taskId", "")
+    if result.get("type") != "TaskStatusUpdateEvent":
+        return "", ""
+
     status = result.get("status", {})
     state = status.get("state", "")
-    message = status.get("message", "")
-    artifact = result.get("artifact", {})
-    parts = artifact.get("parts", [])
-    artifact_text = parts[0].get("text", "") if parts else ""
-    return task_id, state, message, artifact_text
+
+    if state == "working":
+        message = status.get("message", "")
+        metadata = status.get("metadata", {})
+        msg_type = metadata.get("type", "text")
+        if msg_type == "tool_use":
+            return REPLY_TOOL, message
+        return REPLY_TEXT, message
+
+    if state in ("completed", "failed", "cancelled"):
+        artifact = result.get("artifact", {})
+        parts = artifact.get("parts", [])
+        artifact_text = parts[0].get("text", "") if parts else ""
+        return REPLY_TERMINAL, artifact_text
+
+    return "", ""
 
 
 # --- Core messaging types ---

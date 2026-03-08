@@ -20,7 +20,14 @@ from skitter.mqtt import (
     topic_reply,
     topic_request,
 )
-from skitter.types import A2ARequest, parse_status_event
+from skitter.types import (
+    A2ARequest,
+    REPLY_ERROR,
+    REPLY_TERMINAL,
+    REPLY_TEXT,
+    REPLY_TOOL,
+    classify_reply,
+)
 
 console = Console()
 
@@ -145,25 +152,17 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
                         except Exception:
                             continue
 
-                        # Error
-                        if "error" in data:
-                            console.print(
-                                f"[red]Error: {data['error'].get('message', data['error'])}[/red]"
-                            )
+                        kind, content = classify_reply(data)
+                        if kind == REPLY_TEXT:
+                            console.print(content, end="")
+                        elif kind == REPLY_TOOL:
+                            console.print(f"  [dim][tool] {content}[/dim]")
+                        elif kind == REPLY_TERMINAL:
+                            console.print(f"\n\n{content}")
                             return
-
-                        # TaskStatusUpdateEvent
-                        result = data.get("result", {})
-                        if result.get("type") == "TaskStatusUpdateEvent":
-                            _, state, message, artifact = parse_status_event(data)
-                            if state == "working" and message:
-                                if message.startswith("[tool_use] "):
-                                    console.print(f"  [dim][tool] {message[11:]}[/dim]")
-                                else:
-                                    console.print(message, end="")
-                            elif state in ("completed", "failed", "cancelled"):
-                                console.print(f"\n\n{artifact}")
-                                return
+                        elif kind == REPLY_ERROR:
+                            console.print(f"[red]Error: {content}[/red]")
+                            return
             except TimeoutError:
                 console.print("[yellow]Timed out waiting for result[/yellow]")
 

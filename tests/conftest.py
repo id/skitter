@@ -29,10 +29,14 @@ from skitter.mqtt import (
     topic_reply,
     topic_session_wildcard,
 )
-from skitter.types import A2ARequest, parse_status_event
-
-AGENTS_DIR = Path.home() / ".skitter" / "agents"
-WORKFLOWS_DIR = Path.home() / ".skitter" / "workflows"
+from skitter.config import AGENTS_DIR, WORKFLOWS_DIR
+from skitter.types import (
+    A2ARequest,
+    REPLY_ERROR,
+    REPLY_TERMINAL,
+    REPLY_TEXT,
+    classify_reply,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -230,20 +234,14 @@ async def send_and_collect(
                     except Exception:
                         continue
 
-                    if "error" in data:
-                        return f"Error: {data['error'].get('message', data['error'])}"
-
-                    result = data.get("result", {})
-                    if result.get("type") == "TaskStatusUpdateEvent":
-                        _, state, message, artifact = parse_status_event(data)
-                        if state == "working" and message:
-                            if message.startswith("[tool_use] "):
-                                print(f"\n  [tool] {message[11:]}", flush=True)
-                            else:
-                                print(message, end="", flush=True)
-                        elif state in ("completed", "failed", "cancelled"):
-                            print()
-                            return artifact
+                    kind, content = classify_reply(data)
+                    if kind == REPLY_TEXT:
+                        print(content, end="", flush=True)
+                    elif kind == REPLY_TERMINAL:
+                        print()
+                        return content
+                    elif kind == REPLY_ERROR:
+                        return f"Error: {content}"
         except TimeoutError:
             pytest.fail(f"Timed out after {timeout}s waiting for result")
 

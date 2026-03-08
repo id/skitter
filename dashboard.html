@@ -235,7 +235,11 @@
     <aside id="sidebar">
       <div class="side-hdr">
         <h1>Skitter</h1>
-        <span class="conn-dot" id="conn-dot" title="Disconnected"></span>
+        <button id="settings-btn" onclick="showSettings()" style="display:flex;align-items:center;gap:5px;padding:4px 10px;border:1px solid var(--border);border-radius:5px;background:var(--bg);cursor:pointer;font-size:11px;font-family:var(--sans);color:var(--text-sec);transition:all .15s;">
+          <span class="conn-dot" id="conn-dot" title="Disconnected"></span>
+          <span>Connect</span>
+          <span style="font-size:12px;line-height:1">&#9881;</span>
+        </button>
       </div>
       <div class="side-tabs">
         <div class="side-tab active" data-tab="sessions">Sessions</div>
@@ -255,8 +259,53 @@
     </div>
   </div>
 
+  <!-- Settings dialog -->
+  <dialog id="settings-dlg" style="border:1px solid var(--border);border-radius:8px;padding:24px;max-width:400px;width:90%;font-family:var(--sans);font-size:13px;">
+    <h3 style="margin-bottom:16px;font-size:15px;">Broker Settings</h3>
+    <label style="display:block;margin-bottom:4px;font-weight:500;">Broker URL</label>
+    <input id="cfg-url" type="text" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:12px;margin-bottom:12px;" placeholder="ws://localhost:8083/mqtt">
+    <div style="display:flex;gap:12px;margin-bottom:12px;">
+      <div style="flex:1"><label style="display:block;margin-bottom:4px;font-weight:500;">Username</label><input id="cfg-user" type="text" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;"></div>
+      <div style="flex:1"><label style="display:block;margin-bottom:4px;font-weight:500;">Password</label><input id="cfg-pass" type="password" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;"></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+      <button onclick="document.getElementById('settings-dlg').close()" style="padding:6px 14px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;font-size:12px;">Cancel</button>
+      <button onclick="saveSettings()" style="padding:6px 14px;border:none;border-radius:4px;background:var(--blue);color:white;cursor:pointer;font-size:12px;">Save & Reconnect</button>
+    </div>
+  </dialog>
+
   <script>
-    const BROKER_URL = 'ws://localhost:8083/mqtt';
+    // --- Broker config (persisted in localStorage) ---
+    const DEFAULT_BROKER_URL = 'ws://localhost:8083/mqtt';
+
+    function loadBrokerConfig() {
+      return {
+        url: localStorage.getItem('skitter_broker_url') || DEFAULT_BROKER_URL,
+        username: localStorage.getItem('skitter_broker_user') || '',
+        password: localStorage.getItem('skitter_broker_pass') || '',
+      };
+    }
+
+    function showSettings() {
+      const cfg = loadBrokerConfig();
+      document.getElementById('cfg-url').value = cfg.url;
+      document.getElementById('cfg-user').value = cfg.username;
+      document.getElementById('cfg-pass').value = cfg.password;
+      document.getElementById('settings-dlg').showModal();
+    }
+
+    function saveSettings() {
+      const url = document.getElementById('cfg-url').value.trim() || DEFAULT_BROKER_URL;
+      const user = document.getElementById('cfg-user').value.trim();
+      const pass = document.getElementById('cfg-pass').value;
+      localStorage.setItem('skitter_broker_url', url);
+      localStorage.setItem('skitter_broker_user', user);
+      localStorage.setItem('skitter_broker_pass', pass);
+      document.getElementById('settings-dlg').close();
+      // Reconnect
+      if (mqttClient) { mqttClient.end(true); }
+      connect();
+    }
 
     const state = {
       connected: false,
@@ -315,7 +364,11 @@
 
     // --- MQTT ---
     function connect() {
-      mqttClient = mqtt.connect(BROKER_URL, { protocolVersion: 5, reconnectPeriod: 3000, connectTimeout: 5000, clean: true });
+      const cfg = loadBrokerConfig();
+      const clientId = 'skitter-dash-' + Math.random().toString(16).slice(2, 10);
+      const opts = { protocolVersion: 5, reconnectPeriod: 3000, connectTimeout: 10000, clean: true, clientId };
+      if (cfg.username) { opts.username = cfg.username; opts.password = cfg.password; }
+      mqttClient = mqtt.connect(cfg.url, opts);
       mqttClient.on('connect', () => { state.connected = true; renderConn(); mqttClient.subscribe('$a2a/v1/#', { qos: 1 }); });
       mqttClient.on('close', () => { state.connected = false; renderConn(); });
       mqttClient.on('error', e => console.error('MQTT:', e));

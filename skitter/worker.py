@@ -15,11 +15,10 @@ import aiomqtt
 
 from skitter.config import WORKSPACES_DIR
 from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
     A2A_ORG,
     A2A_UNIT,
     make_properties,
+    mqtt_client_kwargs,
     topic_chain_result,
     topic_event,
     topic_request_cancel,
@@ -297,7 +296,7 @@ async def publish_terminal_result(
         )
 
 
-async def run(agent: str, session_id: str, task_id: str) -> None:
+async def run(agent: str, session_id: str, task_id: str) -> str:
     log.info("[worker:%s:%s] Starting", agent, task_id)
 
     alive_topic = topic_event(agent, "alive")
@@ -315,11 +314,10 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
     will = aiomqtt.Will(topic=lwt_topic, payload=lwt_payload, qos=1)
 
     async with aiomqtt.Client(
-        MQTT_HOST,
-        MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}",
-        will=will,
-        protocol=aiomqtt.ProtocolVersion.V5,
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}",
+            will=will,
+        ),
     ) as client:
         # Announce alive
         await client.publish(
@@ -332,7 +330,7 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         session = await read_retained_session(client, session_id)
         if session is None:
             log.error("[worker:%s:%s] No session found, exiting", agent, task_id)
-            return
+            return "(no session found)"
 
         # Find my task by task_id
         task_name = None
@@ -343,12 +341,12 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
 
         if task_name is None:
             log.error("[worker:%s:%s] Task not found in session", agent, task_id)
-            return
+            return "(task not found)"
 
         my_spec = session.task_dispatches.get(task_name)
         if my_spec is None:
             log.error("[worker:%s:%s] No dispatch spec in session", agent, task_id)
-            return
+            return "(no dispatch spec)"
 
         # 2. Wait for upstream results (join coordination)
         my_task = session.tasks[task_name]
@@ -413,10 +411,9 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
         async def cancel_listener() -> None:
             try:
                 async with aiomqtt.Client(
-                    MQTT_HOST,
-                    MQTT_PORT,
-                    identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}-ctrl",
-                    protocol=aiomqtt.ProtocolVersion.V5,
+                    **mqtt_client_kwargs(
+                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}-ctrl",
+                    ),
                 ) as ctrl_client:
                     await ctrl_client.subscribe(cancel_topic, qos=1)
                     async for msg in ctrl_client.messages:
@@ -521,6 +518,8 @@ async def run(agent: str, session_id: str, task_id: str) -> None:
             qos=1,
         )
         log.info("[worker:%s:%s] Done", agent, task_id)
+
+    return response_text
 
 
 def main() -> None:

@@ -13,6 +13,7 @@ from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
     make_properties,
+    mqtt_client_kwargs,
     topic_reply,
     topic_request,
 )
@@ -38,10 +39,7 @@ async def run_chat(session_id: str) -> None:
     print("Ctrl+C to exit.\n")
 
     async with aiomqtt.Client(
-        MQTT_HOST,
-        MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}",
-        protocol=aiomqtt.ProtocolVersion.V5,
+        **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}"),
     ) as client:
         await client.subscribe(reply_t, qos=1)
 

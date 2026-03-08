@@ -12,11 +12,10 @@ from rich.table import Table
 
 from skitter.config import load_agents
 from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
     A2A_ORG,
     A2A_UNIT,
     make_properties,
+    mqtt_client_kwargs,
     topic_reply,
     topic_request,
 )
@@ -113,10 +112,9 @@ def cmd_run(agent_id: str, description: str) -> None:
 
     async def run_agent() -> None:
         async with aiomqtt.Client(
-            MQTT_HOST,
-            MQTT_PORT,
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/agent-cli-{mqtt_session}",
-            protocol=aiomqtt.ProtocolVersion.V5,
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/agent-cli-{mqtt_session}",
+            ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
 

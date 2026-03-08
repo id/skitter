@@ -23,9 +23,11 @@ import yaml
 from skitter.mqtt import (
     MQTT_HOST,
     MQTT_PORT,
+    MQTT_TLS,
     A2A_ORG,
     A2A_UNIT,
     make_properties,
+    mqtt_client_kwargs,
     topic_reply,
     topic_session_wildcard,
 )
@@ -46,7 +48,12 @@ from skitter.types import (
 
 def mqtt_available() -> bool:
     try:
-        s = socket.create_connection((MQTT_HOST, MQTT_PORT), timeout=1)
+        s = socket.create_connection((MQTT_HOST, MQTT_PORT), timeout=2)
+        if MQTT_TLS:
+            import ssl
+
+            ctx = ssl.create_default_context()
+            s = ctx.wrap_socket(s, server_hostname=MQTT_HOST)
         s.close()
         return True
     except OSError:
@@ -173,10 +180,9 @@ def stop_supervisor(proc: subprocess.Popen) -> None:
 async def clean_retained():
     """Clear leftover retained messages from previous test runs."""
     async with aiomqtt.Client(
-        MQTT_HOST,
-        MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/test-cleaner-{uuid.uuid4().hex[:6]}",
-        protocol=aiomqtt.ProtocolVersion.V5,
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/test-cleaner-{uuid.uuid4().hex[:6]}",
+        ),
     ) as client:
         for pattern in [
             topic_session_wildcard(),
@@ -205,10 +211,9 @@ async def send_and_collect(
     reply_t = topic_reply("test", test_id)
 
     async with aiomqtt.Client(
-        MQTT_HOST,
-        MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/test-client-{test_id}",
-        protocol=aiomqtt.ProtocolVersion.V5,
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/test-client-{test_id}",
+        ),
     ) as client:
         await client.subscribe(reply_t, qos=1)
 

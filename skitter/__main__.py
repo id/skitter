@@ -30,6 +30,19 @@ def dispatch() -> None:
         from skitter.docker_cli import main
 
         main()
+    elif subcmd == "deploy":
+        from skitter.deploy import cmd_deploy
+
+        # skitter deploy [--agents|--workflows|--discovery]
+        args = sys.argv[2:]
+        what = "all"
+        if "--agents" in args:
+            what = "agents"
+        elif "--workflows" in args:
+            what = "workflows"
+        elif "--discovery" in args:
+            what = "discovery"
+        cmd_deploy(what)
     elif subcmd == "init":
         from skitter.config import write_examples
 

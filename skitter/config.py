@@ -126,6 +126,17 @@ def load_agents(default_runtime: str = "") -> dict[str, AgentDef]:
     return agents
 
 
+def infer_task_next(tasks: list[WorkflowTask]) -> None:
+    """Auto-infer `next` from reverse dependency graph if absent."""
+    for t in tasks:
+        if not t.next:
+            dependents = [other.id for other in tasks if t.id in other.needs]
+            if len(dependents) == 1:
+                t.next = dependents[0]
+            elif len(dependents) == 0:
+                t.next = "output"
+
+
 def load_workflows() -> dict[str, WorkflowDef]:
     workflows: dict[str, WorkflowDef] = {}
     if not WORKFLOWS_DIR.is_dir():
@@ -150,15 +161,7 @@ def load_workflows() -> dict[str, WorkflowDef]:
                         model=t.get("model", ""),
                     )
                 )
-            # Auto-infer `next` from reverse dependency graph if absent
-            for t in tasks:
-                if not t.next:
-                    # Find tasks that list this task in their needs
-                    dependents = [other.id for other in tasks if t.id in other.needs]
-                    if len(dependents) == 1:
-                        t.next = dependents[0]
-                    elif len(dependents) == 0:
-                        t.next = "output"
+            infer_task_next(tasks)
             workflows[workflow_id] = WorkflowDef(
                 id=workflow_id,
                 name=data.get("name", workflow_id),

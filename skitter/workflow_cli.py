@@ -12,11 +12,10 @@ from rich.table import Table
 
 from skitter.config import load_workflows
 from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
     A2A_ORG,
     A2A_UNIT,
     make_properties,
+    mqtt_client_kwargs,
     topic_reply,
     topic_request,
 )
@@ -116,10 +115,9 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
 
     async def run_workflow() -> None:
         async with aiomqtt.Client(
-            MQTT_HOST,
-            MQTT_PORT,
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/workflow-cli-{mqtt_session}",
-            protocol=aiomqtt.ProtocolVersion.V5,
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/workflow-cli-{mqtt_session}",
+            ),
         ) as client:
             if wait:
                 await client.subscribe(reply_t, qos=1)

@@ -35,7 +35,13 @@ def _spawn_docker(agent: str, session_id: str, task_id: str) -> None:
         ["-e", f"MQTT_HOST={os.environ.get('SKITTER_DOCKER_MQTT_HOST', 'emqx')}"]
     )
     env_args.extend(["-e", f"MQTT_PORT={os.environ.get('MQTT_PORT', '1883')}"])
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for key in (
+        "MQTT_TLS",
+        "MQTT_USER",
+        "MQTT_PASS",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
         val = os.environ.get(key, "")
         if val:
             env_args.extend(["-e", f"{key}={val}"])

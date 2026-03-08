@@ -5,7 +5,9 @@ with application-defined suffixes after agent_id for session/task scoping.
 """
 
 import os
+import ssl
 
+import aiomqtt
 from dotenv import load_dotenv
 from paho.mqtt.properties import Properties
 from paho.mqtt.packettypes import PacketTypes
@@ -14,10 +16,33 @@ load_dotenv()
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+MQTT_TLS = os.environ.get("MQTT_TLS", "") == "1"
+MQTT_USER = os.environ.get("MQTT_USER", "")
+MQTT_PASS = os.environ.get("MQTT_PASS", "")
 
 # A2A namespace parameters
 A2A_ORG = os.environ.get("SKITTER_A2A_ORG", "skitter")
 A2A_UNIT = os.environ.get("SKITTER_A2A_UNIT", "default")
+
+
+def mqtt_client_kwargs(**overrides) -> dict:
+    """Common connection kwargs for aiomqtt.Client.
+
+    Usage: ``async with aiomqtt.Client(**mqtt_client_kwargs(identifier=...))``
+    """
+    kwargs: dict = {
+        "hostname": MQTT_HOST,
+        "port": MQTT_PORT,
+        "protocol": aiomqtt.ProtocolVersion.V5,
+    }
+    if MQTT_TLS:
+        kwargs["tls_context"] = ssl.create_default_context()
+    if MQTT_USER:
+        kwargs["username"] = MQTT_USER
+        kwargs["password"] = MQTT_PASS
+    kwargs.update(overrides)
+    return kwargs
+
 
 # --- Topic builders ---
 

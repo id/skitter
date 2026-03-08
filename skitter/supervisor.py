@@ -17,13 +17,12 @@ from skitter.config import (
     safe_format,
 )
 from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
     A2A_ORG,
     A2A_UNIT,
     get_correlation_data,
     get_response_topic,
     make_properties,
+    mqtt_client_kwargs,
     topic_discovery,
     topic_event_wildcard,
     topic_reload,
@@ -292,10 +291,7 @@ async def run() -> None:
         log.info("Loaded %d workflows: %s", len(workflows), ", ".join(workflows))
 
     async with aiomqtt.Client(
-        MQTT_HOST,
-        MQTT_PORT,
-        identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor",
-        protocol=aiomqtt.ProtocolVersion.V5,
+        **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor"),
     ) as client:
         await _publish_discovery(client, cards)
 

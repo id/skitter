@@ -15,5 +15,8 @@ dependencies = [
 [project.scripts]
 skitter = "skitter.__main__:dispatch"
 
+[project.optional-dependencies]
+cloud = ["boto3>=1.35"]
+
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.25"]

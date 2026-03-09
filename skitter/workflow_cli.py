@@ -1,32 +1,16 @@
 """CLI for managing and running workflows via A2A-over-MQTT."""
 
 import asyncio
-import json
 import sys
 import uuid
 
-import aiomqtt
 import yaml
 from rich.console import Console
 from rich.table import Table
 
 from skitter.config import load_workflows
-from skitter.mqtt import (
-    A2A_ORG,
-    A2A_UNIT,
-    make_properties,
-    mqtt_client_kwargs,
-    topic_reply,
-    topic_request,
-)
-from skitter.types import (
-    A2ARequest,
-    REPLY_ERROR,
-    REPLY_TERMINAL,
-    REPLY_TEXT,
-    REPLY_TOOL,
-    classify_reply,
-)
+from skitter.mqtt import send_and_wait, topic_request
+from skitter.types import A2ARequest, REPLY_ERROR, REPLY_TERMINAL, REPLY_TEXT, REPLY_TOOL
 
 console = Console()
 
@@ -109,62 +93,21 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
         variables=variables,
     )
 
-    mqtt_session = uuid.uuid4().hex[:12]
-    reply_t = topic_reply("cli", mqtt_session)
-    workflow_request = topic_request(f"workflow-{workflow_id}")
+    console.print(f"Workflow '{workflow_id}' submitted as session {session_id}")
+    if wait:
+        console.print("Waiting for result... (Ctrl+C to detach)\n")
 
-    async def run_workflow() -> None:
-        async with aiomqtt.Client(
-            **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/workflow-cli-{mqtt_session}",
-            ),
-        ) as client:
-            if wait:
-                await client.subscribe(reply_t, qos=1)
+    from skitter.agents_cli import _print_reply
 
-            props = make_properties(
-                response_topic=reply_t,
-                correlation_data=session_id,
-            )
-            await client.publish(
-                workflow_request,
-                req.to_json(),
-                qos=1,
-                properties=props,
-            )
-            console.print(f"Workflow '{workflow_id}' submitted as session {session_id}")
-
-            if not wait:
-                return
-
-            console.print("Waiting for result... (Ctrl+C to detach)\n")
-
-            try:
-                async with asyncio.timeout(600.0):
-                    async for mqtt_msg in client.messages:
-                        payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
-                        if not payload:
-                            continue
-                        try:
-                            data = json.loads(payload)
-                        except Exception:
-                            continue
-
-                        kind, content = classify_reply(data)
-                        if kind == REPLY_TEXT:
-                            console.print(content, end="")
-                        elif kind == REPLY_TOOL:
-                            console.print(f"  [dim][tool] {content}[/dim]")
-                        elif kind == REPLY_TERMINAL:
-                            console.print(f"\n\n{content}")
-                            return
-                        elif kind == REPLY_ERROR:
-                            console.print(f"[red]Error: {content}[/red]")
-                            return
-            except TimeoutError:
-                console.print("[yellow]Timed out waiting for result[/yellow]")
-
-    asyncio.run(run_workflow())
+    asyncio.run(
+        send_and_wait(
+            topic_request(f"workflow-{workflow_id}"),
+            req.to_json(),
+            session_id,
+            _print_reply,
+            wait=wait,
+        )
+    )
 
 
 def parse_vars(args: list[str]) -> dict[str, str]:
@@ -199,7 +142,6 @@ def main() -> None:
             )
             sys.exit(1)
         variables = parse_vars(args[2:])
-        # Check for --no-wait flag
         wait = "--no-wait" not in args
         cmd_run(args[1], variables, wait=wait)
     else:

@@ -4,8 +4,11 @@ Topics follow the A2A spec: $a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
 with application-defined suffixes after agent_id for session/task scoping.
 """
 
+import asyncio
+import json
 import os
 import ssl
+import uuid
 
 import aiomqtt
 from dotenv import load_dotenv
@@ -162,3 +165,60 @@ def get_response_topic(msg) -> str | None:
     if props is None:
         return None
     return getattr(props, "ResponseTopic", None)
+
+
+# --- Send-and-wait helper (used by agent + workflow CLIs) ---
+
+
+async def send_and_wait(
+    request_topic: str,
+    payload: str,
+    session_id: str,
+    on_reply: "callable",
+    *,
+    wait: bool = True,
+    timeout: float = 600.0,
+    label: str = "",
+) -> None:
+    """Publish a request and stream replies until terminal or timeout.
+
+    on_reply(kind, content) is called for each classified reply message.
+    It should return True to stop listening (e.g. on terminal/error).
+    """
+    from skitter.types import classify_reply
+
+    mqtt_session = uuid.uuid4().hex[:12]
+    reply_t = topic_reply("cli", mqtt_session)
+
+    async with aiomqtt.Client(
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}",
+        ),
+    ) as client:
+        if wait:
+            await client.subscribe(reply_t, qos=1)
+
+        props = make_properties(
+            response_topic=reply_t,
+            correlation_data=session_id,
+        )
+        await client.publish(request_topic, payload, qos=1, properties=props)
+
+        if not wait:
+            return
+
+        try:
+            async with asyncio.timeout(timeout):
+                async for mqtt_msg in client.messages:
+                    raw = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
+                    if not raw:
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        continue
+                    kind, content = classify_reply(data)
+                    if on_reply(kind, content):
+                        return
+        except TimeoutError:
+            on_reply("timeout", "")

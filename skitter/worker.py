@@ -356,18 +356,7 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
             context = await wait_for_needs(client, session, task_name)
 
         # 3. Build AgentMessage from pre-materialized spec + context
-        task_msg = AgentMessage(
-            task_id=my_spec["task_id"],
-            session_id=my_spec["session_id"],
-            description=my_spec["description"],
-            agent=my_spec.get("agent", ""),
-            context=context,
-            model=my_spec.get("model", ""),
-            runtime=my_spec.get("runtime", "claude"),
-            next=my_spec.get("next", ""),
-            caller_reply_topic=my_spec.get("caller_reply_topic", ""),
-            caller_correlation=my_spec.get("caller_correlation", ""),
-        )
+        task_msg = AgentMessage(**{**my_spec, "context": context})
 
         await publish_task_state(client, agent, session_id, task_id, "running")
 

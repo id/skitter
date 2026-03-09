@@ -93,18 +93,11 @@ async def run_chat(session_id: str) -> None:
                 workflow_vars: dict[str, str] = {}
                 agent_id = ""
                 if text.startswith("/workflow "):
+                    from skitter.workflow_cli import parse_vars
+
                     parts = text.split()
                     workflow_id = parts[1] if len(parts) > 1 else ""
-                    i = 2
-                    while i < len(parts):
-                        if parts[i] == "--var" and i + 1 < len(parts):
-                            kv = parts[i + 1]
-                            if "=" in kv:
-                                k, v = kv.split("=", 1)
-                                workflow_vars[k] = v
-                            i += 2
-                        else:
-                            i += 1
+                    workflow_vars = parse_vars(parts[2:])
                     text = f"Workflow '{workflow_id}'"
                 elif text.startswith("/agent "):
                     parts = text.split(None, 2)

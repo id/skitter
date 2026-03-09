@@ -1,32 +1,16 @@
 """CLI for managing and running predefined agents."""
 
 import asyncio
-import json
 import sys
 import uuid
 
-import aiomqtt
 import yaml
 from rich.console import Console
 from rich.table import Table
 
 from skitter.config import load_agents
-from skitter.mqtt import (
-    A2A_ORG,
-    A2A_UNIT,
-    make_properties,
-    mqtt_client_kwargs,
-    topic_reply,
-    topic_request,
-)
-from skitter.types import (
-    A2ARequest,
-    REPLY_ERROR,
-    REPLY_TERMINAL,
-    REPLY_TEXT,
-    REPLY_TOOL,
-    classify_reply,
-)
+from skitter.mqtt import send_and_wait, topic_request
+from skitter.types import A2ARequest, REPLY_ERROR, REPLY_TERMINAL, REPLY_TEXT, REPLY_TOOL
 
 console = Console()
 
@@ -42,11 +26,7 @@ def cmd_list() -> None:
     table.add_column("Name")
     table.add_column("Runtime", style="green")
     for agent_id, agent in agents.items():
-        table.add_row(
-            agent_id,
-            agent.name,
-            agent.runtime,
-        )
+        table.add_row(agent_id, agent.name, agent.runtime)
     console.print(table)
 
 
@@ -73,22 +53,33 @@ def cmd_show(agent_id: str) -> None:
     runtime = agent.runtime or "claude"
     if runtime == "claude":
         agent_file = Path.home() / ".claude" / "agents" / f"{agent_id}.md"
-        if agent_file.is_file():
-            console.print(f"[dim]{agent_file}[/dim]")
-            console.print(agent_file.read_text())
-        else:
-            console.print(
-                f"[yellow]No Claude sub-agent definition at {agent_file}[/yellow]"
-            )
     elif runtime == "codex":
         agent_file = Path.home() / ".codex" / "agents" / f"{agent_id}.toml"
-        if agent_file.is_file():
-            console.print(f"[dim]{agent_file}[/dim]")
-            console.print(agent_file.read_text())
-        else:
-            console.print(
-                f"[yellow]No Codex sub-agent definition at {agent_file}[/yellow]"
-            )
+    else:
+        return
+    if agent_file.is_file():
+        console.print(f"[dim]{agent_file}[/dim]")
+        console.print(agent_file.read_text())
+    else:
+        console.print(f"[yellow]No sub-agent definition at {agent_file}[/yellow]")
+
+
+def _print_reply(kind: str, content: str) -> bool:
+    """Handle a reply message. Returns True to stop listening."""
+    if kind == REPLY_TEXT:
+        console.print(content, end="")
+    elif kind == REPLY_TOOL:
+        console.print(f"  [dim][tool] {content}[/dim]")
+    elif kind == REPLY_TERMINAL:
+        console.print(f"\n\n{content}")
+        return True
+    elif kind == REPLY_ERROR:
+        console.print(f"[red]Error: {content}[/red]")
+        return True
+    elif kind == "timeout":
+        console.print("[yellow]Timed out waiting for result[/yellow]")
+        return True
+    return False
 
 
 def cmd_run(agent_id: str, description: str) -> None:
@@ -100,63 +91,19 @@ def cmd_run(agent_id: str, description: str) -> None:
         sys.exit(1)
 
     session_id = f"agent-{uuid.uuid4().hex[:8]}"
-    req = A2ARequest(
-        text=description,
-        session_id=session_id,
-        sender="cli",
+    req = A2ARequest(text=description, session_id=session_id, sender="cli")
+
+    console.print(f"Agent '{agent_id}' started as session {session_id}")
+    console.print("Waiting for result... (Ctrl+C to detach)\n")
+
+    asyncio.run(
+        send_and_wait(
+            topic_request(agent_id),
+            req.to_json(),
+            session_id,
+            _print_reply,
+        )
     )
-
-    mqtt_session = uuid.uuid4().hex[:12]
-    reply_t = topic_reply("cli", mqtt_session)
-    agent_request = topic_request(agent_id)
-
-    async def run_agent() -> None:
-        async with aiomqtt.Client(
-            **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/agent-cli-{mqtt_session}",
-            ),
-        ) as client:
-            await client.subscribe(reply_t, qos=1)
-
-            props = make_properties(
-                response_topic=reply_t,
-                correlation_data=session_id,
-            )
-            await client.publish(
-                agent_request,
-                req.to_json(),
-                qos=1,
-                properties=props,
-            )
-            console.print(f"Agent '{agent_id}' started as session {session_id}")
-            console.print("Waiting for result... (Ctrl+C to detach)\n")
-
-            try:
-                async with asyncio.timeout(600.0):
-                    async for mqtt_msg in client.messages:
-                        payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
-                        if not payload:
-                            continue
-                        try:
-                            data = json.loads(payload)
-                        except Exception:
-                            continue
-
-                        kind, content = classify_reply(data)
-                        if kind == REPLY_TEXT:
-                            console.print(content, end="")
-                        elif kind == REPLY_TOOL:
-                            console.print(f"  [dim][tool] {content}[/dim]")
-                        elif kind == REPLY_TERMINAL:
-                            console.print(f"\n\n{content}")
-                            return
-                        elif kind == REPLY_ERROR:
-                            console.print(f"[red]Error: {content}[/red]")
-                            return
-            except TimeoutError:
-                console.print("[yellow]Timed out waiting for result[/yellow]")
-
-    asyncio.run(run_agent())
 
 
 def main() -> None:

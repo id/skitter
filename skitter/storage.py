@@ -3,13 +3,13 @@
 import json
 import logging
 import os
+import tempfile
+from pathlib import Path
 
 from skitter.config import (
     CARDS_DIR,
     AgentDef,
     WorkflowDef,
-    WorkflowTask,
-    infer_task_next,
     load_agents as _load_fs,
     load_workflows as _load_fs_workflows,
 )
@@ -56,72 +56,31 @@ def _r2_get_text(key: str) -> str:
     return resp["Body"].read().decode()
 
 
-def _load_agents_r2() -> dict[str, AgentDef]:
-    """Load agent YAML stubs from R2 (config/agents/*.yaml as JSON)."""
-    import yaml
-
-    agents: dict[str, AgentDef] = {}
-    from skitter.config import load_default_runtime
-
-    default_runtime = load_default_runtime()
-    for obj in _r2_list_objects("config/agents/"):
+def _r2_download_to_dir(prefix: str, dest: Path, ext: str) -> None:
+    """Download R2 objects matching prefix+ext into a local directory."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for obj in _r2_list_objects(prefix):
         key = obj["Key"]
-        if not key.endswith(".yaml"):
+        if not key.endswith(ext):
             continue
-        agent_id = key.rsplit("/", 1)[-1].removesuffix(".yaml")
-        try:
-            data = yaml.safe_load(_r2_get_text(key))
-            if not isinstance(data, dict):
-                continue
-            agents[agent_id] = AgentDef(
-                id=agent_id,
-                name=data.get("name", agent_id),
-                description=data.get("description", ""),
-                runtime=data.get("runtime", "") or default_runtime,
-                workspace=data.get("workspace", ""),
-            )
-        except Exception as e:
-            log.warning("Failed to load agent %s from R2: %s", key, e)
-    return agents
+        filename = key.rsplit("/", 1)[-1]
+        (dest / filename).write_text(_r2_get_text(key))
+
+
+def _load_agents_r2() -> dict[str, AgentDef]:
+    """Load agent YAML stubs from R2, reusing filesystem parser."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dest = Path(tmpdir) / "agents"
+        _r2_download_to_dir("config/agents/", dest, ".yaml")
+        return _load_fs(agents_dir=dest)
 
 
 def _load_workflows_r2() -> dict[str, WorkflowDef]:
-    """Load workflow definitions from R2 (config/workflows/*.yaml as JSON)."""
-    import yaml
-
-    workflows: dict[str, WorkflowDef] = {}
-    for obj in _r2_list_objects("config/workflows/"):
-        key = obj["Key"]
-        if not key.endswith(".yaml"):
-            continue
-        wf_id = key.rsplit("/", 1)[-1].removesuffix(".yaml")
-        try:
-            data = yaml.safe_load(_r2_get_text(key))
-            if not isinstance(data, dict):
-                continue
-            tasks = []
-            for t in data.get("tasks", []):
-                tasks.append(
-                    WorkflowTask(
-                        id=t.get("id", ""),
-                        agent=t.get("agent", "worker"),
-                        description=t.get("description", ""),
-                        next=t.get("next", ""),
-                        needs=t.get("needs", []),
-                        model=t.get("model", ""),
-                    )
-                )
-            infer_task_next(tasks)
-            workflows[wf_id] = WorkflowDef(
-                id=wf_id,
-                name=data.get("name", wf_id),
-                description=data.get("description", ""),
-                variables=data.get("variables", []),
-                tasks=tasks,
-            )
-        except Exception as e:
-            log.warning("Failed to load workflow %s from R2: %s", key, e)
-    return workflows
+    """Load workflow definitions from R2, reusing filesystem parser."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dest = Path(tmpdir) / "workflows"
+        _r2_download_to_dir("config/workflows/", dest, ".yaml")
+        return _load_fs_workflows(workflows_dir=dest)
 
 
 def _load_cards_r2() -> dict[str, str]:

@@ -10,6 +10,7 @@ request/{o}/{u}/+ and event/{o}/{u}/+/+ wildcards.
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -35,7 +36,6 @@ from skitter.mqtt import (
     topic_request_wildcard,
     topic_session,
 )
-from skitter.respawn import handle_dead_event
 from skitter.spawn import spawn_worker
 from skitter.storage import load_agents, load_cards, load_workflows
 from skitter.types import (
@@ -285,6 +285,22 @@ async def _publish_discovery(
             retain=True,
         )
     log.info("Published %d discovery cards", len(cards))
+
+
+async def handle_dead_event(payload: str) -> None:
+    """Re-spawn a crashed worker. Retained dispatch still exists on broker."""
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return
+    task_id = data.get("task_id", "")
+    agent = data.get("agent", "")
+    session_id = data.get("session_id", "")
+    if not task_id or not agent or not session_id:
+        log.warning("Dead event missing task_id, agent, or session_id: %s", data)
+        return
+    log.warning("Worker dead for task %s — respawning", task_id)
+    spawn_worker(agent, session_id, task_id)
 
 
 async def run_listen() -> None:

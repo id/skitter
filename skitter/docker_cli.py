@@ -8,12 +8,11 @@ from pathlib import Path
 from rich.console import Console
 
 from skitter.config import DOCKER_CLAUDE_DIR
-from skitter.spawn import DOCKER_NETWORK, WORKER_IMAGE
+from skitter.spawn import DOCKER_NETWORK, DOCKER_USER_HOME, WORKER_IMAGE
 
 console = Console()
 
 HOST_CLAUDE_DIR = Path.home() / ".claude"
-DOCKER_USER_HOME = "/home/skitter"
 
 
 def sync_claude_dir() -> None:

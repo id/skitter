@@ -103,12 +103,15 @@ def ensure_dirs() -> None:
     WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_agents(default_runtime: str = "") -> dict[str, AgentDef]:
+def load_agents(
+    default_runtime: str = "", agents_dir: Path | None = None
+) -> dict[str, AgentDef]:
     default_runtime = default_runtime or load_default_runtime()
     agents: dict[str, AgentDef] = {}
-    if not AGENTS_DIR.is_dir():
+    d = agents_dir or AGENTS_DIR
+    if not d.is_dir():
         return agents
-    for path in sorted(AGENTS_DIR.glob("*.yaml")):
+    for path in sorted(d.glob("*.yaml")):
         try:
             data = yaml.safe_load(path.read_text())
             if not isinstance(data, dict):
@@ -137,11 +140,12 @@ def infer_task_next(tasks: list[WorkflowTask]) -> None:
                 t.next = "output"
 
 
-def load_workflows() -> dict[str, WorkflowDef]:
+def load_workflows(workflows_dir: Path | None = None) -> dict[str, WorkflowDef]:
     workflows: dict[str, WorkflowDef] = {}
-    if not WORKFLOWS_DIR.is_dir():
+    d = workflows_dir or WORKFLOWS_DIR
+    if not d.is_dir():
         return workflows
-    for path in sorted(WORKFLOWS_DIR.glob("*.yaml")):
+    for path in sorted(d.glob("*.yaml")):
         try:
             data = yaml.safe_load(path.read_text())
             if not isinstance(data, dict):

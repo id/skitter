@@ -140,6 +140,8 @@ class TestStatusEvent:
 
 class TestAgentMessage:
     def test_roundtrip(self):
+        from dataclasses import asdict
+
         msg = AgentMessage(
             task_id="t1",
             session_id="c1",
@@ -152,8 +154,8 @@ class TestAgentMessage:
             caller_reply_topic="reply/topic",
             caller_correlation="corr123",
         )
-        json_str = msg.to_json()
-        restored = AgentMessage.from_json(json_str)
+        d = asdict(msg)
+        restored = AgentMessage(**d)
         assert restored.task_id == "t1"
         assert restored.agent == "researcher"
         assert restored.runtime == "claude"
@@ -162,15 +164,7 @@ class TestAgentMessage:
         assert restored.caller_correlation == "corr123"
 
     def test_defaults(self):
-        msg = AgentMessage.from_json(
-            json.dumps(
-                {
-                    "task_id": "t",
-                    "session_id": "c",
-                    "description": "d",
-                }
-            )
-        )
+        msg = AgentMessage(task_id="t", session_id="c", description="d")
         assert msg.agent == ""
         assert msg.runtime == "claude"
         assert msg.next == ""
@@ -179,6 +173,8 @@ class TestAgentMessage:
 
 class TestSessionTask:
     def test_roundtrip(self):
+        from dataclasses import asdict
+
         task = SessionTask(
             id="research",
             task_id="abc123",
@@ -187,12 +183,12 @@ class TestSessionTask:
             next="review",
             needs=["prep"],
         )
-        d = task.to_dict()
+        d = asdict(task)
         assert d["id"] == "research"
         assert d["next"] == "review"
         assert d["needs"] == ["prep"]
 
-        restored = SessionTask.from_dict(d)
+        restored = SessionTask(**d)
         assert restored.id == "research"
         assert restored.next == "review"
         assert restored.needs == ["prep"]
@@ -622,16 +618,16 @@ class TestStorage:
 class TestRespawn:
     @pytest.mark.asyncio
     async def test_respawn_with_missing_fields(self):
-        from skitter.respawn import handle_dead_event
+        from skitter.supervisor import handle_dead_event
 
         # Should not raise
         await handle_dead_event(json.dumps({"status": "dead"}))
 
     @pytest.mark.asyncio
     async def test_respawn_with_valid_event(self):
-        from skitter.respawn import handle_dead_event
+        from skitter.supervisor import handle_dead_event
 
-        with patch("skitter.respawn.spawn_worker") as mock_spawn:
+        with patch("skitter.supervisor.spawn_worker") as mock_spawn:
             await handle_dead_event(
                 json.dumps(
                     {

@@ -74,17 +74,3 @@ def create_worker(agent: str, session_id: str, task_id: str) -> dict:
             "TASK_ID": task_id,
         },
     )
-
-
-def create_supervisor(session_id: str, request_topic: str) -> dict:
-    """Create an ephemeral supervisor machine to process a pending request."""
-    return create_machine(
-        app=FLY_APP,
-        image=FLY_WORKER_IMAGE,
-        env={
-            "SESSION_ID": session_id,
-            "REQUEST_TOPIC": request_topic,
-            "SKITTER_SPAWN_MODE": "fly",
-        },
-        entrypoint=["python", "-m", "skitter.supervisor", "--ephemeral"],
-    )

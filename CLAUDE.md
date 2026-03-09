@@ -1,6 +1,6 @@
 # Skitter
 
-~3,200 lines of Python. MQTT-based personal AI assistant. Stateless supervisor + self-coordinating workers + MQTT broker as infrastructure backbone.
+~2,700 lines of Python. MQTT-based personal AI assistant. Stateless supervisor + self-coordinating workers + MQTT broker as infrastructure backbone.
 
 ## Quick Orientation
 

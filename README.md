@@ -2,7 +2,7 @@
 
 Personal AI assistant built on MQTT. Define agents and workflows in YAML, run them locally or on Fly.io. Workers self-coordinate via retained MQTT messages, the supervisor just creates sessions and spawns workers. Supports both Claude Code and Codex CLI as runtimes.
 
-Small Python codebase (~2,500 lines).
+Small Python codebase (~2,700 lines).
 
 ## Quickstart (Local)
 
@@ -69,16 +69,16 @@ Any MQTT v5 Client          MQTT Broker              Workers
  (v5 Response Topic   │       |            │
   + Correlation Data) │       v            │
                       │  ┌───────────┐     │    ┌───────────┐
-                      │  │Supervisor │     │    │ Worker A  │
-                      │  │ (no LLM)  │─────────>│ (sonnet)  │──┐
+                      │  │Supervisor │     │    │ Worker A  │──┐
+                      │  │ (no LLM)  │─────────>│ (sonnet)  │  │
                       │  └───────────┘     │    └───────────┘  │
-                      │  Publishes session │    ┌───────────┐  │
-                      │  + spawns workers  │    │ Worker B  │  │
-                      │                    │    │ (haiku)   │──┤
-                      │                    │    └───────────┘  │
-                      │                    │                   │
- result               │                    │                   │
-<──────────────────────────────────────────────────────────────┘
+                      │  Publishes session │    ┌───────────┐  │  ┌──────────┐
+                      │  + spawns workers  │    │ Worker B  │  │  │  Google  │
+                      │                    │    │ (haiku)   │──┤<>│  Drive   │
+                      │                    │    └───────────┘  │  └──────────┘
+                      │                    │                   │   (via rclone
+ result               │                    │                   │    or local
+<──────────────────────────────────────────────────────────────┘    mount)
  (direct to caller)   │                    │
                       └────────────────────┘
 ```
@@ -87,9 +87,21 @@ Any MQTT v5 Client          MQTT Broker              Workers
 2. Supervisor intercepts via wildcard subscription, creates a session, spawns workers
 3. Workers read the session from retained MQTT and self-coordinate
 4. Workers with dependencies wait for upstream results before starting
-5. Results stream directly back to the caller — supervisor is not in the data path
+5. Workers with persistent workspaces sync files from Google Drive (or any rclone remote) before running, and sync back after
+6. Results stream directly back to the caller -- supervisor is not in the data path
 
 The broker handles routing, fan-out, and state (retained messages). The supervisor is stateless. Workers are ephemeral.
+
+## What You Can Build
+
+Skitter turns multi-agent workflows into something you can describe in a few lines of YAML and trigger from anywhere (CLI, dashboard, Telegram, cron). Some examples:
+
+- **Deep research pipelines.** Fan out to multiple researcher agents in parallel (web, academic, industry sources), join results through a fact-checker, and synthesize into a final report.
+- **Recurring market intelligence.** A scheduled workflow that discovers prospects, finds contacts, verifies data, and compiles a sales-ready report. Persistent workspaces on Google Drive let each run build on previous results -- excluding known accounts and avoiding duplicate leads.
+- **Code review and refactoring.** Chain a code analysis agent with a reviewer and a writer to produce structured reviews or migration plans across large codebases.
+- **Content pipelines.** Research a topic, draft content, review for accuracy and tone, then produce final copy -- each step handled by a specialized agent with the right tools.
+- **Data processing with memory.** Workflows that accumulate results across runs: competitive monitoring, weekly summaries, customer feedback analysis. Google Drive workspaces persist files between executions so agents can reference historical data.
+- **Multi-channel access.** The same workflows are accessible from the CLI, the browser dashboard, a Telegram bot, or any MQTT client. A ~100-line bridge script connects any new channel.
 
 ## Agents and Workflows
 
@@ -136,6 +148,26 @@ tasks:
     next: output
 ```
 
+### Persistent Workspaces
+
+Workflows can declare a persistent workspace backed by Google Drive (or any rclone remote). Workers sync files down before running and sync back after. Each task gets its own subdirectory but can read shared files and sibling task outputs.
+
+```yaml
+# ~/.skitter/workflows/weekly-report.yaml
+workspace: weekly-report   # synced to Google Drive
+tasks:
+  - id: gather
+    agent: researcher
+    description: "Read previous reports from the workspace, then research new developments."
+    next: compile
+  - id: compile
+    agent: writer
+    needs: [gather]
+    next: output
+```
+
+Locally, the Google Drive desktop app provides direct filesystem access with no sync overhead. On Fly.io, rclone handles the transfer automatically.
+
 ## Why MQTT?
 
 Instead of a monolithic orchestrator that handles routing, retries, fan-out, and load balancing on top of AI reasoning, skitter pushes all that infrastructure into the MQTT broker.
@@ -150,7 +182,7 @@ Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt
 
 ## Limitations
 
-- Agents run with `dangerouslySkipPermissions` — only run in trusted environments
+- Agents run with `dangerouslySkipPermissions` -- only run in trusted environments
 - Worker errors are passed as normal results to downstream tasks
 - Sessions live in retained MQTT messages only (not persisted to disk)
 - No built-in authentication (rely on MQTT broker auth)

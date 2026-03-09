@@ -415,33 +415,31 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
                 except asyncio.CancelledError:
                     pass
 
-        # Publish result
-        if my_task.next and my_task.next != "output":
-            await client.publish(
-                topic_result(session.workflow_id, task_name, session_id),
-                json.dumps(
-                    {
-                        "task": task_name,
-                        "session_id": session_id,
-                        "result": response_text,
-                    }
-                ),
-                qos=1,
-                retain=True,
-            )
-            log.info(
-                "[worker:%s:%s] Result published for next task '%s'",
-                agent,
-                task_name,
-                my_task.next,
-            )
-        else:
+        # Publish retained result (all tasks — used by dashboard and downstream workers)
+        await client.publish(
+            topic_result(session.workflow_id, task_name, session_id),
+            json.dumps(
+                {
+                    "task": task_name,
+                    "session_id": session_id,
+                    "result": response_text,
+                }
+            ),
+            qos=1,
+            retain=True,
+        )
+
+        # Terminal tasks also reply directly to the caller
+        is_terminal = not my_task.next or my_task.next == "output"
+        if is_terminal:
             await publish_terminal_result(client, session, task_name, response_text)
-            log.info(
-                "[worker:%s:%s] Terminal result published",
-                agent,
-                task_name,
-            )
+
+        log.info(
+            "[worker:%s:%s] Result published%s",
+            agent,
+            task_name,
+            " (terminal)" if is_terminal else f" for next task '{my_task.next}'",
+        )
 
         # Publish usage
         if usage_data or cost_usd is not None:

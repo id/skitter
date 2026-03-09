@@ -2,7 +2,7 @@
 
 Personal AI assistant built on MQTT. Define agents and workflows in YAML, run them locally or on Fly.io. Workers self-coordinate via retained MQTT messages, the supervisor just creates sessions and spawns workers. Supports both Claude Code and Codex CLI as runtimes.
 
-Small Python codebase (~3,200 lines).
+Small Python codebase (~2,500 lines).
 
 ## Quickstart (Local)
 

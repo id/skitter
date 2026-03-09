@@ -87,6 +87,11 @@ def topic_event_wildcard() -> str:
     return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/+/+"
 
 
+def topic_dead_wildcard() -> str:
+    """Wildcard for worker dead events: $a2a/v1/event/{org}/{unit}/+/dead"""
+    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/+/dead"
+
+
 # --- Coordination state (suffixed event topics, retained) ---
 
 
@@ -120,11 +125,6 @@ def topic_usage(agent_id: str, session_id: str, task_id: str) -> str:
     return (
         f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}/usage/{session_id}/{task_id}"
     )
-
-
-def topic_pending(session_id: str) -> str:
-    """Staged request for ephemeral supervisor: $a2a/v1/event/{org}/{unit}/supervisor/pending/{sid}"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/supervisor/pending/{session_id}"
 
 
 def topic_reload() -> str:

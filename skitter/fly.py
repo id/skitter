@@ -1,4 +1,4 @@
-"""Fly Machines API client for creating ephemeral machines."""
+"""Fly Machines API client for creating ephemeral worker machines."""
 
 import json
 import logging
@@ -21,23 +21,23 @@ def create_machine(
     env: dict[str, str],
     region: str = "",
     guest: dict | None = None,
-    entrypoint: list[str] | None = None,
+    cmd: list[str] | None = None,
 ) -> dict:
-    """Create an ephemeral Fly Machine (auto_destroy + no restart)."""
+    """Create an ephemeral Fly Machine (auto_destroy, restart once on failure)."""
     if not FLY_API_TOKEN:
         raise RuntimeError("FLY_API_TOKEN not configured")
 
     config: dict = {
         "image": image,
         "auto_destroy": True,
-        "restart": {"policy": "no"},
+        "restart": {"policy": "on-failure", "max_retries": 1},
         "env": env,
         "guest": guest
         if guest is not None
         else {"cpu_kind": "shared", "cpus": 1, "memory_mb": 512},
     }
-    if entrypoint:
-        config["init"] = {"entrypoint": entrypoint}
+    if cmd:
+        config["init"] = {"cmd": cmd}
 
     body: dict = {"config": config, "region": region or FLY_REGION}
 

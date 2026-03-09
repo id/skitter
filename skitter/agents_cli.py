@@ -10,7 +10,13 @@ from rich.table import Table
 
 from skitter.config import load_agents
 from skitter.mqtt import send_and_wait, topic_request
-from skitter.types import A2ARequest, REPLY_ERROR, REPLY_TERMINAL, REPLY_TEXT, REPLY_TOOL
+from skitter.types import (
+    A2ARequest,
+    REPLY_ERROR,
+    REPLY_TERMINAL,
+    REPLY_TEXT,
+    REPLY_TOOL,
+)
 
 console = Console()
 

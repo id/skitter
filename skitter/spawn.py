@@ -42,6 +42,7 @@ def _spawn_docker(agent: str, session_id: str, task_id: str) -> None:
         "MQTT_USER",
         "MQTT_PASS",
         "ANTHROPIC_API_KEY",
+        "CLAUDE_CREDENTIALS",
         "OPENAI_API_KEY",
     ):
         val = os.environ.get(key, "")

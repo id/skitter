@@ -38,7 +38,7 @@ $a2a/v1/
 
 Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A_ORG` / `SKITTER_A2A_UNIT`).
 
-The supervisor subscribes to `request/{o}/{u}/+` (wildcard for all agent requests) and `event/{o}/{u}/+/+` (wildcard for all agent events). It also subscribes explicitly to `request/{o}/{u}/supervisor/reload` (since the suffixed topic doesn't match the single-level `+` wildcard).
+The supervisor subscribes to `request/{o}/{u}/+` (wildcard for all agent requests), `event/{o}/{u}/+/dead` (worker crash detection), and `request/{o}/{u}/supervisor/reload` (since the suffixed topic doesn't match the single-level `+` wildcard).
 
 ## Chain-Based Execution
 
@@ -121,12 +121,12 @@ Workers stream `TaskStatusUpdateEvent` (state `working`) directly to the caller'
 The supervisor (`skitter/supervisor.py`) is a long-lived MQTT subscriber that:
 
 1. Subscribes to `$a2a/v1/request/{org}/{unit}/+` (wildcard for all agent requests)
-2. Subscribes to `$a2a/v1/event/{org}/{unit}/+/+` (wildcard for all agent events)
+2. Subscribes to `$a2a/v1/event/{org}/{unit}/+/dead` (worker crash detection)
 3. Subscribes to `$a2a/v1/request/{org}/{unit}/supervisor/reload` (explicit)
 4. On inbound request: extracts `agent_id` from the topic, creates a `Session` with `SessionTask` entries and pre-materialized `task_dispatches` dict
 5. Publishes the session as a retained message on `event/{org}/{unit}/supervisor/session/{session_id}`
 6. Spawns all workers (subprocess or Docker) -- every task gets a worker immediately
-7. Listens for dead events (`event/+/+` ending in `/dead`) for crash detection and respawns dead workers
+7. Listens for dead events and respawns crashed workers
 
 The supervisor holds no in-memory state about running sessions. It is restartable at any time.
 
@@ -229,6 +229,3 @@ Workers can run as local subprocesses (default) or Docker containers (`SKITTER_S
 
 Cancel signals are published as JSON-RPC to `$a2a/v1/request/{org}/{unit}/{agent_id}/cancel`. Workers run a separate cancel listener that watches for cancel messages matching their `task_id` and terminates the agent subprocess.
 
-## EMQX Rule Engine
-
-Auxiliary concerns (logging, webhooks, dead-letter routing, metrics) are handled by EMQX rules rather than application code. See `docs/emqx-rules.md`.

@@ -31,27 +31,9 @@ def dispatch() -> None:
 
         main()
     elif subcmd == "deploy":
-        args = sys.argv[2:]
-        target = ""
-        if "--target" in args:
-            idx = args.index("--target")
-            target = args[idx + 1] if idx + 1 < len(args) else ""
-        if target == "fly":
-            from skitter.deploy_fly import cmd_deploy_fly
+        from skitter.deploy_fly import cmd_deploy_fly
 
-            cmd_deploy_fly()
-        else:
-            from skitter.deploy import cmd_deploy
-
-            # skitter deploy [--agents|--workflows|--discovery]
-            what = "all"
-            if "--agents" in args:
-                what = "agents"
-            elif "--workflows" in args:
-                what = "workflows"
-            elif "--discovery" in args:
-                what = "discovery"
-            cmd_deploy(what)
+        cmd_deploy_fly()
     elif subcmd == "init":
         from skitter.config import write_examples
 
@@ -74,10 +56,8 @@ def dispatch() -> None:
             sys.exit(1)
         cmd_run("skitter", prompt)
     elif subcmd == "supervisor":
-        # skitter supervisor [--fly --session-id ... --request-topic ...]
         from skitter.supervisor import main
 
-        sys.argv = sys.argv[1:]  # strip "skitter" so argparse sees supervisor args
         main()
     elif subcmd and not subcmd.startswith("-"):
         # skitter "prompt" — treat unrecognized subcommand as prompt

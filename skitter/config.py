@@ -1,5 +1,6 @@
 """Configuration loader for ~/.skitter/ agents and workflows."""
 
+import json
 import logging
 import string
 from dataclasses import dataclass, field
@@ -203,6 +204,21 @@ WORKSPACES_DIR = SKITTER_DIR / "workspaces"
 CARDS_DIR = SKITTER_DIR / "cards"
 DOCKER_CLAUDE_DIR = SKITTER_DIR / "docker-claude"
 CLAUDE_AGENTS_DIR = Path.home() / ".claude" / "agents"
+
+
+def load_cards() -> dict[str, str]:
+    """Load pre-built agent card JSON files from ~/.skitter/cards/."""
+    cards: dict[str, str] = {}
+    if not CARDS_DIR.is_dir():
+        return cards
+    for path in sorted(CARDS_DIR.glob("*.json")):
+        try:
+            raw = path.read_text()
+            json.loads(raw)  # validate
+            cards[path.stem] = raw
+        except Exception:
+            pass
+    return cards
 
 
 def write_examples() -> tuple[list[str], list[str]]:

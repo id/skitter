@@ -1,10 +1,8 @@
 """Deploy skitter to Fly Machines.
 
-Builds + pushes a single Docker image to a single Fly app ('skitter').
-Both supervisor and worker machines are created from this image with
-different entrypoints and env vars.
-
-Worker image includes agent definition files baked in.
+Builds + pushes a single Docker image to a single Fly app. The deploy
+creates a persistent supervisor machine (always-on, ~$2/mo). Workers
+are ephemeral machines created by the supervisor via Fly Machines API.
 """
 
 import json
@@ -33,7 +31,10 @@ def _fly(
 ) -> subprocess.CompletedProcess:
     """Run a fly CLI command."""
     cmd = ["fly", *args]
-    log.info("$ %s", " ".join(cmd))
+    if "secrets" in args:
+        log.info("$ fly secrets set ... (redacted)")
+    else:
+        log.info("$ %s", " ".join(cmd))
     kwargs: dict = {"check": check, "text": True, "cwd": cwd}
     if not stream:
         kwargs["capture_output"] = True
@@ -57,6 +58,7 @@ def _prepare_build_context() -> Path:
     ctx = Path(tempfile.mkdtemp(prefix="skitter-fly-"))
 
     # Project files
+    shutil.copy2(PROJECT_DIR / "entrypoint.sh", ctx / "entrypoint.sh")
     shutil.copy2(PROJECT_DIR / "pyproject.toml", ctx / "pyproject.toml")
     shutil.copytree(
         PROJECT_DIR / "skitter",
@@ -78,13 +80,16 @@ def _prepare_build_context() -> Path:
         for f in AGENTS_DIR.glob("*.yaml"):
             shutil.copy2(f, skitter_dst / f.name)
 
-    # fly.toml for the app
+    # fly.toml — supervisor runs as the app process
     fly_toml = ctx / "fly.toml"
     fly_toml.write_text(
         f'app = "{FLY_APP}"\n'
         f'primary_region = "{FLY_REGION}"\n'
         "\n[build]\n\n"
-        "# No services — machines are ephemeral, created via API\n"
+        "[env]\n"
+        '  SKITTER_SPAWN_MODE = "fly"\n'
+        "\n[processes]\n"
+        '  app = "python -m skitter.supervisor"\n'
     )
 
     # Write a Dockerfile that extends the worker image with agent files
@@ -114,17 +119,18 @@ def cmd_deploy_fly() -> None:
             "MQTT_USER": os.environ.get("MQTT_USER", ""),
             "MQTT_PASS": os.environ.get("MQTT_PASS", ""),
             "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+            "CLAUDE_CREDENTIALS": os.environ.get("CLAUDE_CREDENTIALS", ""),
             "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
             "FLY_API_TOKEN": os.environ.get("FLY_API_TOKEN", ""),
             "FLY_APP": FLY_APP,
             "FLY_WORKER_IMAGE": f"registry.fly.io/{FLY_APP}:latest",
             "FLY_REGION": FLY_REGION,
-            "SKITTER_SPAWN_MODE": "fly",
         }
     )
 
     # 2. Build + deploy image (with agent files)
-    console.print("\nBuilding image...")
+    #    fly deploy creates/updates the supervisor machine (always-on)
+    console.print("\nBuilding and deploying...")
     build_ctx = _prepare_build_context()
     try:
         console.print(f"  Build context: {build_ctx}")
@@ -144,37 +150,20 @@ def cmd_deploy_fly() -> None:
         if result.returncode != 0:
             console.print(f"  [red]Deploy failed (exit {result.returncode})[/red]")
             raise SystemExit(1)
-        console.print(f"  Image deployed to [bold]{FLY_APP}[/bold]")
+        console.print(f"  Supervisor deployed to [bold]{FLY_APP}[/bold]")
     finally:
         shutil.rmtree(build_ctx, ignore_errors=True)
 
-    # 3. Get actual image ref and clean up deploy-created machine
-    image_ref = ""
+    # 3. Update FLY_WORKER_IMAGE secret with the deployed image ref
     result = _fly("machines", "list", "-a", FLY_APP, "--json", check=False)
     if result.returncode == 0:
         machines = json.loads(result.stdout)
         for m in machines:
-            if not image_ref:
-                image_ref = m.get("config", {}).get("image", "")
-            mid = m["id"]
-            _fly("machine", "destroy", mid, "-a", FLY_APP, "--force", check=False)
-            console.print(f"  Cleaned up deploy machine {mid}")
-
-    if image_ref:
-        console.print(f"  Image ref: [bold]{image_ref}[/bold]")
-        _set_secrets({"FLY_WORKER_IMAGE": image_ref})
-    else:
-        console.print("  [yellow]Could not determine image ref[/yellow]")
-
-    # 4. Publish discovery cards
-    console.print("\nPublishing discovery cards...")
-    from skitter.deploy import publish_discovery_via_emqx
-    from skitter.emqx import EMQX_API_URL
-
-    if EMQX_API_URL:
-        n = publish_discovery_via_emqx()
-        console.print(f"  Published {n} discovery cards")
-    else:
-        console.print("  [yellow]EMQX_API_URL not set — skipping[/yellow]")
+            image_ref = m.get("config", {}).get("image", "")
+            if image_ref:
+                console.print(f"  Image: [bold]{image_ref}[/bold]")
+                _set_secrets({"FLY_WORKER_IMAGE": image_ref})
+                break
 
     console.print(f"\n[bold green]Done![/bold green] App: {FLY_APP}")
+    console.print("  Supervisor publishes discovery cards on startup")

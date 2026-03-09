@@ -37,7 +37,7 @@ Open `dashboard.html` in a browser to watch jobs execute in real time (connects 
 
 ## Deploy to Fly.io
 
-For a fully serverless setup where nothing runs when idle:
+Always-on supervisor (~$2/mo) with ephemeral worker machines. Workers auto-destroy after completing their task.
 
 ```bash
 # Create Fly app (one-time)
@@ -52,9 +52,7 @@ set -a && source .env.cloud && set +a
 uv run python -m skitter deploy --target fly
 ```
 
-Then configure the EMQX rule engine to intercept requests and trigger Fly machine creation.
-
-See [docs/fly-deployment.md](docs/fly-deployment.md) for the full setup guide including EMQX Serverless configuration, rule engine setup, and end-to-end testing.
+See [docs/fly-deployment.md](docs/fly-deployment.md) for the full setup guide.
 
 ## How It Works
 
@@ -143,7 +141,7 @@ Instead of a monolithic orchestrator that handles routing, retries, fan-out, and
 - **Run workers anywhere.** Local processes, Docker containers, or Fly Machines. As long as they can reach the broker, they work.
 - **Crash recovery.** Retained messages = durable state. Workers set LWT for crash detection. The supervisor respawns dead workers; the new worker picks up from the retained session.
 - **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client and watch every request, result, and chain execution in real time.
-- **Serverless.** The supervisor is stateless — it can run as an ephemeral Fly Machine that processes one request and exits.
+- **Cheap cloud deploy.** Always-on supervisor (~$2/mo) on Fly.io with ephemeral worker machines billed per-second.
 
 Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
 

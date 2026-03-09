@@ -1,18 +1,13 @@
 """Supervisor — creates sessions, spawns workers.
 
-Two modes:
-  --listen   Long-lived MQTT subscriber (local/default)
-  --ephemeral      Ephemeral: read one staged request from MQTT, process, exit
-
-Not an A2A agent itself. Invisible infrastructure that subscribes to
-request/{o}/{u}/+ and event/{o}/{u}/+/+ wildcards.
+Long-lived MQTT subscriber. Not an A2A agent itself. Invisible
+infrastructure that subscribes to request/{o}/{u}/+ and
+event/{o}/{u}/+/dead wildcards.
 """
 
-import argparse
 import asyncio
 import json
 import logging
-import os
 import uuid
 
 import aiomqtt
@@ -29,15 +24,14 @@ from skitter.mqtt import (
     get_response_topic,
     make_properties,
     mqtt_client_kwargs,
+    topic_dead_wildcard,
     topic_discovery,
-    topic_event_wildcard,
-    topic_pending,
     topic_reload,
     topic_request_wildcard,
     topic_session,
 )
 from skitter.spawn import spawn_worker
-from skitter.storage import load_agents, load_cards, load_workflows
+from skitter.config import load_agents, load_cards, load_workflows
 from skitter.types import (
     A2ARequest,
     A2AResponse,
@@ -155,25 +149,7 @@ async def handle_request(
         workflow_id = agent_id.removeprefix("workflow-")
         agent_id = ""
 
-    if agent_id:
-        if agent_id not in agents:
-            await _send_error(
-                client,
-                caller_reply_topic,
-                caller_correlation,
-                f"Unknown agent: {agent_id}",
-                code=A2A_RESPONDER_UNAVAILABLE,
-                a2a_error="responder_unavailable",
-            )
-            return
-        session = create_session(
-            req.session_id,
-            req.text,
-            agent_id=agent_id,
-            text=req.text,
-            agents=agents,
-        )
-    elif workflow_id:
+    if workflow_id:
         workflow = workflows.get(workflow_id)
         if not workflow:
             await _send_error(
@@ -193,17 +169,17 @@ async def handle_request(
             agents=agents,
         )
     else:
-        default_agent = "skitter"
-        if default_agent not in agents:
+        agent_id = agent_id or "skitter"
+        if agent_id not in agents:
             await _send_error(
                 client,
                 caller_reply_topic,
                 caller_correlation,
-                "No default agent. Specify agent_id or workflow_id, "
-                "or run 'skitter init' to create the default agent.",
+                f"Unknown agent: {agent_id}",
+                code=A2A_RESPONDER_UNAVAILABLE,
+                a2a_error="responder_unavailable",
             )
             return
-        agent_id = default_agent
         session = create_session(
             req.session_id,
             req.text,
@@ -220,26 +196,19 @@ async def handle_request(
             session, task_name, agents
         )
 
-    # Publish session as retained event
-    await client.publish(
-        topic_session(session.session_id),
-        session.to_json(),
-        qos=1,
-        retain=True,
-    )
-
-    # Spawn ALL workers (entry tasks run immediately, join tasks wait)
-    for task_name, st in session.tasks.items():
+    # Set statuses, publish session, spawn workers
+    for st in session.tasks.values():
         st.status = "running"
-        spawn_worker(st.agent, session.session_id, st.task_id)
 
-    # Re-publish session with updated statuses
     await client.publish(
         topic_session(session.session_id),
         session.to_json(),
         qos=1,
         retain=True,
     )
+
+    for st in session.tasks.values():
+        spawn_worker(st.agent, session.session_id, st.task_id)
 
     label = f"agent '{agent_id}'" if agent_id else f"workflow '{workflow_id}'"
     log.info(
@@ -320,9 +289,9 @@ async def run_listen() -> None:
         await _publish_discovery(client, cards)
 
         await client.subscribe(topic_request_wildcard(), qos=1)
-        await client.subscribe(topic_event_wildcard(), qos=1)
+        await client.subscribe(topic_dead_wildcard(), qos=1)
         await client.subscribe(topic_reload(), qos=1)
-        log.info("Supervisor ready, listening on request/+, event/+/+")
+        log.info("Supervisor ready, listening on request/+, event/+/dead")
 
         async for mqtt_msg in client.messages:
             topic = str(mqtt_msg.topic)
@@ -368,93 +337,16 @@ async def run_listen() -> None:
                     agent_id=agent_id,
                 )
 
-            elif "/event/" in topic and topic.endswith("/dead"):
+            elif "/event/" in topic:
                 await handle_dead_event(payload)
-
-
-# --- Mode: fly (ephemeral — process one pending request, exit) ---
-
-
-async def run_ephemeral(session_id: str, request_topic: str) -> None:
-    """Ephemeral mode — read staged request from MQTT, process, exit."""
-    agents = load_agents()
-    workflows = load_workflows()
-
-    log.info("Ephemeral supervisor: session=%s topic=%s", session_id, request_topic)
-
-    async with aiomqtt.Client(**mqtt_client_kwargs()) as client:
-        pending = topic_pending(session_id)
-        await client.subscribe(pending, qos=1)
-
-        # Read the staged request (retained by EMQX rule engine)
-        payload = ""
-        response_topic = ""
-        correlation_data = ""
-
-        try:
-            async with asyncio.timeout(30):
-                async for msg in client.messages:
-                    raw = msg.payload
-                    payload = raw.decode() if isinstance(raw, bytes) else str(raw)
-                    response_topic = get_response_topic(msg) or ""
-                    correlation_data = get_correlation_data(msg) or ""
-                    break
-        except TimeoutError:
-            log.error("Timeout reading pending request for session %s", session_id)
-            return
-
-        if not payload:
-            log.error("Empty pending request for session %s", session_id)
-            return
-
-        # Clear the retained pending message
-        await client.publish(pending, b"", retain=True)
-
-        agent_id = _parse_agent_id_from_topic(request_topic)
-        await handle_request(
-            client,
-            payload,
-            response_topic,
-            correlation_data,
-            agents,
-            workflows,
-            agent_id=agent_id,
-        )
-
-    log.info("Ephemeral supervisor done, exiting")
 
 
 # --- Entry point ---
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Skitter supervisor")
-    parser.add_argument(
-        "--ephemeral",
-        action="store_true",
-        help="Ephemeral mode: process one staged request and exit",
-    )
-    parser.add_argument(
-        "--session-id",
-        default=os.environ.get("SESSION_ID", ""),
-        help="Session ID of the pending request (fly mode)",
-    )
-    parser.add_argument(
-        "--request-topic",
-        default=os.environ.get("REQUEST_TOPIC", ""),
-        help="Original MQTT request topic (fly mode)",
-    )
-    args = parser.parse_args()
-
-    if args.ephemeral:
-        if not args.session_id or not args.request_topic:
-            parser.error("--ephemeral requires --session-id and --request-topic")
-        coro = run_ephemeral(args.session_id, args.request_topic)
-    else:
-        coro = run_listen()
-
     try:
-        asyncio.run(coro)
+        asyncio.run(run_listen())
     except KeyboardInterrupt:
         log.info("Supervisor shutting down")
 

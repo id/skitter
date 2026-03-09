@@ -11,12 +11,9 @@
 | Spawn backends (subprocess, docker, fly) | `skitter/spawn.py` |
 | Fly Machines API client | `skitter/fly.py` |
 | Deploy to Fly | `skitter/deploy_fly.py` |
-| Deploy agents/cards to R2 + EMQX | `skitter/deploy.py` |
 | MQTT settings, A2A topic builders, v5 helpers | `skitter/mqtt.py` |
-| EMQX REST API client | `skitter/emqx.py` |
 | Config loading (~/.skitter/), dataclasses | `skitter/config.py` |
-| Config backends (filesystem, R2) | `skitter/storage.py` |
-| Crash recovery (LWT dead events) | `skitter/respawn.py` |
+| Crash recovery (LWT dead events) | `skitter/supervisor.py` (`handle_dead_event`) |
 | Message types | `skitter/types.py` |
 | Chat client | `skitter/cli.py` |
 | CLI dispatch | `skitter/__main__.py` |
@@ -27,14 +24,14 @@
 | Doc | Content |
 |---|---|
 | `docs/architecture.md` | Design principles, topic scheme, execution flows, recovery model |
-| `docs/fly-deployment.md` | EMQX Serverless + Fly.io setup guide (rule engine, deploy, testing) |
+| `docs/fly-deployment.md` | EMQX Serverless + Fly.io setup guide (always-on supervisor, deploy, testing) |
 | `docs/landscape.md` | Competitive landscape research (OpenClaw, Nanobot, etc.) and library analysis (pi-mono, litellm) |
 | `CONTRIBUTING.md` | Project structure, config reference, env vars, testing, lint |
 | `README.md` | User-facing quickstart, deploy, how-it-works |
 
 ## Architecture in One Paragraph
 
-Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. The supervisor intercepts via wildcard subscription, creates a session (retained MQTT message), and spawns workers. Workers read the session, wait for upstream chain results if they have `needs`, run `claude --agent <name>` or `codex` as a subprocess, and publish results. Terminal tasks reply directly to the caller. The broker handles routing, fan-out, and state. Locally: subprocess workers + Docker EMQX. On Fly: ephemeral machines + EMQX Serverless, triggered by EMQX rule engine.
+Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. The supervisor intercepts via wildcard subscription, creates a session (retained MQTT message), and spawns workers. Workers read the session, wait for upstream chain results if they have `needs`, run `claude --agent <name>` or `codex` as a subprocess, and publish results. Terminal tasks reply directly to the caller. The broker handles routing, fan-out, and state. Locally: subprocess workers + Docker EMQX. On Fly: always-on supervisor + EMQX Serverless + ephemeral worker machines.
 
 ## Key Concepts
 
@@ -42,7 +39,6 @@ Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. 
 - **Chain routing** — non-terminal workers publish retained chain results; downstream workers subscribe and wait.
 - **A2A-over-MQTT** — all topics follow `$a2a/v1/{method}/{org}/{unit}/{agent_id}/{suffix}`.
 - **Native sub-agents** — agent identity owned by `~/.claude/agents/*.md` / `~/.codex/agents/*.toml`, not skitter. Skitter YAML stubs (`~/.skitter/agents/*.yaml`) contain only orchestration metadata.
-- **Dual-mode supervisor** — `--listen` (long-lived MQTT subscriber) or `--ephemeral` (process one staged request, exit).
 - **Spawn modes** — `subprocess` (local), `docker` (containerized), `fly` (Fly Machines API).
 
 ## Planning and Implementation Process

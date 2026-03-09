@@ -604,8 +604,8 @@ class TestSpawn:
 
 
 class TestStorage:
-    def test_storage_module_exists(self):
-        from skitter.storage import load_agents, load_workflows, load_cards
+    def test_config_loaders_exist(self):
+        from skitter.config import load_agents, load_cards, load_workflows
 
         assert callable(load_agents)
         assert callable(load_workflows)

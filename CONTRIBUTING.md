@@ -8,13 +8,9 @@ skitter/
   worker.py        Self-coordinating worker: reads session from MQTT, runs agent CLI, publishes results
   spawn.py         Worker spawn backends: subprocess, docker, fly
   fly.py           Fly Machines API client
-  deploy_fly.py    Deploy to Fly (build image, set secrets, publish cards)
-  deploy.py        Deploy agents/workflows/cards to R2 + EMQX
+  deploy_fly.py    Deploy to Fly (build image, set secrets)
   mqtt.py          MQTT connection settings, A2A topic builders, v5 property helpers
-  emqx.py          EMQX REST API client
-  config.py        ~/.skitter/ management, YAML loading, dataclasses
-  storage.py       Config loading backends: filesystem or R2
-  respawn.py       LWT dead event handling
+  config.py        ~/.skitter/ management, YAML loading, dataclasses, card loading
   types.py         Message type definitions
   cli.py           Chat client
   agents_cli.py    `skitter agents` subcommands

@@ -135,6 +135,8 @@ def cmd_deploy_fly() -> None:
             "--ha=false",
             "--strategy",
             "immediate",
+            "--image-label",
+            "latest",
             check=False,
             cwd=build_ctx,
             stream=True,

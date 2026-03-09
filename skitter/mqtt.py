@@ -173,7 +173,7 @@ def get_response_topic(msg) -> str | None:
 async def send_and_wait(
     request_topic: str,
     payload: str,
-    session_id: str,
+    correlation_id: str,
     on_reply: "callable",
     *,
     wait: bool = True,
@@ -200,7 +200,7 @@ async def send_and_wait(
 
         props = make_properties(
             response_topic=reply_t,
-            correlation_data=session_id,
+            correlation_data=correlation_id,
         )
         await client.publish(request_topic, payload, qos=1, properties=props)
 

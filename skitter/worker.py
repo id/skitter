@@ -261,9 +261,10 @@ async def publish_terminal_result(
     """Publish terminal TaskStatusUpdateEvent to caller."""
     event = make_status_event(
         request_id=session.caller_correlation,
-        task_id=task_name,
+        task_id=session.session_id,
         state="completed",
         artifact_text=result,
+        task_name=task_name,
     )
 
     if session.caller_reply_topic:
@@ -340,18 +341,18 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
 
         # Streaming
         stream_topic = session.caller_reply_topic
-        stream_correlation = session.caller_correlation
-        stream_props = make_properties(correlation_data=stream_correlation)
+        stream_props = make_properties(correlation_data=session.caller_correlation)
 
         async def publish_stream_item(item_type: str, content: str) -> None:
             if not stream_topic:
                 return
             event = make_status_event(
-                request_id=stream_correlation,
-                task_id=task_name,
+                request_id=session.caller_correlation,
+                task_id=session.session_id,
                 state="working",
                 message=content,
                 message_type=item_type,
+                task_name=task_name,
             )
             await client.publish(stream_topic, event, qos=0, properties=stream_props)
 
@@ -374,9 +375,12 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
                             continue
                         try:
                             data = json.loads(msg_payload)
-                            if (
-                                data.get("params", {}).get("task") == task_name
-                                or data.get("task") == task_name
+                            params = data.get("params", data)
+                            msg_sid = params.get("session_id", "")
+                            msg_task = params.get("task", "")
+                            # Match: session_id must match, task is optional filter
+                            if msg_sid == session_id and (
+                                not msg_task or msg_task == task_name
                             ):
                                 log.info(
                                     "[worker:%s:%s] Cancel received",

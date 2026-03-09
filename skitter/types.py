@@ -33,17 +33,26 @@ def make_status_event(
     message: str = "",
     message_type: str = "",
     artifact_text: str = "",
+    task_name: str = "",
 ) -> str:
     """Build a TaskStatusUpdateEvent JSON-RPC response (A2A streaming reply).
 
     Used for both streaming updates (state="working") and terminal results
     (state="completed"/"failed"/"cancelled").
+
+    task_id is the A2A Task.id (= session_id). task_name is the internal
+    workflow task name, carried in metadata for dashboard routing.
     """
+    metadata: dict = {}
+    if message_type:
+        metadata["type"] = message_type
+    if task_name:
+        metadata["task_name"] = task_name
     status: dict = {"state": state}
     if message:
         status["message"] = message
-    if message_type:
-        status["metadata"] = {"type": message_type}
+    if metadata:
+        status["metadata"] = metadata
     result: dict = {
         "type": "TaskStatusUpdateEvent",
         "taskId": task_id,
@@ -58,6 +67,7 @@ def make_status_event(
 
 # --- Reply classification (used by all consumers) ---
 
+REPLY_SUBMITTED = "submitted"
 REPLY_TEXT = "text"
 REPLY_TOOL = "tool_use"
 REPLY_TERMINAL = "terminal"
@@ -80,6 +90,10 @@ def classify_reply(data: dict) -> tuple[str, str]:
 
     status = result.get("status", {})
     state = status.get("state", "")
+
+    if state == "submitted":
+        task_id = result.get("taskId", "")
+        return REPLY_SUBMITTED, task_id
 
     if state == "working":
         message = status.get("message", "")
@@ -106,7 +120,7 @@ class A2ARequest:
     """JSON-RPC 2.0 request for A2A tasks/send."""
 
     text: str
-    session_id: str
+    request_id: str
     sender: str = ""
     variables: dict[str, str] = field(default_factory=dict)
 
@@ -127,7 +141,7 @@ class A2ARequest:
         return json.dumps(
             {
                 "jsonrpc": "2.0",
-                "id": self.session_id,
+                "id": self.request_id,
                 "method": "tasks/send",
                 "params": params,
             }
@@ -143,7 +157,7 @@ class A2ARequest:
         text = parts[0].get("text", "") if parts else ""
         return cls(
             text=text,
-            session_id=d.get("id", f"req-{time.time_ns()}"),
+            request_id=d.get("id", f"req-{time.time_ns()}"),
             sender=metadata.get("sender", ""),
             variables=metadata.get("variables", {}),
         )

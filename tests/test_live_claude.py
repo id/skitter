@@ -53,7 +53,7 @@ class TestLiveClaude:
         await clean_retained()
         req = A2ARequest(
             text="What is 2+2? Reply with just the number.",
-            session_id=f"live-claude-{uuid.uuid4().hex[:8]}",
+            request_id=f"live-claude-{uuid.uuid4().hex[:8]}",
             sender="test",
         )
         result = await send_and_collect(topic_request("test_claude"), req, timeout=30.0)
@@ -65,7 +65,7 @@ class TestLiveClaude:
         await clean_retained()
         req = A2ARequest(
             text="Workflow 'Test Workflow' with topic=Python",
-            session_id=f"live-workflow-{uuid.uuid4().hex[:8]}",
+            request_id=f"live-workflow-{uuid.uuid4().hex[:8]}",
             sender="test",
             variables={"topic": "Python"},
         )
@@ -81,7 +81,7 @@ class TestLiveClaude:
     async def test_unknown_agent_rejected(self, supervisor):
         req = A2ARequest(
             text="Hello",
-            session_id=f"live-unknown-{uuid.uuid4().hex[:8]}",
+            request_id=f"live-unknown-{uuid.uuid4().hex[:8]}",
             sender="test",
         )
         result = await send_and_collect(

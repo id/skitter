@@ -136,10 +136,11 @@ The supervisor (`skitter/supervisor.py`) is a long-lived MQTT subscriber that:
 1. Subscribes to `$a2a/v1/request/{org}/{unit}/+` (wildcard for all agent requests)
 2. Subscribes to `skitter/event/+/dead` (worker crash detection)
 3. Subscribes to `skitter/control/reload`
-4. On inbound request: extracts `agent_id` from the topic, creates a `Session` with `SessionTask` entries (each carrying its `runtime` and other orchestration metadata)
+4. On inbound request: extracts `agent_id` from the topic, generates a server-side `session_id` (A2A Task.id), creates a `Session` with `SessionTask` entries (each carrying its `runtime` and other orchestration metadata)
 5. Publishes the session as a retained message on `skitter/session/{session_id}`
-6. Spawns all workers (subprocess, Docker, or Fly Machines) -- every task gets a worker immediately
-7. Listens for dead events and respawns crashed workers (local/docker only — skipped on Fly)
+6. Sends initial "submitted" ack to the caller with the server-generated session_id as A2A Task.id (via MQTT Response Topic + Correlation Data)
+7. Spawns all workers (subprocess, Docker, or Fly Machines) -- every task gets a worker immediately
+8. Listens for dead events and respawns crashed workers (local/docker only — skipped on Fly)
 
 The supervisor holds no in-memory state about running sessions. It is restartable at any time.
 
@@ -248,5 +249,5 @@ Workers can run as local subprocesses (default) or Docker containers (`SKITTER_S
 
 ## Cancel via A2A
 
-Cancel signals are published as JSON-RPC to `$a2a/v1/request/{org}/{unit}/{agent_id}/cancel`. Workers run a separate cancel listener that watches for cancel messages matching their session and terminates the agent subprocess.
+Cancel signals are published as JSON-RPC to `$a2a/v1/request/{org}/{unit}/{agent_id}/cancel` with `session_id` in the params to scope cancellation to a specific session. Workers run a separate cancel listener that matches on `session_id` (and optionally `task` name) before terminating the agent subprocess.
 

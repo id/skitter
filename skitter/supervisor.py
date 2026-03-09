@@ -7,6 +7,7 @@ and skitter/event/+/dead wildcards.
 import asyncio
 import json
 import logging
+import uuid
 
 import aiomqtt
 
@@ -39,6 +40,7 @@ from skitter.types import (
     A2A_TRANSPORT_PROTOCOL_ERROR,
     Session,
     SessionTask,
+    make_status_event,
 )
 
 logging.basicConfig(
@@ -122,6 +124,8 @@ async def handle_request(
         log.error("Bad inbound JSON-RPC: %s", e)
         return
 
+    session_id = uuid.uuid4().hex[:16]
+
     workflow_id = ""
     if agent_id.startswith("workflow-"):
         workflow_id = agent_id.removeprefix("workflow-")
@@ -140,7 +144,7 @@ async def handle_request(
             )
             return
         session = create_session(
-            req.session_id,
+            session_id,
             req.text,
             workflow=workflow,
             variables=req.variables,
@@ -159,7 +163,7 @@ async def handle_request(
             )
             return
         session = create_session(
-            req.session_id,
+            session_id,
             req.text,
             agent_id=agent_id,
             text=req.text,
@@ -167,7 +171,7 @@ async def handle_request(
         )
 
     session.caller_reply_topic = caller_reply_topic
-    session.caller_correlation = caller_correlation
+    session.caller_correlation = caller_correlation or req.request_id
 
     for st in session.tasks.values():
         st.status = "running"
@@ -178,6 +182,16 @@ async def handle_request(
         qos=1,
         retain=True,
     )
+
+    # Send initial ack with server-generated Task.id (A2A spec §Request/Reply)
+    if caller_reply_topic:
+        ack = make_status_event(
+            request_id=caller_correlation,
+            task_id=session.session_id,
+            state="submitted",
+        )
+        props = make_properties(correlation_data=caller_correlation)
+        await client.publish(caller_reply_topic, ack, qos=1, properties=props)
 
     for task_name, st in session.tasks.items():
         spawn_worker(st.agent, session.session_id, task_name)

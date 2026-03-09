@@ -108,9 +108,10 @@ async def run_chat(session_id: str) -> None:
                         continue
                 # else: no prefix — goes to default agent (skitter)
 
+                request_id = f"{session_id}-{uuid.uuid4().hex[:6]}"
                 req = A2ARequest(
                     text=text,
-                    session_id=session_id,
+                    request_id=request_id,
                     sender="cli",
                     variables=workflow_vars,
                 )
@@ -125,7 +126,7 @@ async def run_chat(session_id: str) -> None:
 
                 props = make_properties(
                     response_topic=reply_t,
-                    correlation_data=session_id,
+                    correlation_data=request_id,
                 )
                 await client.publish(
                     request_topic,

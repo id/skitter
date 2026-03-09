@@ -47,7 +47,7 @@ class TestA2ARequest:
     def test_roundtrip(self):
         req = A2ARequest(
             text="Research quantum computing",
-            session_id="req-abc123",
+            request_id="req-abc123",
             sender="cli",
             variables={"topic": "quantum"},
         )
@@ -64,12 +64,12 @@ class TestA2ARequest:
 
         restored = A2ARequest.from_json(j)
         assert restored.text == "Research quantum computing"
-        assert restored.session_id == "req-abc123"
+        assert restored.request_id == "req-abc123"
         assert restored.sender == "cli"
         assert restored.variables == {"topic": "quantum"}
 
     def test_minimal(self):
-        req = A2ARequest(text="hello", session_id="s1")
+        req = A2ARequest(text="hello", request_id="s1")
         j = req.to_json()
         d = json.loads(j)
         assert "metadata" not in d["params"]
@@ -82,14 +82,17 @@ class TestA2ARequest:
 
 class TestStatusEvent:
     def test_working_text(self):
-        event = make_status_event("req-1", "research", "working", message="hello")
+        event = make_status_event(
+            "req-1", "sess-abc123", "working", message="hello", task_name="research"
+        )
         d = json.loads(event)
         assert d["jsonrpc"] == "2.0"
         assert d["id"] == "req-1"
         assert d["result"]["type"] == "TaskStatusUpdateEvent"
-        assert d["result"]["taskId"] == "research"
+        assert d["result"]["taskId"] == "sess-abc123"
         assert d["result"]["status"]["state"] == "working"
         assert d["result"]["status"]["message"] == "hello"
+        assert d["result"]["status"]["metadata"]["task_name"] == "research"
         assert "artifact" not in d["result"]
 
         kind, content = classify_reply(d)
@@ -99,13 +102,15 @@ class TestStatusEvent:
     def test_working_tool_use(self):
         event = make_status_event(
             "req-1",
-            "research",
+            "sess-abc123",
             "working",
             message="Read: file.py",
             message_type="tool_use",
+            task_name="research",
         )
         d = json.loads(event)
         assert d["result"]["status"]["metadata"]["type"] == "tool_use"
+        assert d["result"]["status"]["metadata"]["task_name"] == "research"
 
         kind, content = classify_reply(d)
         assert kind == REPLY_TOOL
@@ -113,7 +118,11 @@ class TestStatusEvent:
 
     def test_terminal_with_artifact(self):
         event = make_status_event(
-            "req-2", "summarize", "completed", artifact_text="Final answer"
+            "req-2",
+            "sess-def456",
+            "completed",
+            artifact_text="Final answer",
+            task_name="summarize",
         )
         d = json.loads(event)
         assert d["result"]["status"]["state"] == "completed"

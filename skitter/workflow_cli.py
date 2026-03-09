@@ -82,7 +82,7 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
         )
         sys.exit(1)
 
-    session_id = f"workflow-{uuid.uuid4().hex[:8]}"
+    request_id = f"workflow-{uuid.uuid4().hex[:8]}"
     description = f"Workflow '{workflow.name}'"
     if variables:
         var_str = ", ".join(f"{k}={v}" for k, v in variables.items())
@@ -90,12 +90,12 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
 
     req = A2ARequest(
         text=description,
-        session_id=session_id,
+        request_id=request_id,
         sender="cli",
         variables=variables,
     )
 
-    console.print(f"Workflow '{workflow_id}' submitted as session {session_id}")
+    console.print(f"Workflow '{workflow_id}' submitted (request {request_id})")
     if wait:
         console.print("Waiting for result... (Ctrl+C to detach)\n")
 
@@ -105,7 +105,7 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
         send_and_wait(
             topic_request(f"workflow-{workflow_id}"),
             req.to_json(),
-            session_id,
+            request_id,
             _print_reply,
             wait=wait,
         )

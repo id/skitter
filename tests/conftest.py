@@ -220,7 +220,7 @@ async def send_and_collect(
 
         props = make_properties(
             response_topic=reply_t,
-            correlation_data=msg.session_id,
+            correlation_data=msg.request_id,
         )
         await client.publish(
             request_topic,

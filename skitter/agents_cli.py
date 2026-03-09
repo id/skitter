@@ -13,6 +13,7 @@ from skitter.mqtt import send_and_wait, topic_request
 from skitter.types import (
     A2ARequest,
     REPLY_ERROR,
+    REPLY_SUBMITTED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     REPLY_TOOL,
@@ -72,7 +73,9 @@ def cmd_show(agent_id: str) -> None:
 
 def _print_reply(kind: str, content: str) -> bool:
     """Handle a reply message. Returns True to stop listening."""
-    if kind == REPLY_TEXT:
+    if kind == REPLY_SUBMITTED:
+        console.print(f"[dim]Session: {content}[/dim]")
+    elif kind == REPLY_TEXT:
         console.print(content, end="")
     elif kind == REPLY_TOOL:
         console.print(f"  [dim][tool] {content}[/dim]")
@@ -96,17 +99,17 @@ def cmd_run(agent_id: str, description: str) -> None:
         console.print(f"Available: {available}")
         sys.exit(1)
 
-    session_id = f"agent-{uuid.uuid4().hex[:8]}"
-    req = A2ARequest(text=description, session_id=session_id, sender="cli")
+    request_id = f"agent-{uuid.uuid4().hex[:8]}"
+    req = A2ARequest(text=description, request_id=request_id, sender="cli")
 
-    console.print(f"Agent '{agent_id}' started as session {session_id}")
+    console.print(f"Agent '{agent_id}' submitted (request {request_id})")
     console.print("Waiting for result... (Ctrl+C to detach)\n")
 
     asyncio.run(
         send_and_wait(
             topic_request(agent_id),
             req.to_json(),
-            session_id,
+            request_id,
             _print_reply,
         )
     )

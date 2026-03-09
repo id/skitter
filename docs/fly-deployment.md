@@ -113,7 +113,7 @@ The entrypoint writes `$CLAUDE_CREDENTIALS` to `~/.claude/.credentials.json` at 
 
 ```bash
 set -a && source .env.cloud && set +a
-uv run python -m skitter deploy --target fly
+uv run python -m skitter deploy
 ```
 
 This:
@@ -206,5 +206,5 @@ fly machines list -a skitter
 |---|---|---|
 | No response to requests | Supervisor not running | `fly machines list -a skitter` — should show one running machine |
 | Worker OOM killed | Not enough memory | Increase `memory_mb` in `skitter/fly.py` (default: 1024MB) |
-| `MANIFEST_UNKNOWN` on worker create | Stale image tag | Re-run `skitter deploy --target fly` |
+| `MANIFEST_UNKNOWN` on worker create | Stale image tag | Re-run `skitter deploy` |
 | Worker exits with "Credit balance too low" | Anthropic API quota | Add credits, or switch to OAuth (`CLAUDE_CREDENTIALS`) |

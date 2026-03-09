@@ -326,6 +326,7 @@
       selectedSessionId: null,
       selectedTaskId: null,
       composeTarget: null, // { type: 'agent'|'workflow', id: string }
+      pendingSelect: false, // auto-select next new session
     };
     let mqttClient = null;
     let streamRenderPending = false;
@@ -402,7 +403,7 @@
         if (p[1] === 'session' && p.length === 3) {
           const sid = p[2];
           if (!raw) { state.sessions.delete(sid); if (state.selectedSessionId === sid) state.selectedTaskId = null; }
-          else { try { state.sessions.set(sid, JSON.parse(raw)); } catch(e) { return; } if (!state.selectedSessionId) state.selectedSessionId = sid; }
+          else { try { state.sessions.set(sid, JSON.parse(raw)); } catch(e) { return; } if (!state.selectedSessionId || state.pendingSelect) { state.selectedSessionId = sid; state.pendingSelect = false; } }
           renderAll();
           return;
         }
@@ -460,24 +461,29 @@
           const m = JSON.parse(raw);
           const r = m.result || {};
           if (r.type === 'TaskStatusUpdateEvent') {
-            const taskId = r.taskId;
+            const sid = r.taskId; // taskId = session_id (A2A Task.id)
             const status = r.status || {};
             const st = status.state;
+            const meta = status.metadata || {};
+            const taskName = meta.task_name || ''; // internal task name
             const msg = status.message || '';
-            const msgType = (status.metadata || {}).type || 'text';
+            const msgType = meta.type || 'text';
             const artifact = ((r.artifact || {}).parts || [])[0]?.text || '';
-            const sid = findSessionForTask(taskId);
-            if (st === 'working' && msg && sid) {
-              const k = `${sid}/${taskId}`;
+
+            if (st === 'submitted') {
+              // Initial ack from supervisor — session will arrive via retained message
+              renderAll();
+            } else if (st === 'working' && msg && sid && taskName) {
+              const k = `${sid}/${taskName}`;
               if (!state.streamChunks.has(k)) state.streamChunks.set(k, []);
               const ch = state.streamChunks.get(k);
-              ch.push({ task: taskId, type: msgType, content: msg });
+              ch.push({ task: taskName, type: msgType, content: msg });
               if (ch.length > 200) ch.splice(0, ch.length - 200);
               scheduleStreamRender();
             } else if (st === 'completed' || st === 'failed' || st === 'cancelled') {
-              if (sid) {
-                state.taskStatus.set(`${sid}/${taskId}`, 'done');
-                if (artifact) state.taskResults.set(`${sid}/${taskId}`, artifact);
+              if (sid && taskName) {
+                state.taskStatus.set(`${sid}/${taskName}`, 'done');
+                if (artifact) state.taskResults.set(`${sid}/${taskName}`, artifact);
               }
               renderSessions(); renderTasks(); renderDetail();
             }
@@ -511,7 +517,7 @@
       const t = s.tasks[taskName];
       if (!t) return;
       mqttClient.publish(`$a2a/v1/request/skitter/default/${t.agent}/cancel`, JSON.stringify({
-        jsonrpc: '2.0', method: 'tasks/cancel', params: { task: taskName, reason: 'Cancelled from dashboard' }, id: crypto.randomUUID(),
+        jsonrpc: '2.0', method: 'tasks/cancel', params: { session_id: sid, task: taskName, reason: 'Cancelled from dashboard' }, id: crypto.randomUUID(),
       }), { qos: 1 });
     }
     function cancelAll(sid) {
@@ -825,7 +831,7 @@
       if (!t || !mqttClient || !state.connected) return;
       if (t.type === 'agent' && !text) return; // agents need a prompt
 
-      const sid = 'dash-' + crypto.randomUUID().slice(0, 8);
+      const requestId = 'dash-' + crypto.randomUUID().slice(0, 8);
       const replyTopic = `$a2a/v1/reply/skitter/default/dashboard/${crypto.randomUUID().slice(0,8)}`;
       const vars = {};
       document.querySelectorAll('.compose-var').forEach(inp => {
@@ -840,7 +846,7 @@
         if (!msgText) msgText = varSummary ? `${t.id}: ${varSummary}` : t.id;
       }
       const rpcMsg = {
-        jsonrpc: '2.0', id: sid, method: 'tasks/send',
+        jsonrpc: '2.0', id: requestId, method: 'tasks/send',
         params: {
           message: { role: 'user', parts: [{ type: 'text', text: msgText }] },
           metadata,
@@ -849,10 +855,11 @@
 
       const target = t.type === 'agent' ? t.id : `workflow-${t.id}`;
       mqttClient.publish(`$a2a/v1/request/skitter/default/${target}`, JSON.stringify(rpcMsg), {
-        qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(sid) },
+        qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(requestId) },
       });
 
-      state.selectedSessionId = sid;
+      // Session ID will be assigned by the supervisor — auto-select when it arrives
+      state.pendingSelect = true;
       state.composeTarget = null;
       // Switch to sessions tab
       document.querySelectorAll('.side-tab').forEach(t => t.classList.remove('active'));

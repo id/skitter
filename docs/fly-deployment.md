@@ -13,19 +13,18 @@ This guide covers deploying skitter to Fly Machines with EMQX Serverless as the 
 ```
 EMQX Serverless (managed MQTT broker)
   |
-  | Supervisor subscribes to request/+, event/+/dead
+  | Supervisor subscribes to request/+
   |
   v
 Fly Machine: supervisor (always-on, ~30MB RAM)
   | Creates sessions, publishes to MQTT
   | Spawns worker machines via Fly API
-  | Respawns crashed workers (dead events)
   | Publishes discovery cards
   v
 Fly Machine: worker (ephemeral, 5-60s)
   | Reads session from MQTT
   | Runs claude/codex CLI
-  | Publishes result to MQTT
+  | Publishes retained result + reply to caller
   | Exits -> auto-destroys
 ```
 
@@ -177,7 +176,7 @@ For workflows with multiple tasks, the supervisor spawns all workers upfront. Wo
 
 ### Crash recovery
 
-Worker machines use `restart.policy: on-failure` with `max_retries: 1`. If a worker crashes, Fly restarts it automatically. The restarted worker reads the retained session from MQTT and picks up where it left off.
+Worker machines use `restart.policy: on-failure` with `max_retries: 1`. If a worker crashes, Fly restarts it automatically — the supervisor does not handle dead events on Fly (LWT fires on normal exit too due to `auto_destroy`, which would cause an infinite respawn loop). The restarted worker reads the retained session from MQTT and picks up where it left off.
 
 ## Cost
 

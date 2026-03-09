@@ -10,6 +10,7 @@ from skitter.config import (
     AgentDef,
     WorkflowDef,
     WorkflowTask,
+    WorkspaceConfig,
 )
 from skitter.supervisor import (
     create_session,
@@ -547,3 +548,143 @@ class TestJoinContext:
         assert "result B" in context
         assert "Result from 'a'" in context
         assert "Result from 'b'" in context
+
+
+# --- Persistent workspaces ---
+
+
+class TestWorkspaceConfig:
+    def test_load_workspace_config_missing(self, tmp_path):
+        """No workspace key in config returns defaults."""
+        from skitter.config import load_workspace_config
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("default_runtime: claude\n")
+        with patch("skitter.config.CONFIG_FILE", config_file):
+            cfg = load_workspace_config()
+        assert cfg.remote == ""
+        assert cfg.local_mount == ""
+        assert cfg.base_path == "skitter/workspaces"
+
+    def test_load_workspace_config_present(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "workspace:\n"
+            "  remote: drive\n"
+            "  local_mount: /mnt/gdrive\n"
+            "  base_path: my/workspaces\n"
+        )
+        with patch("skitter.config.CONFIG_FILE", config_file):
+            from skitter.config import load_workspace_config
+
+            cfg = load_workspace_config()
+        assert cfg.remote == "drive"
+        assert cfg.local_mount == "/mnt/gdrive"
+        assert cfg.base_path == "my/workspaces"
+
+
+class TestWorkspaceSessionCreation:
+    def setup_method(self):
+        self.agents = {
+            "researcher": AgentDef(id="researcher", name="R", runtime="claude"),
+            "writer": AgentDef(id="writer", name="W", runtime="claude"),
+        }
+
+    def test_workflow_with_workspace(self):
+        wf = WorkflowDef(
+            id="test",
+            name="Test",
+            workspace="my-workspace",
+            tasks=[
+                WorkflowTask(id="a", agent="researcher", description="do A", next="c"),
+                WorkflowTask(id="b", agent="researcher", description="do B", next="c"),
+                WorkflowTask(
+                    id="c",
+                    agent="writer",
+                    description="join",
+                    next="output",
+                    needs=["a", "b"],
+                ),
+            ],
+        )
+        session = create_session("s1", "test", workflow=wf, agents=self.agents)
+        # All tasks share the workspace slug; worker creates task subdirs
+        assert session.tasks["a"].workspace == "my-workspace"
+        assert session.tasks["b"].workspace == "my-workspace"
+        assert session.tasks["c"].workspace == "my-workspace"
+
+    def test_workflow_without_workspace(self):
+        wf = WorkflowDef(
+            id="test",
+            name="Test",
+            tasks=[
+                WorkflowTask(
+                    id="a", agent="researcher", description="do A", next="output"
+                ),
+            ],
+        )
+        session = create_session("s1", "test", workflow=wf, agents=self.agents)
+        assert session.tasks["a"].workspace == ""
+
+    def test_agent_session_no_workspace(self):
+        session = create_session(
+            "s1", "test", agent_id="researcher", text="hi", agents=self.agents
+        )
+        assert session.tasks["researcher"].workspace == ""
+
+
+class TestResolveWorkspace:
+    def test_subprocess_with_local_mount(self, tmp_path):
+        from skitter.workspace import resolve_workspace
+
+        cfg = WorkspaceConfig(remote="drive", local_mount=str(tmp_path), base_path="ws")
+        with patch("skitter.workspace.load_workspace_config", return_value=cfg):
+            local, remote = resolve_workspace("my-ws", "subprocess")
+        assert local == tmp_path / "ws" / "my-ws"
+        assert local.is_dir()
+        assert remote == ""  # no rclone needed
+
+    def test_fly_mode_uses_rclone(self, tmp_path):
+        from skitter.workspace import resolve_workspace
+
+        cfg = WorkspaceConfig(remote="drive", base_path="ws")
+        with (
+            patch("skitter.workspace.load_workspace_config", return_value=cfg),
+            patch("skitter.workspace.WORKSPACES_DIR", tmp_path),
+        ):
+            local, remote = resolve_workspace("my-ws", "fly")
+        assert local == tmp_path / "my-ws"
+        assert local.is_dir()
+        assert remote == "drive:ws/my-ws"
+
+    def test_no_remote_configured_raises(self, tmp_path):
+        from skitter.workspace import resolve_workspace
+
+        cfg = WorkspaceConfig()  # no remote, no local_mount
+        with (
+            patch("skitter.workspace.load_workspace_config", return_value=cfg),
+            patch("skitter.workspace.WORKSPACES_DIR", tmp_path),
+            pytest.raises(RuntimeError, match="no rclone remote"),
+        ):
+            resolve_workspace("my-ws", "fly")
+
+
+class TestSessionWorkspaceRoundtrip:
+    def test_workspace_survives_json_roundtrip(self):
+        session = Session(session_id="s1")
+        session.tasks["a"] = SessionTask(
+            id="a", agent="r", description="d", workspace="my-ws"
+        )
+        restored = Session.from_json(session.to_json())
+        assert restored.tasks["a"].workspace == "my-ws"
+
+    def test_old_session_without_workspace(self):
+        """Sessions from before workspace support default to empty string."""
+        raw = json.dumps(
+            {
+                "session_id": "s1",
+                "tasks": {"a": {"id": "a", "agent": "r", "description": "d"}},
+            }
+        )
+        session = Session.from_json(raw)
+        assert session.tasks["a"].workspace == ""

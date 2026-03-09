@@ -59,6 +59,7 @@ def _prepare_build_context() -> Path:
 
     # Project files
     shutil.copy2(PROJECT_DIR / "pyproject.toml", ctx / "pyproject.toml")
+    shutil.copy2(PROJECT_DIR / "entrypoint.sh", ctx / "entrypoint.sh")
     shutil.copytree(
         PROJECT_DIR / "skitter",
         ctx / "skitter",
@@ -86,6 +87,12 @@ def _prepare_build_context() -> Path:
         for f in WORKFLOWS_DIR.glob("*.yaml"):
             shutil.copy2(f, workflows_dst / f.name)
 
+    # Global config (workspace settings, default_runtime, etc.)
+    from skitter.config import CONFIG_FILE
+
+    if CONFIG_FILE.is_file():
+        shutil.copy2(CONFIG_FILE, ctx / "home" / ".skitter" / "config.yaml")
+
     # fly.toml — supervisor runs as the app process
     fly_toml = ctx / "fly.toml"
     fly_toml.write_text(
@@ -107,6 +114,7 @@ def _prepare_build_context() -> Path:
         "COPY --chown=skitter home/.claude/agents/ /home/skitter/.claude/agents/\n"
         "COPY --chown=skitter home/.skitter/agents/ /home/skitter/.skitter/agents/\n"
         "COPY --chown=skitter home/.skitter/workflows/ /home/skitter/.skitter/workflows/\n"
+        "COPY --chown=skitter home/.skitter/config.yaml /home/skitter/.skitter/config.yaml\n"
     )
 
     return ctx
@@ -138,6 +146,7 @@ def cmd_deploy_fly() -> None:
             "FLY_APP": FLY_APP,
             "FLY_WORKER_IMAGE": f"registry.fly.io/{FLY_APP}:latest",
             "FLY_REGION": FLY_REGION,
+            "RCLONE_CONFIG_DATA": os.environ.get("RCLONE_CONFIG_DATA", ""),
         }
     )
 

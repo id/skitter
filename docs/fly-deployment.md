@@ -109,6 +109,83 @@ fly secrets set CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... -a skitter
 
 Claude CLI reads `CLAUDE_CODE_OAUTH_TOKEN` directly — no credential files needed.
 
+## Persistent Workspaces (Google Drive via rclone)
+
+By default, workers use ephemeral directories that are destroyed after each run. **Persistent workspaces** let workflows read and write files that survive across runs — e.g. a customer list, accumulated reports, or shared datasets.
+
+Files are stored on Google Drive (or any rclone remote). Fly workers sync files down before running and sync back after. Locally, the Google Drive desktop app provides zero-cost filesystem access with no rclone needed.
+
+### How it works per spawn mode
+
+| Mode | Behavior |
+|---|---|
+| **subprocess** | Uses Google Drive folder directly via filesystem path. No rclone needed — the desktop app handles sync. |
+| **docker** | rclone config is mounted as a read-only volume. Workers sync before/after. |
+| **fly** | rclone config is written from `RCLONE_CONFIG_DATA` env var at container startup. Workers sync before/after. |
+
+### 1. Configure rclone
+
+```bash
+# Install rclone and set up a Google Drive remote
+rclone config
+# Create a remote named "drive" (type: Google Drive, follow OAuth flow)
+```
+
+### 2. Configure skitter
+
+Add a `workspace` section to `~/.skitter/config.yaml`:
+
+```yaml
+default_runtime: claude
+
+workspace:
+  remote: drive                     # rclone remote name
+  local_mount: /Users/you/Library/CloudStorage/GoogleDrive-.../My Drive
+  base_path: skitter/workspaces     # base path on remote
+```
+
+- **`remote`** — the rclone remote name (required for docker/fly modes)
+- **`local_mount`** — path to your local Google Drive mount (subprocess mode uses this directly, skipping rclone entirely)
+- **`base_path`** — directory on the remote under which all workspaces live
+
+### 3. Add workspace to a workflow
+
+```yaml
+name: Weekly Report
+workspace: weekly-report            # slug, relative to base_path
+tasks:
+  - id: gather
+    agent: researcher
+    description: "Gather data from files in the workspace"
+    next: summarize
+  - id: summarize
+    agent: writer
+    description: "Write a summary report"
+    needs: [gather]
+    next: output
+```
+
+Each task gets its own subdirectory (`weekly-report/gather/`, `weekly-report/summarize/`) for parallel safety. Join tasks read sibling directories via their agent prompt.
+
+### 4. Deploy with rclone config (Fly only)
+
+Export your rclone config as a Fly secret:
+
+```bash
+RCLONE_CONFIG_DATA="$(cat ~/.config/rclone/rclone.conf)"
+fly secrets set RCLONE_CONFIG_DATA="$RCLONE_CONFIG_DATA" -a skitter
+```
+
+Or add it to `.env.cloud` and re-deploy — `skitter deploy` sets it automatically.
+
+### Workspace behavior
+
+- Workflows **without** `workspace:` keep using ephemeral directories. No breaking changes.
+- Workers sync down before running, sync up after. Results are published only after sync completes.
+- First run on a new workspace creates the remote directory automatically.
+- If sync-up fails after the agent runs, the result includes a warning so you know files may not have persisted.
+- Keep workspaces under ~500MB. For larger datasets, request more disk via Fly's `guest.disk` option.
+
 ## 4. Deploy
 
 ```bash
@@ -208,3 +285,5 @@ fly machines list -a skitter
 | Worker OOM killed | Not enough memory | Increase `memory_mb` in `skitter/fly.py` (default: 1024MB) |
 | `MANIFEST_UNKNOWN` on worker create | Stale image tag | Re-run `skitter deploy` |
 | Worker exits with "Credit balance too low" | Anthropic API quota | Add credits, or switch to OAuth (`CLAUDE_CODE_OAUTH_TOKEN`) |
+| Result contains "workspace sync to remote failed" | rclone config missing or expired | Re-set `RCLONE_CONFIG_DATA` secret with a fresh `rclone.conf` |
+| `sync_down failed` error in worker logs | rclone remote unreachable | Check rclone config, network, and Google Drive OAuth token expiry |

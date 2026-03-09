@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 log = logging.getLogger("skitter.spawn")
 
@@ -65,6 +66,13 @@ def _spawn_docker(agent: str, session_id: str, task: str) -> None:
     volume_args: list[str] = []
     if DOCKER_CLAUDE_DIR.is_dir():
         volume_args.extend(["-v", f"{DOCKER_CLAUDE_DIR}:{DOCKER_USER_HOME}/.claude:ro"])
+
+    # Mount rclone config for persistent workspaces
+    rclone_config = Path.home() / ".config" / "rclone" / "rclone.conf"
+    if rclone_config.is_file():
+        volume_args.extend(
+            ["-v", f"{rclone_config}:{DOCKER_USER_HOME}/.config/rclone/rclone.conf:ro"]
+        )
 
     subprocess.Popen(
         [

@@ -70,6 +70,8 @@ def create_session(
     agents = agents or {}
     variables = variables or {}
 
+    workspace_slug = workflow.workspace if workflow else ""
+
     session = Session(
         session_id=session_id,
         workflow_id=workflow.id if workflow else agent_id,
@@ -81,6 +83,7 @@ def create_session(
     if workflow:
         for pt in workflow.tasks:
             description = safe_format(pt.description, variables)
+            task_ws = workspace_slug
             session.tasks[pt.id] = SessionTask(
                 id=pt.id,
                 agent=pt.agent,
@@ -89,6 +92,7 @@ def create_session(
                 runtime=_resolve_runtime(agents, pt.agent),
                 next=pt.next,
                 needs=list(pt.needs),
+                workspace=task_ws,
             )
     else:
         session.tasks[agent_id] = SessionTask(

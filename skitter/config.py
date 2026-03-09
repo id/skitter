@@ -42,6 +42,14 @@ class WorkflowDef:
     description: str = ""
     variables: list[str] = field(default_factory=list)
     tasks: list[WorkflowTask] = field(default_factory=list)
+    workspace: str = ""  # persistent workspace slug
+
+
+@dataclass
+class WorkspaceConfig:
+    remote: str = ""  # rclone remote name
+    local_mount: str = ""  # local mount for subprocess mode (e.g. Google Drive)
+    base_path: str = "skitter/workspaces"
 
 
 class SafeFormatter(string.Formatter):
@@ -87,16 +95,33 @@ def safe_format(template: str, variables: dict[str, str]) -> str:
 CONFIG_FILE = SKITTER_DIR / "config.yaml"
 
 
-def load_default_runtime() -> str:
-    """Read default_runtime from ~/.skitter/config.yaml. Falls back to 'claude'."""
+def _load_global_config() -> dict:
+    """Read ~/.skitter/config.yaml as a dict. Returns {} on failure."""
     if CONFIG_FILE.is_file():
         try:
             data = yaml.safe_load(CONFIG_FILE.read_text())
             if isinstance(data, dict):
-                return data.get("default_runtime", "claude")
+                return data
         except Exception as e:
             log.warning("Failed to read %s: %s", CONFIG_FILE, e)
-    return "claude"
+    return {}
+
+
+def load_default_runtime() -> str:
+    """Read default_runtime from ~/.skitter/config.yaml. Falls back to 'claude'."""
+    return _load_global_config().get("default_runtime", "claude")
+
+
+def load_workspace_config() -> WorkspaceConfig:
+    """Read workspace config from ~/.skitter/config.yaml."""
+    data = _load_global_config().get("workspace", {})
+    if not isinstance(data, dict):
+        return WorkspaceConfig()
+    return WorkspaceConfig(
+        remote=data.get("remote", ""),
+        local_mount=data.get("local_mount", ""),
+        base_path=data.get("base_path", "skitter/workspaces"),
+    )
 
 
 def ensure_dirs() -> None:
@@ -173,6 +198,7 @@ def load_workflows(workflows_dir: Path | None = None) -> dict[str, WorkflowDef]:
                 description=data.get("description", ""),
                 variables=data.get("variables", []),
                 tasks=tasks,
+                workspace=data.get("workspace", ""),
             )
         except Exception as e:
             log.warning("Failed to load workflow %s: %s", path.name, e)

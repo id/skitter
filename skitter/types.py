@@ -175,6 +175,7 @@ class SessionTask:
     status: str = "pending"
     next: str = ""
     needs: list[str] = field(default_factory=list)
+    workspace: str = ""  # persistent workspace path (slug or slug/task_id)
 
 
 @dataclass

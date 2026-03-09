@@ -1,7 +1,9 @@
 FROM python:3.12-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get install -y --no-install-recommends curl unzip && \
+    curl -fsSL https://rclone.org/install.sh | bash && \
+    apt-get purge -y unzip && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user (required by claude --dangerously-skip-permissions)
@@ -29,4 +31,6 @@ USER root
 RUN pip install --no-cache-dir .
 USER skitter
 
+COPY --chown=skitter entrypoint.sh /home/skitter/entrypoint.sh
+ENTRYPOINT ["/home/skitter/entrypoint.sh"]
 CMD ["python", "-m", "skitter.worker"]

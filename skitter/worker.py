@@ -14,6 +14,8 @@ import sys
 import aiomqtt
 
 from skitter.config import WORKSPACES_DIR
+from skitter.spawn import SPAWN_MODE
+from skitter.workspace import resolve_workspace, sync_down, sync_up
 from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
@@ -337,8 +339,18 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
             my_task.description,
         )
 
-        workspace = WORKSPACES_DIR / f"{session_id}-{task_name}"
-        workspace.mkdir(parents=True, exist_ok=True)
+        remote_path = ""
+        if my_task.workspace:
+            ws_root, remote_path = resolve_workspace(my_task.workspace, SPAWN_MODE)
+            await sync_down(remote_path, ws_root)
+            # Each task gets its own subdir as CWD, but can read
+            # shared files via ../ and sibling task dirs via ../other_task/
+            workspace = ws_root / task_name
+            workspace.mkdir(parents=True, exist_ok=True)
+        else:
+            ws_root = None
+            workspace = WORKSPACES_DIR / f"{session_id}-{task_name}"
+            workspace.mkdir(parents=True, exist_ok=True)
 
         # Streaming
         stream_topic = session.caller_reply_topic
@@ -419,6 +431,11 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
                     await listener_task
                 except asyncio.CancelledError:
                     pass
+
+        # Sync entire workspace root back to remote before publishing result
+        if remote_path and ws_root:
+            if not await sync_up(ws_root, remote_path):
+                response_text += "\n\n⚠️ WARNING: workspace sync to remote failed"
 
         # Publish retained result (all tasks — used by dashboard and downstream workers)
         await client.publish(

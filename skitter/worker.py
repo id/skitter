@@ -26,6 +26,7 @@ from skitter.mqtt import (
     topic_status,
     topic_usage,
 )
+from skitter.spawn import worker_env
 from skitter.types import (
     Session,
     SessionTask,
@@ -85,7 +86,7 @@ async def run_agent(
                 ]
             )
 
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    env = worker_env()
 
     try:
         proc = await asyncio.create_subprocess_exec(

@@ -112,10 +112,11 @@ Workers can run in Docker containers for sandboxing:
 
 ```bash
 uv run python -m skitter docker build
-uv run python -m skitter docker login    # one-time OAuth flow
 uv run python -m skitter docker sync     # copy agent definitions
 SKITTER_SPAWN_MODE=docker uv run python -m skitter
 ```
+
+Set `CLAUDE_CODE_OAUTH_TOKEN` in your environment (run `claude setup-token` to get one).
 
 ## Environment Variables
 

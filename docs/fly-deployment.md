@@ -82,9 +82,9 @@ FLY_API_TOKEN=your-fly-token    # from `fly tokens create deploy`
 FLY_APP=skitter
 FLY_REGION=iad                  # or your preferred region
 
-# Worker auth — either API key or OAuth (not both needed)
-ANTHROPIC_API_KEY=sk-ant-...    # API credits
-CLAUDE_CREDENTIALS=...          # or OAuth (uses your Pro/Max subscription)
+# Worker auth — either API key or OAuth token (not both needed)
+ANTHROPIC_API_KEY=sk-ant-...           # API credits
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...  # or OAuth (uses your Pro/Max subscription)
 ```
 
 ### OAuth vs API key
@@ -92,22 +92,22 @@ CLAUDE_CREDENTIALS=...          # or OAuth (uses your Pro/Max subscription)
 Workers can authenticate with Claude in two ways:
 
 - **`ANTHROPIC_API_KEY`** — standard API key, billed per-token
-- **`CLAUDE_CREDENTIALS`** — OAuth token from `claude /login`, uses your Pro/Max subscription
+- **`CLAUDE_CODE_OAUTH_TOKEN`** — OAuth token, uses your Pro/Max subscription
 
-To get OAuth credentials:
-
-```bash
-claude /login
-cat ~/.claude/.credentials.json
-```
-
-Set it as a Fly secret (or put it in `.env.cloud`):
+To get an OAuth token:
 
 ```bash
-fly secrets set CLAUDE_CREDENTIALS="$(cat ~/.claude/.credentials.json)" -a skitter
+claude setup-token
+# Follow the prompts, then copy the token
 ```
 
-The entrypoint writes `$CLAUDE_CREDENTIALS` to `~/.claude/.credentials.json` at container start and unsets `ANTHROPIC_API_KEY` so Claude CLI uses OAuth. Token refresh is handled automatically.
+Set it in `.env.cloud` or as a Fly secret:
+
+```bash
+fly secrets set CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... -a skitter
+```
+
+Claude CLI reads `CLAUDE_CODE_OAUTH_TOKEN` directly — no credential files needed.
 
 ## 4. Deploy
 
@@ -207,4 +207,4 @@ fly machines list -a skitter
 | No response to requests | Supervisor not running | `fly machines list -a skitter` — should show one running machine |
 | Worker OOM killed | Not enough memory | Increase `memory_mb` in `skitter/fly.py` (default: 1024MB) |
 | `MANIFEST_UNKNOWN` on worker create | Stale image tag | Re-run `skitter deploy` |
-| Worker exits with "Credit balance too low" | Anthropic API quota | Add credits, or switch to OAuth (`CLAUDE_CREDENTIALS`) |
+| Worker exits with "Credit balance too low" | Anthropic API quota | Add credits, or switch to OAuth (`CLAUDE_CODE_OAUTH_TOKEN`) |

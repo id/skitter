@@ -58,7 +58,6 @@ def _prepare_build_context() -> Path:
     ctx = Path(tempfile.mkdtemp(prefix="skitter-fly-"))
 
     # Project files
-    shutil.copy2(PROJECT_DIR / "entrypoint.sh", ctx / "entrypoint.sh")
     shutil.copy2(PROJECT_DIR / "pyproject.toml", ctx / "pyproject.toml")
     shutil.copytree(
         PROJECT_DIR / "skitter",
@@ -117,6 +116,12 @@ def cmd_deploy_fly() -> None:
     """Deploy skitter to Fly."""
     console.print(f"[bold]Deploying to Fly app: {FLY_APP}[/bold]\n")
 
+    # Prefer OAuth token over API key
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if oauth_token:
+        api_key = ""
+
     # 1. Set secrets
     console.print("Setting secrets...")
     _set_secrets(
@@ -126,8 +131,8 @@ def cmd_deploy_fly() -> None:
             "MQTT_TLS": "1",
             "MQTT_USER": os.environ.get("MQTT_USER", ""),
             "MQTT_PASS": os.environ.get("MQTT_PASS", ""),
-            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-            "CLAUDE_CREDENTIALS": os.environ.get("CLAUDE_CREDENTIALS", ""),
+            "ANTHROPIC_API_KEY": api_key,
+            "CLAUDE_CODE_OAUTH_TOKEN": oauth_token,
             "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
             "FLY_API_TOKEN": os.environ.get("FLY_API_TOKEN", ""),
             "FLY_APP": FLY_APP,

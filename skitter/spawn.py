@@ -22,8 +22,16 @@ def spawn_worker(agent: str, session_id: str, task: str) -> None:
         _spawn_subprocess(agent, session_id, task)
 
 
-def _spawn_subprocess(agent: str, session_id: str, task: str) -> None:
+def worker_env() -> dict[str, str]:
+    """Build env for worker processes — strip CLAUDECODE, prefer OAuth over API key."""
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        env.pop("ANTHROPIC_API_KEY", None)
+    return env
+
+
+def _spawn_subprocess(agent: str, session_id: str, task: str) -> None:
+    env = worker_env()
     subprocess.Popen(
         [sys.executable, "-m", "skitter.worker", agent, session_id, task],
         env=env,
@@ -32,6 +40,7 @@ def _spawn_subprocess(agent: str, session_id: str, task: str) -> None:
 
 
 def _spawn_docker(agent: str, session_id: str, task: str) -> None:
+    env = worker_env()
     env_args: list[str] = []
     env_args.extend(
         ["-e", f"MQTT_HOST={os.environ.get('SKITTER_DOCKER_MQTT_HOST', 'emqx')}"]
@@ -42,15 +51,15 @@ def _spawn_docker(agent: str, session_id: str, task: str) -> None:
         "MQTT_USER",
         "MQTT_PASS",
         "ANTHROPIC_API_KEY",
-        "CLAUDE_CREDENTIALS",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
     ):
-        val = os.environ.get(key, "")
+        val = env.get(key, "")
         if val:
             env_args.extend(["-e", f"{key}={val}"])
 
-    # Mount docker-claude dir (OAuth credentials + agent definitions + memory)
-    # Created by `skitter docker login` + `skitter docker sync`
+    # Mount docker-claude dir (agent definitions + memory)
+    # Created by `skitter docker sync`
     from skitter.config import DOCKER_CLAUDE_DIR
 
     volume_args: list[str] = []

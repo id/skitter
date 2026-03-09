@@ -29,6 +29,4 @@ USER root
 RUN pip install --no-cache-dir .
 USER skitter
 
-COPY --chown=skitter entrypoint.sh /app/
-ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "-m", "skitter.worker"]

@@ -16,7 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
 
-from skitter.config import AGENTS_DIR, CLAUDE_AGENTS_DIR
+from skitter.config import AGENTS_DIR, CLAUDE_AGENTS_DIR, WORKFLOWS_DIR
 from skitter.fly import FLY_APP, FLY_REGION
 
 load_dotenv()
@@ -80,6 +80,13 @@ def _prepare_build_context() -> Path:
         for f in AGENTS_DIR.glob("*.yaml"):
             shutil.copy2(f, skitter_dst / f.name)
 
+    # Workflow definitions
+    workflows_dst = ctx / "home" / ".skitter" / "workflows"
+    workflows_dst.mkdir(parents=True, exist_ok=True)
+    if WORKFLOWS_DIR.is_dir():
+        for f in WORKFLOWS_DIR.glob("*.yaml"):
+            shutil.copy2(f, workflows_dst / f.name)
+
     # fly.toml — supervisor runs as the app process
     fly_toml = ctx / "fly.toml"
     fly_toml.write_text(
@@ -97,9 +104,10 @@ def _prepare_build_context() -> Path:
     dockerfile.write_text(
         (PROJECT_DIR / "Dockerfile").read_text()
         + "\n"
-        + "# Agent files baked in at deploy time\n"
+        + "# Config files baked in at deploy time\n"
         "COPY --chown=skitter home/.claude/agents/ /home/skitter/.claude/agents/\n"
         "COPY --chown=skitter home/.skitter/agents/ /home/skitter/.skitter/agents/\n"
+        "COPY --chown=skitter home/.skitter/workflows/ /home/skitter/.skitter/workflows/\n"
     )
 
     return ctx

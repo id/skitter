@@ -2,7 +2,7 @@
 
 Personal AI assistant built on MQTT. Define agents and workflows in YAML, run them locally or on Fly.io. Workers self-coordinate via retained MQTT messages, the supervisor just creates sessions and spawns workers. Supports both Claude Code and Codex CLI as runtimes.
 
-Small Python codebase (~3,000 lines).
+Small Python codebase (~3,200 lines).
 
 ## Quickstart (Local)
 
@@ -23,6 +23,9 @@ uv run python -m skitter init
 That's it. The supervisor is listening. Try it:
 
 ```bash
+# Publish discovery cards (agents + workflows visible in dashboard)
+uv run python -m skitter publish
+
 # Run an agent
 uv run python -m skitter agents run researcher "What are the key features of MQTT v5?"
 
@@ -140,7 +143,7 @@ Instead of a monolithic orchestrator that handles routing, retries, fan-out, and
 - **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge script that publishes requests and subscribes to replies. The supervisor is invisible.
 - **Run workers anywhere.** Local processes, Docker containers, or Fly Machines. As long as they can reach the broker, they work.
 - **Crash recovery.** Retained messages = durable state. Workers set LWT for crash detection. The supervisor respawns dead workers; the new worker picks up from the retained session.
-- **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client and watch every request, result, and chain execution in real time.
+- **Free monitoring.** Subscribe to `$a2a/v1/#` and `skitter/#` with any MQTT client and watch every request, result, and internal coordination message in real time.
 - **Cheap cloud deploy.** Always-on supervisor (~$2/mo) on Fly.io with ephemeral worker machines billed per-second.
 
 Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.

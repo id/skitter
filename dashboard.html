@@ -62,6 +62,12 @@
     .sess-dot.done { background: var(--green); }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
     .sess-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+    .sess-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; }
+    .sess-time { font-size: 10px; color: var(--text-dim); font-family: var(--mono); }
+    .sess-del { font-size: 10px; color: var(--text-dim); background: none; border: none; cursor: pointer; padding: 0 2px; font-family: var(--sans); }
+    .sess-del:hover { color: var(--red); }
+    .sess-clear { font-size: 10px; color: var(--text-dim); background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; padding: 2px 8px; font-family: var(--sans); }
+    .sess-clear:hover { color: var(--red); border-color: var(--red); }
 
     /* Agent/workflow list */
     .config-item { padding: 10px 16px; border-bottom: 1px solid var(--border-light); cursor: pointer; border-left: 3px solid transparent; transition: all .1s; }
@@ -328,9 +334,19 @@
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '\u2026' : s; }
     function fmtTok(n) { return n == null ? '?' : n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
+    function fmtTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts * 1000);
+      const now = Date.now();
+      const ago = Math.floor((now - d.getTime()) / 1000);
+      if (ago < 60) return 'just now';
+      if (ago < 3600) return Math.floor(ago / 60) + 'm ago';
+      if (ago < 86400) return Math.floor(ago / 3600) + 'h ago';
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
     function isActive(s) {
       return Object.values(s.tasks).some(t => {
-        const ts = state.taskStatus.get(`${s.session_id}/${t.task_id}`);
+        const ts = state.taskStatus.get(`${s.session_id}/${t.id}`);
         return (ts || t.status) !== 'done';
       });
     }
@@ -340,21 +356,22 @@
       if (!s) return null;
       let ti = 0, to = 0, tc = 0, n = 0;
       for (const t of Object.values(s.tasks)) {
-        const u = state.taskUsage.get(`${sid}/${t.task_id}`);
+        const u = state.taskUsage.get(`${sid}/${t.id}`);
         if (u && u.usage) { ti += u.usage.input_tokens || 0; to += u.usage.output_tokens || 0; if (u.cost_usd != null) tc += u.cost_usd; n++; }
       }
       return n ? { input: ti, output: to, cost: tc } : null;
     }
 
     function latestStream(sid, task) {
-      const ch = state.streamChunks.get(`${sid}/${task.task_id}`);
+      const ch = state.streamChunks.get(`${sid}/${task.id}`);
       if (!ch || !ch.length) return null;
       for (let i = ch.length - 1; i >= 0; i--) if (ch[i].type === 'text') return ch[i].content;
       return ch[ch.length - 1].content;
     }
 
-    function findSessionForTask(taskId) {
-      for (const [sid, s] of state.sessions) for (const t of Object.values(s.tasks)) if (t.task_id === taskId) return sid;
+    function findSessionForTask(task, sessionId) {
+      if (sessionId) { const s = state.sessions.get(sessionId); if (s && s.tasks[task]) return sessionId; }
+      for (const [sid, s] of state.sessions) if (s.tasks[task]) return sid;
       return null;
     }
 
@@ -369,7 +386,7 @@
       const opts = { protocolVersion: 5, reconnectPeriod: 3000, connectTimeout: 10000, clean: true, clientId };
       if (cfg.username) { opts.username = cfg.username; opts.password = cfg.password; }
       mqttClient = mqtt.connect(cfg.url, opts);
-      mqttClient.on('connect', () => { state.connected = true; renderConn(); mqttClient.subscribe('$a2a/v1/#', { qos: 1 }); });
+      mqttClient.on('connect', () => { state.connected = true; renderConn(); mqttClient.subscribe('$a2a/v1/#', { qos: 1 }); mqttClient.subscribe('skitter/session/+', { qos: 1 }); mqttClient.subscribe('skitter/status/+/+/+', { qos: 1 }); mqttClient.subscribe('skitter/result/+/+/+', { qos: 1 }); mqttClient.subscribe('skitter/event/+/+', { qos: 1 }); mqttClient.subscribe('skitter/usage/+/+/+', { qos: 1 }); });
       mqttClient.on('close', () => { state.connected = false; renderConn(); });
       mqttClient.on('error', e => console.error('MQTT:', e));
       mqttClient.on('message', onMessage);
@@ -379,46 +396,63 @@
       const raw = payload.toString();
       const p = topic.split('/');
 
-      // Session state: $a2a/v1/event/{org}/{unit}/supervisor/session/{sid}
-      if (p[2] === 'event' && p[5] === 'supervisor' && p[6] === 'session' && p.length === 8) {
-        const sid = p[7];
-        if (!raw) { state.sessions.delete(sid); if (state.selectedSessionId === sid) state.selectedTaskId = null; }
-        else { try { state.sessions.set(sid, JSON.parse(raw)); } catch(e) { return; } if (!state.selectedSessionId) state.selectedSessionId = sid; }
-        renderAll();
+      // --- Skitter internal topics (skitter/...) ---
+      if (p[0] === 'skitter') {
+        // Session: skitter/session/{sid}
+        if (p[1] === 'session' && p.length === 3) {
+          const sid = p[2];
+          if (!raw) { state.sessions.delete(sid); if (state.selectedSessionId === sid) state.selectedTaskId = null; }
+          else { try { state.sessions.set(sid, JSON.parse(raw)); } catch(e) { return; } if (!state.selectedSessionId) state.selectedSessionId = sid; }
+          renderAll();
+          return;
+        }
+
+        // Task status: skitter/status/{wf}/{task}/{sid}
+        if (p[1] === 'status' && p.length === 5 && raw) {
+          try {
+            const m = JSON.parse(raw);
+            const task = p[3], sid = p[4];
+            state.taskStatus.set(`${sid}/${task}`, m.status);
+          } catch(e) {}
+          renderSessions(); renderTasks(); renderDetail();
+          return;
+        }
+
+        // Task result: skitter/result/{wf}/{task}/{sid} — marks task done
+        if (p[1] === 'result' && p.length === 5 && raw) {
+          try {
+            const m = JSON.parse(raw);
+            const task = p[3], sid = p[4];
+            state.taskStatus.set(`${sid}/${task}`, 'done');
+            if (m.result) state.taskResults.set(`${sid}/${task}`, m.result);
+          } catch(e) {}
+          renderSessions(); renderTasks(); renderDetail();
+          return;
+        }
+
+        // Worker events: skitter/event/{agent}/{type}
+        if (p[1] === 'event' && p.length === 4 && raw) {
+          try {
+            const ev = JSON.parse(raw);
+            if (ev.task && ev.status) {
+              const sid = findSessionForTask(ev.task, ev.session_id);
+              if (sid) state.workerStatus.set(`${sid}/${ev.task}`, ev.status);
+            }
+          } catch(e) {}
+          renderTasks();
+          return;
+        }
+
+        // Usage: skitter/usage/{wf}/{task}/{sid}
+        if (p[1] === 'usage' && p.length === 5 && raw) {
+          try { const m = JSON.parse(raw); state.taskUsage.set(`${p[4]}/${p[3]}`, { usage: m.usage, cost_usd: m.cost_usd }); } catch(e) {}
+          renderTasks(); renderDetail();
+          return;
+        }
         return;
       }
 
-      // Per-task status (retained): $a2a/v1/event/{org}/{unit}/{agent}/task-status/{sid}/{tid}
-      if (p[2] === 'event' && p[6] === 'task-status' && p.length === 9 && raw) {
-        try {
-          const m = JSON.parse(raw);
-          const sid = p[7], tid = p[8];
-          state.taskStatus.set(`${sid}/${tid}`, m.status);
-          if (m.result) state.taskResults.set(`${sid}/${tid}`, m.result);
-        } catch(e) {}
-        renderSessions(); renderTasks(); renderDetail();
-        return;
-      }
-
-      // Worker events (alive/done/dead): $a2a/v1/event/{org}/{unit}/{agent}/{event_type}
-      if (p[2] === 'event' && p.length === 6 && raw) {
-        try {
-          const ev = JSON.parse(raw);
-          if (ev.task_id && ev.status) {
-            const sid = findSessionForTask(ev.task_id);
-            if (sid) state.workerStatus.set(`${sid}/${ev.task_id}`, ev.status);
-          }
-        } catch(e) {}
-        renderTasks();
-        return;
-      }
-
-      // Usage: $a2a/v1/event/{org}/{unit}/{agent}/usage/{sid}/{tid}
-      if (p[2] === 'event' && p[6] === 'usage' && p.length === 9 && raw) {
-        try { const m = JSON.parse(raw); state.taskUsage.set(`${p[7]}/${p[8]}`, { usage: m.usage, cost_usd: m.cost_usd }); } catch(e) {}
-        renderTasks(); renderDetail();
-        return;
-      }
+      // --- A2A protocol topics ($a2a/v1/...) ---
 
       // Reply (TaskStatusUpdateEvent — streaming + terminal)
       if (p[2] === 'reply' && raw) {
@@ -437,15 +471,17 @@
               const k = `${sid}/${taskId}`;
               if (!state.streamChunks.has(k)) state.streamChunks.set(k, []);
               const ch = state.streamChunks.get(k);
-              ch.push({ task_id: taskId, type: msgType, content: msg });
+              ch.push({ task: taskId, type: msgType, content: msg });
               if (ch.length > 200) ch.splice(0, ch.length - 200);
               scheduleStreamRender();
             } else if (st === 'completed' || st === 'failed' || st === 'cancelled') {
-              if (sid && artifact) state.taskResults.set(`${sid}/${taskId}`, artifact);
-              renderDetail();
+              if (sid) {
+                state.taskStatus.set(`${sid}/${taskId}`, 'done');
+                if (artifact) state.taskResults.set(`${sid}/${taskId}`, artifact);
+              }
+              renderSessions(); renderTasks(); renderDetail();
             }
           }
-          // Error response
           if (m.error) { renderDetail(); }
         } catch(e) {}
         return;
@@ -468,20 +504,43 @@
     }
 
     // --- Cancel ---
-    function cancelTask(sid, taskId) {
+    function cancelTask(sid, taskName) {
       if (!mqttClient || !state.connected) return;
       const s = state.sessions.get(sid);
       if (!s) return;
-      const t = Object.values(s.tasks).find(x => x.task_id === taskId);
+      const t = s.tasks[taskName];
       if (!t) return;
       mqttClient.publish(`$a2a/v1/request/skitter/default/${t.agent}/cancel`, JSON.stringify({
-        jsonrpc: '2.0', method: 'tasks/cancel', params: { task_id: taskId, reason: 'Cancelled from dashboard' }, id: crypto.randomUUID(),
+        jsonrpc: '2.0', method: 'tasks/cancel', params: { task: taskName, reason: 'Cancelled from dashboard' }, id: crypto.randomUUID(),
       }), { qos: 1 });
     }
     function cancelAll(sid) {
       const s = state.sessions.get(sid);
       if (!s) return;
-      for (const t of Object.values(s.tasks)) if (t.status === 'running') cancelTask(sid, t.task_id);
+      for (const [name, t] of Object.entries(s.tasks)) if (t.status === 'running') cancelTask(sid, name);
+    }
+
+    // --- Delete sessions ---
+    function deleteSession(sid) {
+      if (!mqttClient || !state.connected) return;
+      const s = state.sessions.get(sid);
+      // Clear session retained message
+      mqttClient.publish(`skitter/session/${sid}`, '', { qos: 1, retain: true });
+      // Clear per-task retained messages
+      if (s) {
+        const wf = s.workflow_id || s.agent_id || sid;
+        for (const task of Object.keys(s.tasks)) {
+          mqttClient.publish(`skitter/status/${wf}/${task}/${sid}`, '', { qos: 1, retain: true });
+          mqttClient.publish(`skitter/result/${wf}/${task}/${sid}`, '', { qos: 1, retain: true });
+          mqttClient.publish(`skitter/usage/${wf}/${task}/${sid}`, '', { qos: 1, retain: true });
+        }
+      }
+      state.sessions.delete(sid);
+      if (state.selectedSessionId === sid) { state.selectedSessionId = null; state.selectedTaskId = null; }
+      renderAll();
+    }
+    function clearAllSessions() {
+      for (const sid of [...state.sessions.keys()]) deleteSession(sid);
     }
 
     // --- Send (kept for /agent and /workflow text commands if needed) ---
@@ -496,12 +555,14 @@
     function renderSessions() {
       const el = document.getElementById('panel-sessions');
       if (state.sessions.size === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No sessions yet</span></div>'; return; }
-      let h = '';
-      for (const [sid, s] of [...state.sessions].reverse()) {
+      const sorted = [...state.sessions].sort((a, b) => (b[1].created_at || 0) - (a[1].created_at || 0));
+      let h = state.sessions.size > 1 ? '<div style="padding:6px 16px;text-align:right"><button class="sess-clear" onclick="clearAllSessions()">Clear all</button></div>' : '';
+      for (const [sid, s] of sorted) {
         const active = isActive(s);
         h += `<div class="sess-item${sid === state.selectedSessionId ? ' active' : ''}" data-sid="${esc(sid)}">
           <div class="sess-id"><span class="sess-dot ${active ? 'running' : 'done'}"></span>${esc(sid)}</div>
           <div class="sess-label">${esc(trunc(s.label || '', 50))}</div>
+          <div class="sess-meta"><span class="sess-time">${fmtTime(s.created_at)}</span><button class="sess-del" onclick="event.stopPropagation();deleteSession('${esc(sid)}')">&times;</button></div>
         </div>`;
       }
       el.innerHTML = h;
@@ -809,7 +870,7 @@
       const sid = state.selectedSessionId;
       // Merge per-task status from retained topics over session's embedded status
       const tasks = Object.values(s.tasks).map(t => {
-        const ts = state.taskStatus.get(`${sid}/${t.task_id}`);
+        const ts = state.taskStatus.get(`${sid}/${t.id}`);
         return ts ? { ...t, status: ts } : t;
       });
       const pending = tasks.filter(t => t.status === 'pending' || t.status === 'waiting');
@@ -820,10 +881,10 @@
         const sel = t.id === state.selectedTaskId;
         let workerDot = '', streamInd = '', preview = '';
         if (t.status === 'running') {
-          const ws = state.workerStatus.get(`${sid}/${t.task_id}`);
+          const ws = state.workerStatus.get(`${sid}/${t.id}`);
           if (ws === 'alive') workerDot = '<span class="worker-dot alive"></span>';
           else if (ws === 'dead') workerDot = '<span class="worker-dot dead"></span>';
-          const hasChunks = state.streamChunks.has(`${sid}/${t.task_id}`);
+          const hasChunks = state.streamChunks.has(`${sid}/${t.id}`);
           if (hasChunks) {
             streamInd = '<span class="stream-dot"></span> ';
             const lt = latestStream(sid, t);
@@ -831,14 +892,14 @@
           }
         }
         if (t.status === 'done' && !preview) {
-          const tr = state.taskResults.get(`${sid}/${t.task_id}`);
+          const tr = state.taskResults.get(`${sid}/${t.id}`);
           if (tr) preview = `<div class="card-preview">${esc(trunc(tr, 60))}</div>`;
         }
-        const usage = state.taskUsage.get(`${sid}/${t.task_id}`);
+        const usage = state.taskUsage.get(`${sid}/${t.id}`);
         let foot = '<div class="card-foot">';
         if (usage && usage.usage) foot += `<span class="card-tokens">${fmtTok((usage.usage.input_tokens||0)+(usage.usage.output_tokens||0))} tok</span>`;
         if (usage && usage.cost_usd != null) foot += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
-        if (t.status === 'running') foot += `<button class="stop-btn" onclick="event.stopPropagation();cancelTask('${esc(sid)}','${esc(t.task_id)}')">Stop</button>`;
+        if (t.status === 'running') foot += `<button class="stop-btn" onclick="event.stopPropagation();cancelTask('${esc(sid)}','${esc(t.id)}')">Stop</button>`;
         foot += '</div>';
 
         return `<div class="card ${t.status}${sel ? ' selected' : ''}" data-tid="${esc(t.id)}">
@@ -884,9 +945,9 @@
       panel.classList.add('open');
 
       const sid = state.selectedSessionId;
-      const mergedStatus = state.taskStatus.get(`${sid}/${t.task_id}`) || t.status;
-      const result = state.taskResults.get(`${sid}/${t.task_id}`) || null;
-      const stopBtn = mergedStatus === 'running' ? `<button class="stop-btn" onclick="cancelTask('${esc(sid)}','${esc(t.task_id)}')">Stop</button>` : '';
+      const mergedStatus = state.taskStatus.get(`${sid}/${t.id}`) || t.status;
+      const result = state.taskResults.get(`${sid}/${t.id}`) || null;
+      const stopBtn = mergedStatus === 'running' ? `<button class="stop-btn" onclick="cancelTask('${esc(sid)}','${esc(t.id)}')">Stop</button>` : '';
 
       let h = `<div class="det-hdr">
         <h2>${esc(t.id)}</h2>
@@ -901,7 +962,7 @@
       h += `<div class="det-section"><div class="det-label">Description</div><div class="det-text">${esc(t.description)}</div></div>`;
 
       // Stream log (live while running, full log when done)
-      const chunks = state.streamChunks.get(`${sid}/${t.task_id}`);
+      const chunks = state.streamChunks.get(`${sid}/${t.id}`);
       if (chunks && chunks.length) {
         const isRunning = mergedStatus === 'running';
         let sh = '';
@@ -919,7 +980,7 @@
         h += `<div class="det-section"><div class="det-label">Dependencies</div><div class="det-deps">${t.needs.map(d => `<span class="dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`).join('')}</div></div>`;
       }
 
-      const usage = state.taskUsage.get(`${sid}/${t.task_id}`);
+      const usage = state.taskUsage.get(`${sid}/${t.id}`);
       if (usage && usage.usage) {
         const u = usage.usage;
         h += `<div class="det-section"><div class="det-label">Usage</div><div class="det-usage">
@@ -931,7 +992,7 @@
         </div></div>`;
       }
 
-      h += `<div class="det-section"><div class="det-meta">task_id: ${esc(t.task_id)}</div></div>`;
+      h += `<div class="det-section"><div class="det-meta">task: ${esc(t.id)}</div></div>`;
       inner.innerHTML = h;
 
       // Sync expand button text
@@ -960,7 +1021,7 @@
       const sid = state.selectedSessionId;
       const terminal = Object.values(s.tasks).find(t => t.next === 'output');
       if (terminal) {
-        const r = state.taskResults.get(`${sid}/${terminal.task_id}`);
+        const r = state.taskResults.get(`${sid}/${terminal.id}`);
         if (r) return r;
       }
       return '';
@@ -970,7 +1031,7 @@
       if (!s || !state.selectedTaskId) return '';
       const t = s.tasks[state.selectedTaskId];
       if (!t) return '';
-      return state.taskResults.get(`${state.selectedSessionId}/${t.task_id}`) || '';
+      return state.taskResults.get(`${state.selectedSessionId}/${t.id}`) || '';
     }
     function copyTaskResult() {
       const md = getSelectedTaskResult();

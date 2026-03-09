@@ -1,7 +1,7 @@
 """Self-coordinating worker — reads session spec, waits for upstream results,
 runs agent as CLI subprocess, publishes results.
 
-Join workers subscribe to upstream chain result topics
+Join workers subscribe to upstream result topics
 and sleep until all inputs arrive via MQTT retained messages.
 """
 
@@ -19,16 +19,16 @@ from skitter.mqtt import (
     A2A_UNIT,
     make_properties,
     mqtt_client_kwargs,
-    topic_chain_result,
     topic_event,
     topic_request_cancel,
+    topic_result,
     topic_session,
-    topic_task_status,
+    topic_status,
     topic_usage,
 )
 from skitter.types import (
-    AgentMessage,
     Session,
+    SessionTask,
     make_status_event,
 )
 
@@ -39,17 +39,17 @@ log = logging.getLogger("skitter.worker")
 
 
 async def run_agent(
-    task: AgentMessage,
+    task: SessionTask,
+    context: str,
     workspace: str,
     publish_stream_item,
     cancel_event: asyncio.Event,
 ) -> tuple[str, dict | None, float | None]:
     """Run any agent runtime as a subprocess, parse JSONL stdout."""
     if task.runtime == "codex":
-        # Codex CLI — personality lives in ~/.codex/ role config
         prompt_parts = []
-        if task.context:
-            prompt_parts.append(f"Context:\n{task.context}")
+        if context:
+            prompt_parts.append(f"Context:\n{context}")
         prompt_parts.append(task.description)
         prompt = "\n\n".join(prompt_parts)
 
@@ -64,7 +64,6 @@ async def run_agent(
         if task.model:
             cmd.extend(["--model", task.model])
     else:
-        # Claude CLI — personality lives in ~/.claude/agents/<agent>.md
         cmd = [
             "claude",
             "-p",
@@ -78,15 +77,14 @@ async def run_agent(
             cmd.extend(["--agent", task.agent])
         if task.model:
             cmd.extend(["--model", task.model])
-        if task.context:
+        if context:
             cmd.extend(
                 [
                     "--append-system-prompt",
-                    f"# Context from upstream tasks\n{task.context}",
+                    f"# Context from upstream tasks\n{context}",
                 ]
             )
 
-    # Filter CLAUDECODE to allow nested claude sessions
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
     try:
@@ -123,7 +121,6 @@ async def run_agent(
 
         event_type = event.get("type", "")
 
-        # Claude stream-json: {"type":"assistant","message":{"content":[...]}}
         if event_type == "assistant":
             message = event.get("message", {})
             for block in message.get("content", []):
@@ -136,7 +133,6 @@ async def run_agent(
                         "tool_use",
                         f"{block.get('name', '?')}: {str(block.get('input', ''))[:100]}",
                     )
-        # Codex JSONL: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
         elif event_type == "item.completed":
             item = event.get("item", {})
             if item.get("type") == "agent_message":
@@ -144,17 +140,14 @@ async def run_agent(
                 if text:
                     texts.append(text)
                     await publish_stream_item("text", text)
-        # Codex: {"type":"turn.completed","usage":{...}}
         elif event_type == "turn.completed":
             usage = event.get("usage")
-        # Claude: {"type":"result","total_cost_usd":...,"usage":{...}}
         elif event_type == "result":
             cost_usd = event.get("total_cost_usd")
             usage = event.get("usage")
 
     await proc.wait()
 
-    # Log stderr for debugging (auth errors, etc.)
     if proc.stderr:
         stderr = (await proc.stderr.read()).decode().strip()
         if stderr:
@@ -193,24 +186,22 @@ async def read_retained_session(
 async def wait_for_needs(
     client: aiomqtt.Client, session: Session, task_name: str
 ) -> str:
-    """Subscribe to upstream chain result topics and wait until all arrive."""
+    """Subscribe to upstream result topics and wait until all arrive."""
     my_task = session.tasks[task_name]
-    needed: dict[str, str] = {}  # source_task_id -> need_id
+    needed: set[str] = set()
     for need_id in my_task.needs:
         need_task = session.tasks.get(need_id)
         if need_task:
-            needed[need_task.task_id] = need_id
+            needed.add(need_id)
             await client.subscribe(
-                topic_chain_result(
-                    need_task.agent, session.session_id, need_task.task_id
-                ),
+                topic_result(session.workflow_id, need_id, session.session_id),
                 qos=1,
             )
 
     if not needed:
         return ""
 
-    log.info("Waiting for %d upstream results: %s", len(needed), list(needed.values()))
+    log.info("Waiting for %d upstream results: %s", len(needed), sorted(needed))
     results: dict[str, str] = {}
 
     async for mqtt_msg in client.messages:
@@ -222,28 +213,22 @@ async def wait_for_needs(
         except Exception:
             continue
 
-        source_tid = data.get("task_id", "")
-        if source_tid in needed:
-            need_id = needed[source_tid]
-            results[need_id] = data.get("result", "")
+        source_task = data.get("task", "")
+        if source_task in needed:
+            results[source_task] = data.get("result", "")
             log.info(
                 "Got result from '%s' (%d/%d)",
-                need_id,
+                source_task,
                 len(results),
                 len(needed),
             )
             if len(results) == len(needed):
                 break
 
-    # Unsubscribe from chain topics
-    for need_id in my_task.needs:
-        need_task = session.tasks.get(need_id)
-        if need_task:
-            await client.unsubscribe(
-                topic_chain_result(
-                    need_task.agent, session.session_id, need_task.task_id
-                )
-            )
+    for need_id in needed:
+        await client.unsubscribe(
+            topic_result(session.workflow_id, need_id, session.session_id)
+        )
 
     parts = [
         f"## Result from '{need_id}':\n{result}" for need_id, result in results.items()
@@ -253,19 +238,15 @@ async def wait_for_needs(
 
 async def publish_task_state(
     client: aiomqtt.Client,
-    agent: str,
+    workflow_id: str,
     session_id: str,
-    task_id: str,
+    task_name: str,
     status: str,
-    result: str = "",
 ) -> None:
-    """Publish per-task status as a retained message on a suffixed event topic."""
-    payload = {"task_id": task_id, "session_id": session_id, "status": status}
-    if result:
-        payload["result"] = result
+    """Publish per-task status (waiting/running) as a retained message."""
     await client.publish(
-        topic_task_status(agent, session_id, task_id),
-        json.dumps(payload),
+        topic_status(workflow_id, task_name, session_id),
+        json.dumps({"task": task_name, "session_id": session_id, "status": status}),
         qos=1,
         retain=True,
     )
@@ -278,10 +259,9 @@ async def publish_terminal_result(
     result: str,
 ) -> None:
     """Publish terminal TaskStatusUpdateEvent to caller."""
-    my_task = session.tasks[task_name]
     event = make_status_event(
         request_id=session.caller_correlation,
-        task_id=my_task.task_id,
+        task_id=task_name,
         state="completed",
         artifact_text=result,
     )
@@ -296,17 +276,16 @@ async def publish_terminal_result(
         )
 
 
-async def run(agent: str, session_id: str, task_id: str) -> str:
-    log.info("[worker:%s:%s] Starting", agent, task_id)
+async def run(agent: str, session_id: str, task_name: str) -> str:
+    log.info("[worker:%s:%s] Starting", agent, task_name)
 
     alive_topic = topic_event(agent, "alive")
-    done_topic = topic_event(agent, "done")
     lwt_topic = topic_event(agent, "dead")
 
     lwt_payload = json.dumps(
         {
             "status": "dead",
-            "task_id": task_id,
+            "task": task_name,
             "agent": agent,
             "session_id": session_id,
         }
@@ -315,69 +294,53 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
 
     async with aiomqtt.Client(
         **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}",
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_name}-{session_id[:8]}",
             will=will,
         ),
     ) as client:
-        # Announce alive
         await client.publish(
             alive_topic,
-            json.dumps({"status": "alive", "task_id": task_id, "agent": agent}),
+            json.dumps({"status": "alive", "task": task_name, "agent": agent}),
             qos=1,
         )
 
-        # 1. Read session spec (retained)
         session = await read_retained_session(client, session_id)
         if session is None:
-            log.error("[worker:%s:%s] No session found, exiting", agent, task_id)
+            log.error("[worker:%s:%s] No session found, exiting", agent, task_name)
             return "(no session found)"
 
-        # Find my task by task_id
-        task_name = None
-        for tid, st in session.tasks.items():
-            if st.task_id == task_id:
-                task_name = tid
-                break
-
-        if task_name is None:
-            log.error("[worker:%s:%s] Task not found in session", agent, task_id)
+        my_task = session.tasks.get(task_name)
+        if my_task is None:
+            log.error("[worker:%s:%s] Task not found in session", agent, task_name)
             return "(task not found)"
 
-        my_spec = session.task_dispatches.get(task_name)
-        if my_spec is None:
-            log.error("[worker:%s:%s] No dispatch spec in session", agent, task_id)
-            return "(no dispatch spec)"
-
-        # 2. Wait for upstream results (join coordination)
-        my_task = session.tasks[task_name]
+        # Wait for upstream results (join coordination)
         context = ""
         if my_task.needs:
-            await publish_task_state(client, agent, session_id, task_id, "waiting")
+            await publish_task_state(
+                client, session.workflow_id, session.session_id, task_name, "waiting"
+            )
             context = await wait_for_needs(client, session, task_name)
 
-        # 3. Build AgentMessage from pre-materialized spec + context
-        task_msg = AgentMessage(**{**my_spec, "context": context})
-
-        await publish_task_state(client, agent, session_id, task_id, "running")
+        await publish_task_state(
+            client, session.workflow_id, session.session_id, task_name, "running"
+        )
 
         log.info(
             "[worker:%s:%s] Processing (runtime=%s, model=%s): %.80s",
             agent,
-            task_id,
-            task_msg.runtime,
-            task_msg.model or "default",
-            task_msg.description,
+            task_name,
+            my_task.runtime,
+            my_task.model or "default",
+            my_task.description,
         )
 
-        # 4. Resolve workspace
-        workspace = WORKSPACES_DIR / task_id
+        workspace = WORKSPACES_DIR / f"{session_id}-{task_name}"
         workspace.mkdir(parents=True, exist_ok=True)
 
-        # Streaming target
-        stream_topic = task_msg.caller_reply_topic
-        stream_correlation = task_msg.caller_correlation
-
-        # Pre-build MQTT properties (constant for the lifetime of this task)
+        # Streaming
+        stream_topic = session.caller_reply_topic
+        stream_correlation = session.caller_correlation
         stream_props = make_properties(correlation_data=stream_correlation)
 
         async def publish_stream_item(item_type: str, content: str) -> None:
@@ -385,7 +348,7 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
                 return
             event = make_status_event(
                 request_id=stream_correlation,
-                task_id=task_id,
+                task_id=task_name,
                 state="working",
                 message=content,
                 message_type=item_type,
@@ -401,7 +364,7 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
             try:
                 async with aiomqtt.Client(
                     **mqtt_client_kwargs(
-                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_id[:8]}-ctrl",
+                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent}-{task_name}-{session_id[:8]}-ctrl",
                     ),
                 ) as ctrl_client:
                     await ctrl_client.subscribe(cancel_topic, qos=1)
@@ -412,11 +375,13 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
                         try:
                             data = json.loads(msg_payload)
                             if (
-                                data.get("params", {}).get("task_id") == task_id
-                                or data.get("task_id") == task_id
+                                data.get("params", {}).get("task") == task_name
+                                or data.get("task") == task_name
                             ):
                                 log.info(
-                                    "[worker:%s:%s] Cancel received", agent, task_id
+                                    "[worker:%s:%s] Cancel received",
+                                    agent,
+                                    task_name,
                                 )
                                 cancel_event.set()
                                 return
@@ -426,17 +391,18 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
                 pass
             except Exception as e:
                 log.warning(
-                    "[worker:%s:%s] Cancel listener error: %s", agent, task_id, e
+                    "[worker:%s:%s] Cancel listener error: %s", agent, task_name, e
                 )
 
         listener_task = asyncio.create_task(cancel_listener())
 
-        # 5. Run agent
+        # Run agent
         usage_data: dict | None = None
         cost_usd: float | None = None
         try:
             response_text, usage_data, cost_usd = await run_agent(
-                task_msg,
+                my_task,
+                context,
                 str(workspace),
                 publish_stream_item,
                 cancel_event,
@@ -449,14 +415,13 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
                 except asyncio.CancelledError:
                     pass
 
-        # 6. Publish result
-        if task_msg.next and task_msg.next != "output":
-            # Non-terminal: publish retained chain result
+        # Publish result
+        if my_task.next and my_task.next != "output":
             await client.publish(
-                topic_chain_result(agent, session_id, task_id),
+                topic_result(session.workflow_id, task_name, session_id),
                 json.dumps(
                     {
-                        "task_id": task_id,
+                        "task": task_name,
                         "session_id": session_id,
                         "result": response_text,
                     }
@@ -465,72 +430,59 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
                 retain=True,
             )
             log.info(
-                "[worker:%s:%s] Chain result published for next task '%s'",
+                "[worker:%s:%s] Result published for next task '%s'",
                 agent,
-                task_id,
-                task_msg.next,
-            )
-
-            await publish_task_state(
-                client, agent, session_id, task_id, "done", result=response_text
+                task_name,
+                my_task.next,
             )
         else:
-            # Terminal: publish to caller
             await publish_terminal_result(client, session, task_name, response_text)
-            await publish_task_state(
-                client, agent, session_id, task_id, "done", result=response_text
-            )
             log.info(
                 "[worker:%s:%s] Terminal result published",
                 agent,
-                task_id,
+                task_name,
             )
 
         # Publish usage
         if usage_data or cost_usd is not None:
             usage_payload = json.dumps(
                 {
-                    "task_id": task_id,
+                    "task": task_name,
                     "session_id": session_id,
                     "usage": usage_data,
                     "cost_usd": cost_usd,
                 }
             )
             await client.publish(
-                topic_usage(agent, session_id, task_id), usage_payload, qos=1
+                topic_usage(session.workflow_id, task_name, session_id),
+                usage_payload,
+                qos=1,
             )
 
-        # Announce done
-        await client.publish(
-            done_topic,
-            json.dumps({"status": "done", "task_id": task_id, "agent": agent}),
-            qos=1,
-        )
-        log.info("[worker:%s:%s] Done", agent, task_id)
+        log.info("[worker:%s:%s] Done", agent, task_name)
 
     return response_text
 
 
 def main() -> None:
     if len(sys.argv) >= 4:
-        agent, session_id, task_id = sys.argv[1:4]
+        agent, session_id, task_name = sys.argv[1:4]
     else:
-        # Fly Machines mode: read from env vars
         agent = os.environ.get("AGENT_NAME", "")
         session_id = os.environ.get("SESSION_ID", "")
-        task_id = os.environ.get("TASK_ID", "")
+        task_name = os.environ.get("TASK", "")
 
-    if not agent or not session_id or not task_id:
+    if not agent or not session_id or not task_name:
         print(
-            "Usage: python -m skitter.worker <agent> <session_id> <task_id>\n"
-            "   or: AGENT_NAME=... SESSION_ID=... TASK_ID=... python -m skitter.worker",
+            "Usage: python -m skitter.worker <agent> <session_id> <task>\n"
+            "   or: AGENT_NAME=... SESSION_ID=... TASK=... python -m skitter.worker",
             file=sys.stderr,
         )
         sys.exit(1)
     try:
-        asyncio.run(run(agent, session_id, task_id))
+        asyncio.run(run(agent, session_id, task_name))
     except KeyboardInterrupt:
-        log.info("[worker:%s:%s] Interrupted", agent, task_id)
+        log.info("[worker:%s:%s] Interrupted", agent, task_name)
 
 
 if __name__ == "__main__":

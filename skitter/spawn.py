@@ -13,25 +13,25 @@ DOCKER_NETWORK = os.environ.get("SKITTER_DOCKER_NETWORK", "skitter")
 DOCKER_USER_HOME = "/home/skitter"
 
 
-def spawn_worker(agent: str, session_id: str, task_id: str) -> None:
+def spawn_worker(agent: str, session_id: str, task: str) -> None:
     if SPAWN_MODE == "fly":
-        _spawn_fly(agent, session_id, task_id)
+        _spawn_fly(agent, session_id, task)
     elif SPAWN_MODE == "docker":
-        _spawn_docker(agent, session_id, task_id)
+        _spawn_docker(agent, session_id, task)
     else:
-        _spawn_subprocess(agent, session_id, task_id)
+        _spawn_subprocess(agent, session_id, task)
 
 
-def _spawn_subprocess(agent: str, session_id: str, task_id: str) -> None:
+def _spawn_subprocess(agent: str, session_id: str, task: str) -> None:
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     subprocess.Popen(
-        [sys.executable, "-m", "skitter.worker", agent, session_id, task_id],
+        [sys.executable, "-m", "skitter.worker", agent, session_id, task],
         env=env,
     )
-    log.info("Spawned %s worker subprocess for task %s", agent, task_id)
+    log.info("Spawned %s worker subprocess for task %s", agent, task)
 
 
-def _spawn_docker(agent: str, session_id: str, task_id: str) -> None:
+def _spawn_docker(agent: str, session_id: str, task: str) -> None:
     env_args: list[str] = []
     env_args.extend(
         ["-e", f"MQTT_HOST={os.environ.get('SKITTER_DOCKER_MQTT_HOST', 'emqx')}"]
@@ -69,16 +69,14 @@ def _spawn_docker(agent: str, session_id: str, task_id: str) -> None:
             WORKER_IMAGE,
             agent,
             session_id,
-            task_id,
+            task,
         ],
     )
-    log.info("Spawned %s worker container for task %s", agent, task_id)
+    log.info("Spawned %s worker container for task %s", agent, task)
 
 
-def _spawn_fly(agent: str, session_id: str, task_id: str) -> None:
+def _spawn_fly(agent: str, session_id: str, task: str) -> None:
     from skitter.fly import create_worker
 
-    result = create_worker(agent, session_id, task_id)
-    log.info(
-        "Created Fly worker machine %s for task %s", result.get("id", "?"), task_id
-    )
+    result = create_worker(agent, session_id, task)
+    log.info("Created Fly worker machine %s for task %s", result.get("id", "?"), task)

@@ -30,6 +30,10 @@ def dispatch() -> None:
         from skitter.docker_cli import main
 
         main()
+    elif subcmd == "publish":
+        from skitter.discovery import main as discovery_main
+
+        discovery_main()
     elif subcmd == "deploy":
         from skitter.deploy_fly import cmd_deploy_fly
 

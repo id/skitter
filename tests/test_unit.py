@@ -12,23 +12,21 @@ from skitter.config import (
     WorkflowTask,
 )
 from skitter.supervisor import (
-    build_dispatch_spec,
     create_session,
     _parse_agent_id_from_topic,
 )
 from skitter.mqtt import (
-    topic_chain_result,
     topic_event,
-    topic_event_wildcard,
+    topic_dead_wildcard,
     topic_reload,
     topic_request,
     topic_request_wildcard,
+    topic_result,
     topic_session,
-    topic_task_status,
+    topic_status,
 )
 from skitter.types import (
     A2ARequest,
-    AgentMessage,
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
     REPLY_ERROR,
@@ -84,12 +82,12 @@ class TestA2ARequest:
 
 class TestStatusEvent:
     def test_working_text(self):
-        event = make_status_event("req-1", "t-abc", "working", message="hello")
+        event = make_status_event("req-1", "research", "working", message="hello")
         d = json.loads(event)
         assert d["jsonrpc"] == "2.0"
         assert d["id"] == "req-1"
         assert d["result"]["type"] == "TaskStatusUpdateEvent"
-        assert d["result"]["taskId"] == "t-abc"
+        assert d["result"]["taskId"] == "research"
         assert d["result"]["status"]["state"] == "working"
         assert d["result"]["status"]["message"] == "hello"
         assert "artifact" not in d["result"]
@@ -101,7 +99,7 @@ class TestStatusEvent:
     def test_working_tool_use(self):
         event = make_status_event(
             "req-1",
-            "t-abc",
+            "research",
             "working",
             message="Read: file.py",
             message_type="tool_use",
@@ -115,7 +113,7 @@ class TestStatusEvent:
 
     def test_terminal_with_artifact(self):
         event = make_status_event(
-            "req-2", "t-xyz", "completed", artifact_text="Final answer"
+            "req-2", "summarize", "completed", artifact_text="Final answer"
         )
         d = json.loads(event)
         assert d["result"]["status"]["state"] == "completed"
@@ -138,58 +136,27 @@ class TestStatusEvent:
         assert content == ""
 
 
-class TestAgentMessage:
-    def test_roundtrip(self):
-        from dataclasses import asdict
-
-        msg = AgentMessage(
-            task_id="t1",
-            session_id="c1",
-            description="do stuff",
-            agent="researcher",
-            context="prior result",
-            model="sonnet",
-            runtime="claude",
-            next="step2",
-            caller_reply_topic="reply/topic",
-            caller_correlation="corr123",
-        )
-        d = asdict(msg)
-        restored = AgentMessage(**d)
-        assert restored.task_id == "t1"
-        assert restored.agent == "researcher"
-        assert restored.runtime == "claude"
-        assert restored.next == "step2"
-        assert restored.caller_reply_topic == "reply/topic"
-        assert restored.caller_correlation == "corr123"
-
-    def test_defaults(self):
-        msg = AgentMessage(task_id="t", session_id="c", description="d")
-        assert msg.agent == ""
-        assert msg.runtime == "claude"
-        assert msg.next == ""
-        assert msg.caller_reply_topic == ""
-
-
 class TestSessionTask:
     def test_roundtrip(self):
         from dataclasses import asdict
 
         task = SessionTask(
             id="research",
-            task_id="abc123",
             agent="researcher",
             description="do research",
+            runtime="claude",
             next="review",
             needs=["prep"],
         )
         d = asdict(task)
         assert d["id"] == "research"
+        assert d["runtime"] == "claude"
         assert d["next"] == "review"
         assert d["needs"] == ["prep"]
 
         restored = SessionTask(**d)
         assert restored.id == "research"
+        assert restored.runtime == "claude"
         assert restored.next == "review"
         assert restored.needs == ["prep"]
 
@@ -207,17 +174,20 @@ class TestSession:
         assert restored.caller_reply_topic == "reply/t"
         assert restored.caller_correlation == "corr"
 
-    def test_task_dispatches_roundtrip(self):
-        session = Session(session_id="c1", label="test")
-        session.task_dispatches["step1"] = {
-            "task_id": "t1",
-            "description": "do things",
-            "runtime": "claude",
-        }
+    def test_roundtrip_with_tasks(self):
+        session = Session(session_id="c1", workflow_id="test-wf", label="test")
+        session.tasks["research"] = SessionTask(
+            id="research",
+            agent="researcher",
+            description="do stuff",
+            runtime="claude",
+            model="sonnet",
+        )
         json_str = session.to_json()
         restored = Session.from_json(json_str)
-        assert "step1" in restored.task_dispatches
-        assert restored.task_dispatches["step1"]["runtime"] == "claude"
+        assert "research" in restored.tasks
+        assert restored.tasks["research"].runtime == "claude"
+        assert restored.workflow_id == "test-wf"
 
 
 # --- A2A error codes ---
@@ -235,32 +205,27 @@ class TestErrorCodes:
 class TestTopics:
     def test_event_topics(self):
         t = topic_event("researcher", "alive")
-        assert "/event/" in t
-        assert "/researcher/alive" in t
+        assert t == "skitter/event/researcher/alive"
 
-    def test_event_wildcard(self):
-        t = topic_event_wildcard()
-        assert t.endswith("/+/+")
+    def test_dead_wildcard(self):
+        t = topic_dead_wildcard()
+        assert t == "skitter/event/+/dead"
 
-    def test_chain_result(self):
-        t = topic_chain_result("researcher", "session1", "task1")
-        assert "/event/" in t
-        assert "/researcher/chain-result/session1/task1" in t
+    def test_result(self):
+        t = topic_result("my-wf", "research", "session1")
+        assert t == "skitter/result/my-wf/research/session1"
 
     def test_session_topic(self):
         t = topic_session("session1")
-        assert "/event/" in t
-        assert "/supervisor/session/session1" in t
+        assert t == "skitter/session/session1"
 
     def test_task_status(self):
-        t = topic_task_status("researcher", "session1", "task1")
-        assert "/event/" in t
-        assert "/researcher/task-status/session1/task1" in t
+        t = topic_status("my-wf", "research", "session1")
+        assert t == "skitter/status/my-wf/research/session1"
 
     def test_reload(self):
         t = topic_reload()
-        assert "/request/" in t
-        assert "/supervisor/reload" in t
+        assert t == "skitter/control/reload"
 
     def test_request_wildcard(self):
         t = topic_request_wildcard()
@@ -353,6 +318,7 @@ class TestCreateSession:
         assert "fact_check" in session.tasks
         assert session.tasks["research"].next == "fact_check"
         assert session.tasks["fact_check"].needs == ["research", "analyze"]
+        assert session.workflow_id == "test"
 
     def test_agent_session_sets_output(self):
         session = create_session(
@@ -364,6 +330,7 @@ class TestCreateSession:
         )
         assert "researcher" in session.tasks
         assert session.tasks["researcher"].next == "output"
+        assert session.workflow_id == "researcher"
 
     def test_variable_interpolation(self):
         session = create_session(
@@ -375,6 +342,26 @@ class TestCreateSession:
         )
         assert "quantum" in session.tasks["research"].description
 
+    def test_runtime_from_agent_def(self):
+        session = create_session(
+            "c1",
+            "test",
+            agent_id="codex_agent",
+            text="code something",
+            agents=self.agents,
+        )
+        assert session.tasks["codex_agent"].runtime == "codex"
+
+    def test_workflow_runtime_from_agent_def(self):
+        session = create_session(
+            "c1",
+            "test",
+            workflow=self.workflow,
+            variables={"topic": "AI"},
+            agents=self.agents,
+        )
+        assert session.tasks["research"].runtime == "claude"
+
 
 # --- Entry task detection ---
 
@@ -384,7 +371,6 @@ class TestEntryTasks:
         session = Session(session_id="c1", label="test")
         session.tasks["a"] = SessionTask(
             id="a",
-            task_id="t1",
             agent="r",
             description="",
             needs=[],
@@ -392,7 +378,6 @@ class TestEntryTasks:
         )
         session.tasks["b"] = SessionTask(
             id="b",
-            task_id="t2",
             agent="r",
             description="",
             needs=[],
@@ -400,7 +385,6 @@ class TestEntryTasks:
         )
         session.tasks["c"] = SessionTask(
             id="c",
-            task_id="t3",
             agent="w",
             description="",
             needs=["a", "b"],
@@ -417,7 +401,6 @@ class TestEntryTasks:
         session = Session(session_id="c1", label="test")
         session.tasks["a"] = SessionTask(
             id="a",
-            task_id="t1",
             agent="r",
             description="",
             needs=[],
@@ -429,106 +412,6 @@ class TestEntryTasks:
         assert len(entry) == 0
 
 
-# --- Dispatch spec building ---
-
-
-class TestBuildDispatchSpec:
-    def test_resolves_from_agent_def(self):
-        agents = {
-            "researcher": AgentDef(
-                id="researcher",
-                name="R",
-                runtime="claude",
-            ),
-        }
-        session = Session(session_id="s1", label="test")
-        session.tasks["research"] = SessionTask(
-            id="research",
-            task_id="t1",
-            agent="researcher",
-            description="do stuff",
-            model="sonnet",
-            next="output",
-        )
-        session.caller_reply_topic = "reply/t"
-        session.caller_correlation = "corr"
-
-        spec = build_dispatch_spec(session, "research", agents)
-        assert spec["agent"] == "researcher"
-        assert spec["runtime"] == "claude"
-        assert spec["model"] == "sonnet"
-        assert spec["caller_reply_topic"] == "reply/t"
-
-    def test_codex_runtime(self):
-        agents = {
-            "coder": AgentDef(
-                id="coder",
-                name="C",
-                runtime="codex",
-            ),
-        }
-        session = Session(session_id="s1", label="test")
-        session.tasks["code"] = SessionTask(
-            id="code",
-            task_id="t1",
-            agent="coder",
-            description="write code",
-            next="output",
-        )
-
-        spec = build_dispatch_spec(session, "code", agents)
-        assert spec["runtime"] == "codex"
-        assert spec["agent"] == "coder"
-
-
-# --- Workflow loading: auto-infer next ---
-
-
-class TestWorkflowLoading:
-    def test_auto_infer_next(self, tmp_path):
-        workflow_yaml = tmp_path / "test.yaml"
-        workflow_yaml.write_text(
-            """
-name: Test
-tasks:
-  - id: step1
-    agent: worker
-    description: first
-    needs: []
-  - id: step2
-    agent: worker
-    description: second
-    needs: [step1]
-"""
-        )
-        import yaml
-
-        data = yaml.safe_load(workflow_yaml.read_text())
-        tasks = []
-        for t in data["tasks"]:
-            tasks.append(
-                WorkflowTask(
-                    id=t.get("id", ""),
-                    agent=t.get("agent", "worker"),
-                    description=t.get("description", ""),
-                    next=t.get("next", ""),
-                    needs=t.get("needs", []),
-                )
-            )
-        for t in tasks:
-            if not t.next:
-                dependents = [other.id for other in tasks if t.id in other.needs]
-                if len(dependents) == 1:
-                    t.next = dependents[0]
-                elif len(dependents) == 0:
-                    t.next = "output"
-
-        assert tasks[0].id == "step1"
-        assert tasks[0].next == "step2"
-        assert tasks[1].id == "step2"
-        assert tasks[1].next == "output"
-
-
 # --- Codex runtime dispatch ---
 
 
@@ -538,20 +421,20 @@ class TestCodexDispatch:
         """run_agent handles missing codex CLI."""
         from skitter.worker import run_agent
 
-        task = AgentMessage(
-            task_id="t1",
-            session_id="c1",
+        task = SessionTask(
+            id="code",
+            agent="coder",
             description="code something",
             model="gpt-5-nano",
             runtime="codex",
         )
 
-        async def noop_publish(item_type, content, seq):
+        async def noop_publish(item_type, content):
             pass
 
         with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
             result, usage, cost = await run_agent(
-                task, "/tmp", noop_publish, asyncio.Event()
+                task, "", "/tmp", noop_publish, asyncio.Event()
             )
             assert "codex" in result.lower() and "not found" in result.lower()
             assert usage is None
@@ -561,20 +444,19 @@ class TestCodexDispatch:
         """run_agent handles missing claude CLI."""
         from skitter.worker import run_agent
 
-        task = AgentMessage(
-            task_id="t1",
-            session_id="c1",
-            description="do something",
+        task = SessionTask(
+            id="research",
             agent="researcher",
+            description="do something",
             runtime="claude",
         )
 
-        async def noop_publish(item_type, content, seq):
+        async def noop_publish(item_type, content):
             pass
 
         with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
             result, usage, cost = await run_agent(
-                task, "/tmp", noop_publish, asyncio.Event()
+                task, "", "/tmp", noop_publish, asyncio.Event()
             )
             assert "claude" in result.lower() and "not found" in result.lower()
             assert usage is None
@@ -620,7 +502,6 @@ class TestRespawn:
     async def test_respawn_with_missing_fields(self):
         from skitter.supervisor import handle_dead_event
 
-        # Should not raise
         await handle_dead_event(json.dumps({"status": "dead"}))
 
     @pytest.mark.asyncio
@@ -632,13 +513,13 @@ class TestRespawn:
                 json.dumps(
                     {
                         "status": "dead",
-                        "task_id": "t1",
+                        "task": "research",
                         "agent": "researcher",
                         "session_id": "s1",
                     }
                 )
             )
-            mock_spawn.assert_called_once_with("researcher", "s1", "t1")
+            mock_spawn.assert_called_once_with("researcher", "s1", "research")
 
 
 # --- Join context from wait_for_needs ---

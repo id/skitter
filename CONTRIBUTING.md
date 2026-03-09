@@ -6,11 +6,12 @@
 skitter/
   supervisor.py    Stateless supervisor: wildcard MQTT listener, session creator, worker spawner
   worker.py        Self-coordinating worker: reads session from MQTT, runs agent CLI, publishes results
+  discovery.py     Build + publish discovery cards from agent/workflow YAML definitions
   spawn.py         Worker spawn backends: subprocess, docker, fly
   fly.py           Fly Machines API client
   deploy_fly.py    Deploy to Fly (build image, set secrets)
   mqtt.py          MQTT connection settings, A2A topic builders, v5 property helpers
-  config.py        ~/.skitter/ management, YAML loading, dataclasses, card loading
+  config.py        ~/.skitter/ management, YAML loading, dataclasses
   types.py         Message type definitions
   cli.py           Chat client
   agents_cli.py    `skitter agents` subcommands
@@ -134,29 +135,40 @@ Copy `.env.example` to `.env` for local development:
 
 For cloud deployment, see `.env.cloud.example` and `docs/fly-deployment.md`.
 
-## A2A Topic Scheme
+## Topic Scheme
 
-All topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme:
+Skitter uses two namespaces. `$a2a` follows the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) standard (client-facing). `skitter` is internal coordination.
+
+### A2A topics (client-facing)
 
 ```
 $a2a/v1/
-  discovery/{org}/{unit}/{agent_id}                       # Retained Agent Cards
-  request/{org}/{unit}/{agent_id}                         # Requests
-  request/{org}/{unit}/{agent_id}/cancel                  # Cancel signals
-  reply/{org}/{unit}/{agent_id}/{suffix}                  # Replies
-  event/{org}/{unit}/{agent_id}/{event_type}              # Lifecycle (alive/done/dead)
-  event/{org}/{unit}/supervisor/session/{sid}              # Retained session specs
-  event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}   # Retained task status
-  event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}  # Retained chain results
-  event/{org}/{unit}/{agent_id}/usage/{sid}/{tid}         # Usage tracking
+  discovery/{org}/{unit}/{agent_id}          # Retained Agent Cards
+  request/{org}/{unit}/{agent_id}            # Requests
+  request/{org}/{unit}/{agent_id}/cancel     # Cancel signals
+  reply/{org}/{unit}/{agent_id}/{suffix}     # Replies
 ```
+
+### Skitter internal topics
+
+```
+skitter/
+  session/{session_id}                       # Retained session spec (immutable)
+  result/{workflow_id}/{task}/{session_id}   # Retained inter-worker results
+  status/{workflow_id}/{task}/{session_id}   # Retained per-task status
+  usage/{workflow_id}/{task}/{session_id}    # Usage tracking
+  event/{agent}/{type}                       # alive/dead (LWT)
+  control/reload                             # Reload agents/workflows signal
+```
+
+`workflow_id` equals `agent_id` for single-agent sessions. No `{org}/{unit}` in the `skitter` namespace.
 
 ## Spec Deviations
 
 | Area | A2A Spec | Skitter |
 |---|---|---|
 | Streaming | Separate `TaskStatusUpdateEvent` + `TaskArtifactUpdateEvent` | `TaskStatusUpdateEvent` for both streaming and terminal |
-| Event topics | Bare `event/{org}/{unit}/{agent_id}` | Suffixed: `…/chain-result/{sid}/{tid}`, `…/task-status/{sid}/{tid}` |
+| Internal state | Part of `event/` topic tree | Separate `skitter/` namespace |
 | Retry / timeout | Exponential backoff, timeouts | Not implemented |
 
 ## Testing

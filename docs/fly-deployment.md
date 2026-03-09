@@ -125,6 +125,13 @@ This:
 
 After making changes to agent definitions (`~/.claude/agents/*.md` or `~/.skitter/agents/*.yaml`), re-run the deploy command. The supervisor machine is updated in-place.
 
+To update discovery cards without redeploying (e.g. after editing workflow YAML locally):
+
+```bash
+set -a && source .env.cloud && set +a
+uv run python -m skitter publish
+```
+
 ## 5. Test End-to-End
 
 The supervisor is already running and listening. Publish a request:
@@ -156,7 +163,7 @@ Watch all traffic:
 mosquitto_sub \
   -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" \
   --cafile emqxsl-ca.crt -V 5 \
-  -t '$a2a/v1/request/#' -t '$a2a/v1/reply/#' -t '$a2a/v1/event/#' -v
+  -t '$a2a/v1/request/#' -t '$a2a/v1/reply/#' -t 'skitter/#' -v
 ```
 
 ## How It Works
@@ -175,7 +182,7 @@ Worker machines use `restart.policy: on-failure` with `max_retries: 1`. If a wor
 ## Cost
 
 - **Supervisor**: always-on `shared-cpu-1x` / 256MB ~ $1.94/mo
-- **Workers**: billed per-second while running (`shared-cpu-1x` / 512MB ~ $0.0000044/sec)
+- **Workers**: billed per-second while running (`shared-cpu-1x` / 1024MB ~ $0.0000066/sec)
 - No persistent volumes (agent definitions baked into image)
 - EMQX Serverless free tier: 1M session minutes/month, 1GB traffic
 - For sporadic personal use, total cost is ~$2/mo
@@ -199,6 +206,6 @@ fly machines list -a skitter
 | Symptom | Cause | Fix |
 |---|---|---|
 | No response to requests | Supervisor not running | `fly machines list -a skitter` — should show one running machine |
-| Worker OOM killed | Not enough memory | Increase `memory_mb` in `skitter/fly.py` |
+| Worker OOM killed | Not enough memory | Increase `memory_mb` in `skitter/fly.py` (default: 1024MB) |
 | `MANIFEST_UNKNOWN` on worker create | Stale image tag | Re-run `skitter deploy --target fly` |
 | Worker exits with "Credit balance too low" | Anthropic API quota | Add credits, or switch to OAuth (`CLAUDE_CREDENTIALS`) |

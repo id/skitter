@@ -28,7 +28,6 @@ class TestGetEntryTasks:
         session = Session(session_id="c1", label="test")
         session.tasks["a"] = SessionTask(
             id="a",
-            task_id="t1",
             agent="w",
             description="A",
             status="pending",
@@ -42,14 +41,12 @@ class TestGetEntryTasks:
         session = Session(session_id="c1", label="test")
         session.tasks["a"] = SessionTask(
             id="a",
-            task_id="t1",
             agent="w",
             description="A",
             status="done",
         )
         session.tasks["b"] = SessionTask(
             id="b",
-            task_id="t2",
             agent="w",
             description="B",
             needs=["a"],
@@ -64,7 +61,6 @@ class TestGetEntryTasks:
         session = Session(session_id="c1", label="test")
         session.tasks["a"] = SessionTask(
             id="a",
-            task_id="t1",
             agent="w",
             description="A",
             status="running",

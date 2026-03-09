@@ -8,6 +8,7 @@
 |---|---|
 | Supervisor (session creation, worker spawning) | `skitter/supervisor.py` |
 | Worker (reads session, runs agent CLI, publishes results) | `skitter/worker.py` |
+| Discovery (build + publish agent/workflow cards) | `skitter/discovery.py` |
 | Spawn backends (subprocess, docker, fly) | `skitter/spawn.py` |
 | Fly Machines API client | `skitter/fly.py` |
 | Deploy to Fly | `skitter/deploy_fly.py` |
@@ -31,13 +32,13 @@
 
 ## Architecture in One Paragraph
 
-Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. The supervisor intercepts via wildcard subscription, creates a session (retained MQTT message), and spawns workers. Workers read the session, wait for upstream chain results if they have `needs`, run `claude --agent <name>` or `codex` as a subprocess, and publish results. Terminal tasks reply directly to the caller. The broker handles routing, fan-out, and state. Locally: subprocess workers + Docker EMQX. On Fly: always-on supervisor + EMQX Serverless + ephemeral worker machines.
+Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. The supervisor intercepts via wildcard subscription, creates a session (retained on `skitter/session/{sid}`), and spawns workers. Workers read the session, wait for upstream results on `skitter/result/...` topics if they have `needs`, run `claude --agent <name>` or `codex` as a subprocess, and publish results. Terminal tasks reply directly to the caller. The `$a2a` namespace is purely client-facing; `skitter/` topics handle all internal coordination. Locally: subprocess workers + Docker EMQX. On Fly: always-on supervisor + EMQX Serverless + ephemeral worker machines.
 
 ## Key Concepts
 
-- **Immutable sessions** — published once by supervisor, never mutated. Per-task status on separate retained topics.
-- **Chain routing** — non-terminal workers publish retained chain results; downstream workers subscribe and wait.
-- **A2A-over-MQTT** — all topics follow `$a2a/v1/{method}/{org}/{unit}/{agent_id}/{suffix}`.
+- **Immutable sessions** — published once by supervisor on `skitter/session/{sid}`, never mutated. Per-task status on separate `skitter/status/...` topics.
+- **Result routing** — non-terminal workers publish retained results on `skitter/result/{workflow_id}/{task}/{sid}`; downstream workers subscribe and wait.
+- **Namespace separation** — `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery); `skitter/...` for internal coordination (sessions, results, status, events).
 - **Native sub-agents** — agent identity owned by `~/.claude/agents/*.md` / `~/.codex/agents/*.toml`, not skitter. Skitter YAML stubs (`~/.skitter/agents/*.yaml`) contain only orchestration metadata.
 - **Spawn modes** — `subprocess` (local), `docker` (containerized), `fly` (Fly Machines API).
 

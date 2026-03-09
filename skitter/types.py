@@ -150,28 +150,14 @@ class A2ARequest:
 
 
 @dataclass
-class AgentMessage:
-    task_id: str
-    session_id: str
-    description: str
-    agent: str = ""
-    context: str = ""
-    model: str = ""
-    runtime: str = "claude"
-    next: str = ""
-    caller_reply_topic: str = ""
-    caller_correlation: str = ""
-
-
-@dataclass
 class SessionTask:
-    """Lightweight task record for status tracking and dashboard display."""
+    """Task record — single source of truth for task data."""
 
     id: str
-    task_id: str
     agent: str
     description: str
     model: str = ""
+    runtime: str = "claude"
     status: str = "pending"
     next: str = ""
     needs: list[str] = field(default_factory=list)
@@ -187,7 +173,7 @@ class Session:
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     tasks: dict[str, SessionTask] = field(default_factory=dict)
-    task_dispatches: dict[str, dict] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

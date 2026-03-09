@@ -1,22 +1,23 @@
 """Supervisor — creates sessions, spawns workers.
 
-Long-lived MQTT subscriber. Not an A2A agent itself. Invisible
-infrastructure that subscribes to request/{o}/{u}/+ and
-event/{o}/{u}/+/dead wildcards.
+Long-lived MQTT subscriber. Subscribes to $a2a/v1/request/+
+and skitter/event/+/dead wildcards.
 """
 
 import asyncio
 import json
 import logging
-import uuid
 
 import aiomqtt
 
 from skitter.config import (
     AgentDef,
     WorkflowDef,
+    load_agents,
+    load_workflows,
     safe_format,
 )
+from skitter.discovery import build_cards
 from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
@@ -31,7 +32,6 @@ from skitter.mqtt import (
     topic_session,
 )
 from skitter.spawn import spawn_worker
-from skitter.config import load_agents, load_cards, load_workflows
 from skitter.types import (
     A2ARequest,
     A2AResponse,
@@ -50,27 +50,9 @@ log = logging.getLogger("skitter.supervisor")
 # --- Core logic (shared by all modes) ---
 
 
-def build_dispatch_spec(
-    session: Session,
-    task_name: str,
-    agents: dict[str, AgentDef],
-) -> dict:
-    """Pre-materialize a task's dispatch spec (AgentMessage fields as dict)."""
-    st = session.tasks[task_name]
-    agent_def = agents.get(st.agent)
-    runtime = (agent_def.runtime if agent_def else "claude") or "claude"
-
-    return {
-        "task_id": st.task_id,
-        "session_id": session.session_id,
-        "description": st.description,
-        "agent": st.agent,
-        "model": st.model,
-        "runtime": runtime,
-        "next": st.next,
-        "caller_reply_topic": session.caller_reply_topic,
-        "caller_correlation": session.caller_correlation,
-    }
+def _resolve_runtime(agents: dict[str, AgentDef], agent_id: str) -> str:
+    agent_def = agents.get(agent_id)
+    return (agent_def.runtime if agent_def else "claude") or "claude"
 
 
 def create_session(
@@ -88,7 +70,7 @@ def create_session(
 
     session = Session(
         session_id=session_id,
-        workflow_id=workflow.id if workflow else "",
+        workflow_id=workflow.id if workflow else agent_id,
         agent_id=agent_id if not workflow else "",
         label=label,
         variables=variables,
@@ -96,26 +78,22 @@ def create_session(
 
     if workflow:
         for pt in workflow.tasks:
-            task_id = uuid.uuid4().hex[:12]
             description = safe_format(pt.description, variables)
-
             session.tasks[pt.id] = SessionTask(
                 id=pt.id,
-                task_id=task_id,
                 agent=pt.agent,
                 description=description,
                 model=pt.model,
+                runtime=_resolve_runtime(agents, pt.agent),
                 next=pt.next,
                 needs=list(pt.needs),
             )
     else:
-        task_id = uuid.uuid4().hex[:12]
-
         session.tasks[agent_id] = SessionTask(
             id=agent_id,
-            task_id=task_id,
             agent=agent_id,
             description=text,
+            runtime=_resolve_runtime(agents, agent_id),
             next="output",
         )
 
@@ -137,7 +115,7 @@ async def handle_request(
     workflows: dict[str, WorkflowDef],
     agent_id: str = "",
 ) -> None:
-    """Create session, pre-materialize all task specs, spawn all workers."""
+    """Create session, publish it, spawn all workers."""
     try:
         req = A2ARequest.from_json(payload)
     except Exception as e:
@@ -191,12 +169,6 @@ async def handle_request(
     session.caller_reply_topic = caller_reply_topic
     session.caller_correlation = caller_correlation
 
-    for task_name in session.tasks:
-        session.task_dispatches[task_name] = build_dispatch_spec(
-            session, task_name, agents
-        )
-
-    # Set statuses, publish session, spawn workers
     for st in session.tasks.values():
         st.status = "running"
 
@@ -207,8 +179,8 @@ async def handle_request(
         retain=True,
     )
 
-    for st in session.tasks.values():
-        spawn_worker(st.agent, session.session_id, st.task_id)
+    for task_name, st in session.tasks.items():
+        spawn_worker(st.agent, session.session_id, task_name)
 
     label = f"agent '{agent_id}'" if agent_id else f"workflow '{workflow_id}'"
     log.info(
@@ -257,26 +229,36 @@ async def _publish_discovery(
 
 
 async def handle_dead_event(payload: str) -> None:
-    """Re-spawn a crashed worker. Retained dispatch still exists on broker."""
+    """Re-spawn a crashed worker. Retained session still exists on broker.
+
+    Skipped when SPAWN_MODE=fly — Fly handles restarts via its own
+    restart policy (on-failure, max_retries=1). The LWT dead event fires
+    on normal exit too (auto_destroy kills the connection), so respawning
+    would create an infinite loop.
+    """
+    from skitter.spawn import SPAWN_MODE
+
+    if SPAWN_MODE == "fly":
+        return
+
     try:
         data = json.loads(payload)
     except Exception:
         return
-    task_id = data.get("task_id", "")
+    task = data.get("task", "")
     agent = data.get("agent", "")
     session_id = data.get("session_id", "")
-    if not task_id or not agent or not session_id:
-        log.warning("Dead event missing task_id, agent, or session_id: %s", data)
+    if not task or not agent or not session_id:
+        log.warning("Dead event missing task, agent, or session_id: %s", data)
         return
-    log.warning("Worker dead for task %s — respawning", task_id)
-    spawn_worker(agent, session_id, task_id)
+    log.warning("Worker dead for task %s — respawning", task)
+    spawn_worker(agent, session_id, task)
 
 
 async def run_listen() -> None:
     """Long-lived MQTT subscriber — local mode."""
     agents = load_agents()
     workflows = load_workflows()
-    cards = load_cards()
 
     if agents:
         log.info("Loaded %d agents: %s", len(agents), ", ".join(agents))
@@ -286,7 +268,7 @@ async def run_listen() -> None:
     async with aiomqtt.Client(
         **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor"),
     ) as client:
-        await _publish_discovery(client, cards)
+        await _publish_discovery(client, build_cards(agents, workflows))
 
         await client.subscribe(topic_request_wildcard(), qos=1)
         await client.subscribe(topic_dead_wildcard(), qos=1)
@@ -302,8 +284,7 @@ async def run_listen() -> None:
             if topic == topic_reload():
                 agents = load_agents()
                 workflows = load_workflows()
-                cards = load_cards()
-                await _publish_discovery(client, cards)
+                await _publish_discovery(client, build_cards(agents, workflows))
                 log.info(
                     "Reloaded %d agents, %d workflows", len(agents), len(workflows)
                 )
@@ -337,7 +318,7 @@ async def run_listen() -> None:
                     agent_id=agent_id,
                 )
 
-            elif "/event/" in topic:
+            elif topic.startswith("skitter/event/"):
                 await handle_dead_event(payload)
 
 

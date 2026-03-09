@@ -1,7 +1,7 @@
-"""A2A-over-MQTT topic scheme and MQTT v5 helpers.
+"""MQTT topic scheme and v5 helpers.
 
-Topics follow the A2A spec: $a2a/v1/{method}/{org_id}/{unit_id}/{agent_id}
-with application-defined suffixes after agent_id for session/task scoping.
+A2A namespace: $a2a/v1/{method}/{org}/{unit}/{agent_id} — public protocol.
+Skitter namespace: skitter/{type}/... — internal coordination (retained).
 """
 
 import asyncio
@@ -77,59 +77,59 @@ def topic_reply(agent_id: str, suffix: str) -> str:
     return f"{_PREFIX}/reply/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{suffix}"
 
 
-def topic_event(agent_id: str, event_type: str) -> str:
-    """A2A agent event: $a2a/v1/event/{org}/{unit}/{agent_id}/{event_type}"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{event_type}"
+# --- Skitter internal topics (retained coordination state) ---
 
-
-def topic_event_wildcard() -> str:
-    """Wildcard for all agent events: $a2a/v1/event/{org}/{unit}/+/+"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/+/+"
-
-
-def topic_dead_wildcard() -> str:
-    """Wildcard for worker dead events: $a2a/v1/event/{org}/{unit}/+/dead"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/+/dead"
-
-
-# --- Coordination state (suffixed event topics, retained) ---
+_SK = "skitter"
 
 
 def topic_session(session_id: str) -> str:
-    """Retained session: $a2a/v1/event/{org}/{unit}/supervisor/session/{sid}"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/supervisor/session/{session_id}"
+    """Retained session: skitter/session/{sid}"""
+    return f"{_SK}/session/{session_id}"
 
 
 def topic_session_wildcard() -> str:
-    """Wildcard for sessions: $a2a/v1/event/{org}/{unit}/supervisor/session/+"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/supervisor/session/+"
+    """Wildcard for sessions: skitter/session/+"""
+    return f"{_SK}/session/+"
 
 
-def topic_chain_result(agent_id: str, session_id: str, task_id: str) -> str:
-    """Retained chain result: $a2a/v1/event/{org}/{unit}/{agent_id}/chain-result/{sid}/{tid}"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}/chain-result/{session_id}/{task_id}"
+def topic_result(workflow_id: str, task: str, session_id: str) -> str:
+    """Retained task result: skitter/result/{wf}/{task}/{sid}"""
+    return f"{_SK}/result/{workflow_id}/{task}/{session_id}"
 
 
-def topic_task_status(agent_id: str, session_id: str, task_id: str) -> str:
-    """Retained task status: $a2a/v1/event/{org}/{unit}/{agent_id}/task-status/{sid}/{tid}"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}/task-status/{session_id}/{task_id}"
+def topic_result_wildcard() -> str:
+    """Wildcard for results: skitter/result/+/+/+"""
+    return f"{_SK}/result/+/+/+"
 
 
-def topic_task_status_wildcard() -> str:
-    """Wildcard for task statuses: $a2a/v1/event/{org}/{unit}/+/task-status/+/+"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/+/task-status/+/+"
+def topic_status(workflow_id: str, task: str, session_id: str) -> str:
+    """Retained task status: skitter/status/{wf}/{task}/{sid}"""
+    return f"{_SK}/status/{workflow_id}/{task}/{session_id}"
 
 
-def topic_usage(agent_id: str, session_id: str, task_id: str) -> str:
-    """Usage tracking: $a2a/v1/event/{org}/{unit}/{agent_id}/usage/{sid}/{tid}"""
-    return (
-        f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}/usage/{session_id}/{task_id}"
-    )
+def topic_status_wildcard() -> str:
+    """Wildcard for task statuses: skitter/status/+/+/+"""
+    return f"{_SK}/status/+/+/+"
+
+
+def topic_usage(workflow_id: str, task: str, session_id: str) -> str:
+    """Usage tracking: skitter/usage/{wf}/{task}/{sid}"""
+    return f"{_SK}/usage/{workflow_id}/{task}/{session_id}"
+
+
+def topic_event(agent_id: str, event_type: str) -> str:
+    """Worker lifecycle: skitter/event/{agent}/{type}"""
+    return f"{_SK}/event/{agent_id}/{event_type}"
+
+
+def topic_dead_wildcard() -> str:
+    """Wildcard for worker dead events: skitter/event/+/dead"""
+    return f"{_SK}/event/+/dead"
 
 
 def topic_reload() -> str:
-    """Reload signal: $a2a/v1/request/{org}/{unit}/supervisor/reload"""
-    return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/supervisor/reload"
+    """Reload signal: skitter/control/reload"""
+    return f"{_SK}/control/reload"
 
 
 # --- MQTT v5 property helpers ---

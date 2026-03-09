@@ -29,6 +29,7 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_reply,
+    topic_result_wildcard,
     topic_session_wildcard,
 )
 from skitter.config import AGENTS_DIR, WORKFLOWS_DIR
@@ -186,7 +187,7 @@ async def clean_retained():
     ) as client:
         for pattern in [
             topic_session_wildcard(),
-            f"$a2a/v1/event/{A2A_ORG}/{A2A_UNIT}/+/chain-result/+/+",
+            topic_result_wildcard(),
         ]:
             await client.subscribe(pattern, qos=1)
             try:

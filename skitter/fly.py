@@ -34,7 +34,7 @@ def create_machine(
         "env": env,
         "guest": guest
         if guest is not None
-        else {"cpu_kind": "shared", "cpus": 1, "memory_mb": 512},
+        else {"cpu_kind": "shared", "cpus": 1, "memory_mb": 1024},
     }
     if cmd:
         config["init"] = {"cmd": cmd}
@@ -63,7 +63,7 @@ def create_machine(
         raise
 
 
-def create_worker(agent: str, session_id: str, task_id: str) -> dict:
+def create_worker(agent: str, session_id: str, task: str) -> dict:
     """Create an ephemeral worker machine for a single task."""
     return create_machine(
         app=FLY_APP,
@@ -71,6 +71,6 @@ def create_worker(agent: str, session_id: str, task_id: str) -> dict:
         env={
             "AGENT_NAME": agent,
             "SESSION_ID": session_id,
-            "TASK_ID": task_id,
+            "TASK": task,
         },
     )

@@ -14,7 +14,9 @@ DOCKER_USER_HOME = "/home/skitter"
 
 
 def spawn_worker(agent: str, session_id: str, task_id: str) -> None:
-    if SPAWN_MODE == "docker":
+    if SPAWN_MODE == "fly":
+        _spawn_fly(agent, session_id, task_id)
+    elif SPAWN_MODE == "docker":
         _spawn_docker(agent, session_id, task_id)
     else:
         _spawn_subprocess(agent, session_id, task_id)
@@ -70,3 +72,12 @@ def _spawn_docker(agent: str, session_id: str, task_id: str) -> None:
         ],
     )
     log.info("Spawned %s worker container for task %s", agent, task_id)
+
+
+def _spawn_fly(agent: str, session_id: str, task_id: str) -> None:
+    from skitter.fly import create_worker
+
+    result = create_worker(agent, session_id, task_id)
+    log.info(
+        "Created Fly worker machine %s for task %s", result.get("id", "?"), task_id
+    )

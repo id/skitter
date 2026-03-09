@@ -84,7 +84,7 @@ def cmd_build() -> None:
     """Build the worker Docker image."""
     console.print(f"Building {WORKER_IMAGE}...")
     result = subprocess.run(
-        ["docker", "build", "-f", "Dockerfile.worker", "-t", WORKER_IMAGE, "."],
+        ["docker", "build", "-t", WORKER_IMAGE, "."],
     )
     if result.returncode == 0:
         console.print(f"[green]Built {WORKER_IMAGE}[/green]")

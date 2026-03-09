@@ -1,12 +1,17 @@
-"""Supervisor — listens for agent requests via wildcard, creates sessions,
-spawns workers, monitors liveness via LWT events.
+"""Supervisor — creates sessions, spawns workers.
+
+Two modes:
+  --listen   Long-lived MQTT subscriber (local/default)
+  --ephemeral      Ephemeral: read one staged request from MQTT, process, exit
 
 Not an A2A agent itself. Invisible infrastructure that subscribes to
 request/{o}/{u}/+ and event/{o}/{u}/+/+ wildcards.
 """
 
+import argparse
 import asyncio
 import logging
+import os
 import uuid
 
 import aiomqtt
@@ -25,6 +30,7 @@ from skitter.mqtt import (
     mqtt_client_kwargs,
     topic_discovery,
     topic_event_wildcard,
+    topic_pending,
     topic_reload,
     topic_request_wildcard,
     topic_session,
@@ -45,6 +51,9 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
 )
 log = logging.getLogger("skitter.supervisor")
+
+
+# --- Core logic (shared by all modes) ---
 
 
 def build_dispatch_spec(
@@ -141,8 +150,6 @@ async def handle_request(
         log.error("Bad inbound JSON-RPC: %s", e)
         return
 
-    # Agent ID comes from the topic
-    # Check if this is a workflow request (agent_id starts with "workflow-")
     workflow_id = ""
     if agent_id.startswith("workflow-"):
         workflow_id = agent_id.removeprefix("workflow-")
@@ -208,7 +215,6 @@ async def handle_request(
     session.caller_reply_topic = caller_reply_topic
     session.caller_correlation = caller_correlation
 
-    # Pre-materialize dispatch specs for every task
     for task_name in session.tasks:
         session.task_dispatches[task_name] = build_dispatch_spec(
             session, task_name, agents
@@ -264,11 +270,13 @@ async def _send_error(
         await client.publish(reply_topic, resp.to_json(), qos=1, properties=props)
 
 
+# --- Mode: listen (long-lived MQTT subscriber) ---
+
+
 async def _publish_discovery(
     client: aiomqtt.Client,
     cards: dict[str, str],
 ) -> None:
-    """Publish pre-built Agent/Workflow Cards as retained discovery messages."""
     for card_id, card_json in cards.items():
         await client.publish(
             topic_discovery(card_id),
@@ -279,8 +287,8 @@ async def _publish_discovery(
     log.info("Published %d discovery cards", len(cards))
 
 
-async def run() -> None:
-    """Run the supervisor as a long-lived MQTT subscriber (local mode)."""
+async def run_listen() -> None:
+    """Long-lived MQTT subscriber — local mode."""
     agents = load_agents()
     workflows = load_workflows()
     cards = load_cards()
@@ -295,7 +303,6 @@ async def run() -> None:
     ) as client:
         await _publish_discovery(client, cards)
 
-        # Subscribe to all agent requests, events (wildcards), and reload
         await client.subscribe(topic_request_wildcard(), qos=1)
         await client.subscribe(topic_event_wildcard(), qos=1)
         await client.subscribe(topic_reload(), qos=1)
@@ -307,7 +314,6 @@ async def run() -> None:
             if not payload:
                 continue
 
-            # Reload signal
             if topic == topic_reload():
                 agents = load_agents()
                 workflows = load_workflows()
@@ -350,9 +356,89 @@ async def run() -> None:
                 await handle_dead_event(payload)
 
 
+# --- Mode: fly (ephemeral — process one pending request, exit) ---
+
+
+async def run_ephemeral(session_id: str, request_topic: str) -> None:
+    """Ephemeral mode — read staged request from MQTT, process, exit."""
+    agents = load_agents()
+    workflows = load_workflows()
+
+    log.info("Ephemeral supervisor: session=%s topic=%s", session_id, request_topic)
+
+    async with aiomqtt.Client(**mqtt_client_kwargs()) as client:
+        pending = topic_pending(session_id)
+        await client.subscribe(pending, qos=1)
+
+        # Read the staged request (retained by EMQX rule engine)
+        payload = ""
+        response_topic = ""
+        correlation_data = ""
+
+        try:
+            async with asyncio.timeout(30):
+                async for msg in client.messages:
+                    raw = msg.payload
+                    payload = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    response_topic = get_response_topic(msg) or ""
+                    correlation_data = get_correlation_data(msg) or ""
+                    break
+        except TimeoutError:
+            log.error("Timeout reading pending request for session %s", session_id)
+            return
+
+        if not payload:
+            log.error("Empty pending request for session %s", session_id)
+            return
+
+        # Clear the retained pending message
+        await client.publish(pending, b"", retain=True)
+
+        agent_id = _parse_agent_id_from_topic(request_topic)
+        await handle_request(
+            client,
+            payload,
+            response_topic,
+            correlation_data,
+            agents,
+            workflows,
+            agent_id=agent_id,
+        )
+
+    log.info("Ephemeral supervisor done, exiting")
+
+
+# --- Entry point ---
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Skitter supervisor")
+    parser.add_argument(
+        "--ephemeral",
+        action="store_true",
+        help="Ephemeral mode: process one staged request and exit",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=os.environ.get("SESSION_ID", ""),
+        help="Session ID of the pending request (fly mode)",
+    )
+    parser.add_argument(
+        "--request-topic",
+        default=os.environ.get("REQUEST_TOPIC", ""),
+        help="Original MQTT request topic (fly mode)",
+    )
+    args = parser.parse_args()
+
+    if args.ephemeral:
+        if not args.session_id or not args.request_topic:
+            parser.error("--ephemeral requires --session-id and --request-topic")
+        coro = run_ephemeral(args.session_id, args.request_topic)
+    else:
+        coro = run_listen()
+
     try:
-        asyncio.run(run())
+        asyncio.run(coro)
     except KeyboardInterrupt:
         log.info("Supervisor shutting down")
 

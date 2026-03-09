@@ -2,7 +2,7 @@
 
 ~1,700 lines of Python. MQTT-based personal AI assistant. A stateless supervisor creates sessions and spawns all workers upfront; self-coordinating workers read their session spec from retained MQTT, wait for upstream results, invoke `claude` or `codex` CLI as subprocesses, and publish results. Agent identity (personality, model, tools, memory) is delegated to native CLI sub-agent systems (`~/.claude/agents/*.md` and `~/.codex/agents/*.toml`).
 
-Key files: `skitter/supervisor.py`, `skitter/supervisor_http.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `skitter/emqx.py`, `skitter/deploy.py`, `docs/architecture.md`.
+Key files: `skitter/supervisor.py`, `skitter/worker.py`, `skitter/spawn.py`, `skitter/fly.py`, `skitter/storage.py`, `skitter/respawn.py`, `skitter/types.py`, `skitter/config.py`, `skitter/cli.py`, `skitter/mqtt.py`, `skitter/emqx.py`, `skitter/deploy.py`, `docs/architecture.md`.
 
 ## Planning and Implementation Process
 
@@ -45,7 +45,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 - **Multi-runtime workers** — `claude` (Claude CLI, default) or `codex` (OpenAI Codex CLI, authenticated via `codex login` or `OPENAI_API_KEY`). Both invoked as subprocesses with JSONL stdout parsing. Context from upstream tasks injected via `--append-system-prompt`.
 - **Workers are subprocesses or Docker containers** — controlled by `SKITTER_SPAWN_MODE` env var. Docker mode passes `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and MQTT TLS/auth env vars.
 - **TLS + auth** — `MQTT_TLS=1`, `MQTT_USER`, `MQTT_PASS` env vars enable connecting to EMQX Cloud or any authenticated MQTT broker. All MQTT clients use `mqtt_client_kwargs()` from `mqtt.py`.
-- **Dual-mode supervisor** — local mode: long-lived MQTT subscriber (`supervisor.py`). HTTP mode: WSGI app triggered by EMQX webhooks (`supervisor_http.py`), publishes via EMQX REST API (`emqx.py`).
+- **Dual-mode supervisor** — `--listen` (default): long-lived MQTT subscriber. `--ephemeral`: ephemeral machine that reads a staged request from MQTT, processes it, spawns workers via Fly Machines API, and exits.
 - **R2 storage** — `SKITTER_STORAGE=r2` loads agent/workflow configs and pre-built cards from Cloudflare R2 (S3-compatible). Local mode uses filesystem (default).
 - **Deploy CLI** — `skitter deploy` syncs agent configs, cards, and workflows to R2 and publishes discovery cards via EMQX REST API.
 - **Completed sessions persist** — sessions remain as retained MQTT messages after all tasks finish, with the terminal task's result published to the caller and to the per-task status topic. The dashboard renders results as markdown with copy/download options.
@@ -59,7 +59,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 - `skitter/respawn.py` — Handles LWT dead events by respawning crashed workers.
 - `skitter/mqtt.py` — MQTT connection settings (host, port, TLS, auth), `mqtt_client_kwargs()` helper used by all MQTT clients, A2A-compliant topic builders with suffix extensions, and MQTTv5 property helpers.
 - `skitter/emqx.py` — EMQX REST API client for publishing from serverless contexts (no persistent MQTT connection).
-- `skitter/supervisor_http.py` — HTTP-mode supervisor: WSGI app for EMQX webhook handler. Routes: `/request` (agent/workflow requests), `/event` (dead events), `/reload`, `/health`. Returns spawn instructions; caller handles actual worker creation.
+- `skitter/fly.py` — Fly Machines API client for creating ephemeral machines (`create_machine`, `create_worker`).
 - `skitter/deploy.py` — Deploy CLI: syncs agent configs, cards, and workflows to R2; publishes discovery cards via EMQX REST API.
 - `skitter/config.py` — `~/.skitter/` directory management, YAML loading, `AgentDef`/`WorkflowDef`/`WorkflowTask` dataclasses, `SafeFormatter`, `load_default_runtime()`, `write_examples()` for `skitter init` (creates both `~/.skitter/agents/*.yaml` and `~/.claude/agents/*.md`).
 - `skitter/agents_cli.py` — `skitter agents list/show/run` subcommands. Sends requests directly to agent's request topic.

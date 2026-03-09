@@ -523,15 +523,21 @@ async def run(agent: str, session_id: str, task_id: str) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) < 4:
+    if len(sys.argv) >= 4:
+        agent, session_id, task_id = sys.argv[1:4]
+    else:
+        # Fly Machines mode: read from env vars
+        agent = os.environ.get("AGENT_NAME", "")
+        session_id = os.environ.get("SESSION_ID", "")
+        task_id = os.environ.get("TASK_ID", "")
+
+    if not agent or not session_id or not task_id:
         print(
-            "Usage: python -m skitter.worker <agent> <session_id> <task_id>",
+            "Usage: python -m skitter.worker <agent> <session_id> <task_id>\n"
+            "   or: AGENT_NAME=... SESSION_ID=... TASK_ID=... python -m skitter.worker",
             file=sys.stderr,
         )
         sys.exit(1)
-    agent = sys.argv[1]
-    session_id = sys.argv[2]
-    task_id = sys.argv[3]
     try:
         asyncio.run(run(agent, session_id, task_id))
     except KeyboardInterrupt:

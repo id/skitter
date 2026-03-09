@@ -119,6 +119,11 @@ def topic_usage(agent_id: str, session_id: str, task_id: str) -> str:
     )
 
 
+def topic_pending(session_id: str) -> str:
+    """Staged request for ephemeral supervisor: $a2a/v1/event/{org}/{unit}/supervisor/pending/{sid}"""
+    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/supervisor/pending/{session_id}"
+
+
 def topic_reload() -> str:
     """Reload signal: $a2a/v1/request/{org}/{unit}/supervisor/reload"""
     return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/supervisor/reload"

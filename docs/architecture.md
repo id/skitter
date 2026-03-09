@@ -71,6 +71,7 @@ sequenceDiagram
     W->>B: Read retained session
     W->>W: Run agent (claude/codex CLI)
     W->>C: TaskStatusUpdateEvent (working, QoS 0)
+    W->>B: Retain result (skitter/result/{wf}/{task}/{sid})
     W->>C: TaskStatusUpdateEvent (completed, QoS 1)
 ```
 
@@ -93,6 +94,7 @@ sequenceDiagram
     W1->>B: Retain result (skitter/result/{wf}/A/{sid})
     B->>W2: Deliver result (A)
     W2->>W2: Run agent (with A's result as context)
+    W2->>B: Retain result (skitter/result/{wf}/B/{sid})
     W2->>Caller: TaskStatusUpdateEvent (completed)
 ```
 
@@ -117,6 +119,7 @@ sequenceDiagram
     WB->>B: Retain result (skitter/result/{wf}/B/{sid})
     B->>WJ: Deliver A + B results
     WJ->>WJ: Run agent (context = A + B results)
+    WJ->>B: Retain result (skitter/result/{wf}/Join/{sid})
     WJ->>Caller: TaskStatusUpdateEvent (completed)
 ```
 
@@ -135,8 +138,8 @@ The supervisor (`skitter/supervisor.py`) is a long-lived MQTT subscriber that:
 3. Subscribes to `skitter/control/reload`
 4. On inbound request: extracts `agent_id` from the topic, creates a `Session` with `SessionTask` entries (each carrying its `runtime` and other orchestration metadata)
 5. Publishes the session as a retained message on `skitter/session/{session_id}`
-6. Spawns all workers (subprocess or Docker) -- every task gets a worker immediately
-7. Listens for dead events and respawns crashed workers
+6. Spawns all workers (subprocess, Docker, or Fly Machines) -- every task gets a worker immediately
+7. Listens for dead events and respawns crashed workers (local/docker only — skipped on Fly)
 
 The supervisor holds no in-memory state about running sessions. It is restartable at any time.
 
@@ -151,8 +154,8 @@ Each worker (`skitter/worker.py`) runs as an independent process:
 5. Build prompt from task spec + upstream context
 6. Run agent as CLI subprocess (`claude` or `codex`), parse JSONL stdout
 7. Publish result:
-   - Non-terminal: retain result on `skitter/result/{workflow_id}/{task}/{sid}`
-   - Terminal: publish `TaskStatusUpdateEvent` (completed) to caller's Response Topic
+   - All tasks: retain result on `skitter/result/{workflow_id}/{task}/{sid}` (durable state for dashboard and downstream workers)
+   - Terminal tasks also: publish `TaskStatusUpdateEvent` (completed) to caller's Response Topic
 8. Publish usage stats, disconnect
 
 ## Workflow Templates

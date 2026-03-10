@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import sys
+import time
+from datetime import datetime, timezone
 
 import aiomqtt
 
@@ -39,6 +41,15 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
 )
 log = logging.getLogger("skitter.worker")
+
+
+class UpstreamFailedError(Exception):
+    """Raised when an upstream task published a failed result."""
+
+    def __init__(self, task: str, message: str):
+        self.task = task
+        self.message = message
+        super().__init__(f"Upstream task '{task}' failed: {message}")
 
 
 async def run_agent(
@@ -97,6 +108,7 @@ async def run_agent(
             stderr=asyncio.subprocess.PIPE,
             cwd=workspace,
             env=env,
+            limit=1024 * 1024,  # 1MB buffer (default 64KB too small for agent output)
         )
     except FileNotFoundError:
         binary = "codex" if task.runtime == "codex" else "claude"
@@ -218,6 +230,13 @@ async def wait_for_needs(
 
         source_task = data.get("task", "")
         if source_task in needed:
+            if data.get("failed"):
+                log.error("Upstream task '%s' failed -- aborting", source_task)
+                for need_id in needed:
+                    await client.unsubscribe(
+                        topic_result(session.workflow_id, need_id, session.session_id)
+                    )
+                raise UpstreamFailedError(source_task, data.get("result", ""))
             results[source_task] = data.get("result", "")
             log.info(
                 "Got result from '%s' (%d/%d)",
@@ -249,7 +268,14 @@ async def publish_task_state(
     """Publish per-task status (waiting/running) as a retained message."""
     await client.publish(
         topic_status(workflow_id, task_name, session_id),
-        json.dumps({"task": task_name, "session_id": session_id, "status": status}),
+        json.dumps(
+            {
+                "task": task_name,
+                "session_id": session_id,
+                "status": status,
+                "last_active": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
         qos=1,
         retain=True,
     )
@@ -324,7 +350,32 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
             await publish_task_state(
                 client, session.workflow_id, session.session_id, task_name, "waiting"
             )
-            context = await wait_for_needs(client, session, task_name)
+            try:
+                context = await wait_for_needs(client, session, task_name)
+            except UpstreamFailedError as e:
+                error_msg = f"Skipped: upstream task '{e.task}' failed"
+                await client.publish(
+                    topic_result(session.workflow_id, task_name, session_id),
+                    json.dumps(
+                        {
+                            "task": task_name,
+                            "session_id": session_id,
+                            "result": error_msg,
+                            "failed": True,
+                        }
+                    ),
+                    qos=1,
+                    retain=True,
+                )
+                await publish_task_state(
+                    client,
+                    session.workflow_id,
+                    session_id,
+                    task_name,
+                    "failed",
+                )
+                log.error("[worker:%s:%s] %s", agent, task_name, error_msg)
+                return error_msg
 
         await publish_task_state(
             client, session.workflow_id, session.session_id, task_name, "running"
@@ -355,8 +406,10 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
         # Streaming
         stream_topic = session.caller_reply_topic
         stream_props = make_properties(correlation_data=session.caller_correlation)
+        last_status_update = 0.0
 
         async def publish_stream_item(item_type: str, content: str) -> None:
+            nonlocal last_status_update
             if not stream_topic:
                 return
             event = make_status_event(
@@ -368,6 +421,13 @@ async def run(agent: str, session_id: str, task_name: str) -> str:
                 task_name=task_name,
             )
             await client.publish(stream_topic, event, qos=0, properties=stream_props)
+            # Throttled last_active heartbeat on status topic (max once per 30s)
+            now = time.monotonic()
+            if now - last_status_update > 30:
+                last_status_update = now
+                await publish_task_state(
+                    client, session.workflow_id, session_id, task_name, "running"
+                )
 
         # Cancel listener
         cancel_event = asyncio.Event()

@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -512,14 +512,17 @@ class TestRespawn:
     async def test_respawn_with_missing_fields(self):
         from skitter.supervisor import handle_dead_event
 
-        await handle_dead_event(json.dumps({"status": "dead"}))
+        client = MagicMock()
+        await handle_dead_event(client, json.dumps({"status": "dead"}))
 
     @pytest.mark.asyncio
     async def test_respawn_with_valid_event(self):
         from skitter.supervisor import handle_dead_event
 
+        client = MagicMock()
         with patch("skitter.supervisor.spawn_worker") as mock_spawn:
             await handle_dead_event(
+                client,
                 json.dumps(
                     {
                         "status": "dead",
@@ -527,9 +530,204 @@ class TestRespawn:
                         "agent": "researcher",
                         "session_id": "s1",
                     }
-                )
+                ),
             )
             mock_spawn.assert_called_once_with("researcher", "s1", "research")
+
+    def test_find_terminal_task(self):
+        from skitter.supervisor import _find_terminal_task
+
+        session = Session(session_id="s1", workflow_id="wf1")
+        session.tasks["a"] = SessionTask(id="a", agent="r", description="d", next="b")
+        session.tasks["b"] = SessionTask(id="b", agent="r", description="d", next="c")
+        session.tasks["c"] = SessionTask(
+            id="c", agent="r", description="d", next="output"
+        )
+        assert _find_terminal_task(session, "a") == "c"
+        assert _find_terminal_task(session, "b") == "c"
+        assert _find_terminal_task(session, "c") == "c"
+
+
+class TestFailTask:
+    """Test _fail_task publishes result, status, and caller notification."""
+
+    def _make_session(self):
+        session = Session(
+            session_id="s1",
+            workflow_id="wf1",
+            caller_reply_topic="$a2a/v1/reply/org/unit/caller",
+            caller_correlation="corr-1",
+        )
+        session.tasks["a"] = SessionTask(id="a", agent="r", description="d", next="b")
+        session.tasks["b"] = SessionTask(
+            id="b", agent="w", description="d", next="output"
+        )
+        return session
+
+    @pytest.mark.asyncio
+    async def test_publishes_result_and_status(self):
+        from skitter.supervisor import _fail_task
+
+        client = AsyncMock()
+        session = self._make_session()
+        await _fail_task(client, session, "a", "crash error")
+
+        # Should publish to result topic, status topic, and caller reply
+        assert client.publish.call_count == 3
+        topics = [c.args[0] for c in client.publish.call_args_list]
+        assert "skitter/result/wf1/a/s1" in topics
+        assert "skitter/status/wf1/a/s1" in topics
+        assert "$a2a/v1/reply/org/unit/caller" in topics
+        # Result should have failed=True for downstream cascade
+        for c in client.publish.call_args_list:
+            if "skitter/result/" in c.args[0]:
+                payload = json.loads(c.args[1])
+                assert payload["failed"] is True
+                break
+
+    @pytest.mark.asyncio
+    async def test_status_includes_last_active(self):
+        from skitter.supervisor import _fail_task
+
+        client = AsyncMock()
+        session = self._make_session()
+        await _fail_task(client, session, "a", "crash error")
+
+        # Find the status publish call
+        for c in client.publish.call_args_list:
+            if "skitter/status/" in c.args[0]:
+                payload = json.loads(c.args[1])
+                assert payload["status"] == "failed"
+                assert "last_active" in payload
+                break
+        else:
+            pytest.fail("No status publish found")
+
+    @pytest.mark.asyncio
+    async def test_caller_notified_with_terminal_task(self):
+        from skitter.supervisor import _fail_task
+
+        client = AsyncMock()
+        session = self._make_session()
+        await _fail_task(client, session, "a", "crash error")
+
+        # Caller notification should reference terminal task "b"
+        for c in client.publish.call_args_list:
+            if "$a2a/v1/reply/" in c.args[0]:
+                payload = json.loads(c.args[1])
+                meta = payload["result"]["status"]["metadata"]
+                assert meta["task_name"] == "b"  # terminal task, not "a"
+                assert payload["result"]["status"]["state"] == "failed"
+                break
+        else:
+            pytest.fail("No caller notification found")
+
+    @pytest.mark.asyncio
+    async def test_no_caller_if_no_reply_topic(self):
+        from skitter.supervisor import _fail_task
+
+        client = AsyncMock()
+        session = self._make_session()
+        session.caller_reply_topic = ""
+        await _fail_task(client, session, "a", "crash error")
+
+        # Only result + status, no caller reply
+        assert client.publish.call_count == 2
+
+
+class TestHandleDeadEventFly:
+    """Test handle_dead_event in Fly mode (no respawn, failure propagation)."""
+
+    @pytest.mark.asyncio
+    async def test_normal_exit_ignored(self):
+        """If result exists, dead event is a normal exit — no failure published."""
+        from skitter.supervisor import handle_dead_event
+
+        client = AsyncMock()
+        session = Session(session_id="s1", workflow_id="wf1")
+        session.tasks["t1"] = SessionTask(
+            id="t1", agent="r", description="d", next="output"
+        )
+
+        with (
+            patch("skitter.spawn.SPAWN_MODE", "fly"),
+            patch(
+                "skitter.supervisor._probe_task_state",
+                return_value=(session, True),  # has_result=True
+            ),
+        ):
+            await handle_dead_event(
+                client,
+                json.dumps(
+                    {
+                        "status": "dead",
+                        "task": "t1",
+                        "agent": "r",
+                        "session_id": "s1",
+                    }
+                ),
+            )
+
+        # No failure published
+        client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_crash_publishes_failure(self):
+        """If no result exists, dead event triggers failure propagation."""
+        from skitter.supervisor import handle_dead_event
+
+        client = AsyncMock()
+        session = Session(
+            session_id="s1",
+            workflow_id="wf1",
+            caller_reply_topic="$a2a/v1/reply/o/u/c",
+            caller_correlation="corr-1",
+        )
+        session.tasks["t1"] = SessionTask(
+            id="t1", agent="r", description="d", next="output"
+        )
+
+        with (
+            patch("skitter.spawn.SPAWN_MODE", "fly"),
+            patch(
+                "skitter.supervisor._probe_task_state",
+                return_value=(session, False),  # has_result=False — crash
+            ),
+        ):
+            await handle_dead_event(
+                client,
+                json.dumps(
+                    {
+                        "status": "dead",
+                        "task": "t1",
+                        "agent": "r",
+                        "session_id": "s1",
+                    }
+                ),
+            )
+
+        # Should have published result + status + caller notification
+        assert client.publish.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_local_mode_respawns(self):
+        """Local mode respawns instead of probing."""
+        from skitter.supervisor import handle_dead_event
+
+        client = MagicMock()
+        with patch("skitter.supervisor.spawn_worker") as mock_spawn:
+            await handle_dead_event(
+                client,
+                json.dumps(
+                    {
+                        "status": "dead",
+                        "task": "t1",
+                        "agent": "r",
+                        "session_id": "s1",
+                    }
+                ),
+            )
+            mock_spawn.assert_called_once_with("r", "s1", "t1")
 
 
 # --- Join context from wait_for_needs ---

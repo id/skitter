@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 
 import aiomqtt
 
@@ -30,7 +31,9 @@ from skitter.mqtt import (
     topic_discovery,
     topic_reload,
     topic_request_wildcard,
+    topic_result,
     topic_session,
+    topic_status,
 )
 from skitter.spawn import spawn_worker
 from skitter.types import (
@@ -246,18 +249,15 @@ async def _publish_discovery(
     log.info("Published %d discovery cards", len(cards))
 
 
-async def handle_dead_event(payload: str) -> None:
-    """Re-spawn a crashed worker. Retained session still exists on broker.
+async def handle_dead_event(client: aiomqtt.Client, payload: str) -> None:
+    """Handle a worker death (LWT).
 
-    Skipped when SPAWN_MODE=fly — Fly handles restarts via its own
-    restart policy (on-failure, max_retries=1). The LWT dead event fires
-    on normal exit too (auto_destroy kills the connection), so respawning
-    would create an infinite loop.
+    Local mode: respawn the worker.
+    Fly mode: Fly already retried (on-failure, max_retries=1). Check if a
+    result was published; if not, the worker crashed permanently. Publish a
+    failed result and status so downstream workers unblock.
     """
     from skitter.spawn import SPAWN_MODE
-
-    if SPAWN_MODE == "fly":
-        return
 
     try:
         data = json.loads(payload)
@@ -269,8 +269,139 @@ async def handle_dead_event(payload: str) -> None:
     if not task or not agent or not session_id:
         log.warning("Dead event missing task, agent, or session_id: %s", data)
         return
-    log.warning("Worker dead for task %s — respawning", task)
-    spawn_worker(agent, session_id, task)
+
+    if SPAWN_MODE != "fly":
+        log.warning("Worker dead for task %s -- respawning", task)
+        spawn_worker(agent, session_id, task)
+        return
+
+    # Fly mode: check if a result was already published (normal exit fires
+    # LWT too because auto_destroy kills the connection).
+    # Single probe connection reads both session and result topics.
+    session, has_result = await _probe_task_state(session_id, task)
+
+    if has_result:
+        log.info("Worker for task %s exited normally (result exists)", task)
+        return
+
+    # No result -- worker crashed permanently. Fail this task and propagate.
+    log.error("Worker for task %s crashed with no result -- failing task", task)
+    error_msg = f"Task '{task}' failed: worker crashed after all retries"
+
+    if session:
+        await _fail_task(client, session, task, error_msg)
+    else:
+        log.error("Cannot read session %s to propagate failure", session_id)
+
+
+async def _probe_task_state(
+    session_id: str, task: str, timeout: float = 3.0
+) -> tuple[Session | None, bool]:
+    """Check if a session and result exist using a single probe connection."""
+    session_topic = topic_session(session_id)
+    session: Session | None = None
+    has_result = False
+
+    async with aiomqtt.Client(
+        **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor-probe"),
+    ) as probe:
+        # Subscribe to session first to learn the workflow_id
+        await probe.subscribe(session_topic, qos=1)
+        try:
+            async with asyncio.timeout(timeout):
+                async for msg in probe.messages:
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if payload:
+                        session = Session.from_json(payload)
+                    break
+        except TimeoutError:
+            return None, False
+
+        if session is None:
+            return None, False
+
+        # Now subscribe to the result topic
+        result_topic = topic_result(session.workflow_id, task, session_id)
+        await probe.unsubscribe(session_topic)
+        await probe.subscribe(result_topic, qos=1)
+        try:
+            async with asyncio.timeout(timeout):
+                async for msg in probe.messages:
+                    if str(msg.topic) == result_topic:
+                        has_result = bool(msg.payload)
+                        break
+        except TimeoutError:
+            pass
+
+    return session, has_result
+
+
+async def _fail_task(
+    client: aiomqtt.Client, session: Session, task: str, error_msg: str
+) -> None:
+    """Publish failed result and status for a task, then propagate to downstream."""
+    workflow_id = session.workflow_id
+    session_id = session.session_id
+
+    # Publish failed result (unblocks downstream workers who check "failed" field)
+    await client.publish(
+        topic_result(workflow_id, task, session_id),
+        json.dumps(
+            {
+                "task": task,
+                "session_id": session_id,
+                "result": error_msg,
+                "failed": True,
+            }
+        ),
+        qos=1,
+        retain=True,
+    )
+    await client.publish(
+        topic_status(workflow_id, task, session_id),
+        json.dumps(
+            {
+                "task": task,
+                "session_id": session_id,
+                "status": "failed",
+                "last_active": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        qos=1,
+        retain=True,
+    )
+
+    # Find the terminal task in this pipeline and notify the caller
+    failed_task = session.tasks.get(task)
+    if not failed_task:
+        return
+
+    terminal = _find_terminal_task(session, task)
+    if terminal and session.caller_reply_topic:
+        event = make_status_event(
+            request_id=session.caller_correlation,
+            task_id=session_id,
+            state="failed",
+            message=error_msg,
+            task_name=terminal,
+        )
+        props = make_properties(correlation_data=session.caller_correlation)
+        await client.publish(session.caller_reply_topic, event, qos=1, properties=props)
+
+
+def _find_terminal_task(session: Session, start_task: str) -> str:
+    """Walk the task graph from start_task to find the terminal task."""
+    current = start_task
+    last_valid = start_task
+    seen: set[str] = set()
+    while current in session.tasks and current not in seen:
+        seen.add(current)
+        last_valid = current
+        nxt = session.tasks[current].next
+        if not nxt or nxt == "output":
+            return current
+        current = nxt
+    return last_valid
 
 
 async def run_listen() -> None:
@@ -337,7 +468,7 @@ async def run_listen() -> None:
                 )
 
             elif topic.startswith("skitter/event/"):
-                await handle_dead_event(payload)
+                await handle_dead_event(client, payload)
 
 
 # --- Entry point ---

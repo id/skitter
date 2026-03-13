@@ -112,9 +112,9 @@ class CardRegistry:
         log.info("Card registry synced: %d cards active", len(self._connections))
 
     async def close(self) -> None:
-        """Tear down all connections."""
+        """Tear down all connections (cards stay retained on broker)."""
         for card_id in list(self._connections):
-            await self._teardown(card_id, clear=True)
+            await self._teardown(card_id, clear=False)
 
     def _spawn(self, card_id: str, card_json: str) -> None:
         self._payloads[card_id] = card_json

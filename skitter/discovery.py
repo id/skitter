@@ -7,7 +7,14 @@ import logging
 import aiomqtt
 
 from skitter.config import AgentDef, WorkflowDef, load_agents, load_workflows
-from skitter.mqtt import A2A_ORG, A2A_UNIT, mqtt_client_kwargs, topic_discovery
+from skitter.mqtt import (
+    A2A_ORG,
+    A2A_UNIT,
+    MQTT_HOST,
+    MQTT_PORT,
+    mqtt_client_kwargs,
+    topic_discovery,
+)
 
 log = logging.getLogger("skitter.discovery")
 
@@ -22,26 +29,42 @@ def build_cards(
         for t in wf.tasks:
             workflow_agents.add(t.agent)
 
+    url = f"mqtt://{MQTT_HOST}:{MQTT_PORT}"
+
     cards: dict[str, str] = {}
     for agent in agents.values():
         if agent.id in workflow_agents:
             continue
         cards[agent.id] = json.dumps(
             {
-                "agent_id": agent.id,
                 "name": agent.name,
                 "description": agent.description,
+                "version": "0.1.0",
+                "url": url,
+                "skills": [
+                    {
+                        "id": agent.id,
+                        "name": agent.name,
+                        "description": agent.description,
+                    }
+                ],
             }
         )
 
     for wf in workflows.values():
         cards[f"workflow-{wf.id}"] = json.dumps(
             {
-                "workflow_id": wf.id,
                 "name": wf.name,
                 "description": wf.description,
-                "variables": wf.variables,
-                "agents": [t.agent for t in wf.tasks],
+                "version": "0.1.0",
+                "url": url,
+                "skills": [
+                    {
+                        "id": wf.id,
+                        "name": wf.name,
+                        "description": wf.description,
+                    }
+                ],
             }
         )
 

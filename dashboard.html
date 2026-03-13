@@ -88,15 +88,6 @@
     .compose-card-props { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
     .compose-prop { font-size: 11px; padding: 3px 10px; border-radius: 4px; background: var(--bg-alt); border: 1px solid var(--border); color: var(--text-sec); }
     .compose-prop span { font-weight: 600; color: var(--text); }
-    .wf-graph { display: flex; flex-direction: column; align-items: center; gap: 0; margin: 20px 0 4px; padding: 16px; background: var(--bg-alt); border-radius: 10px; border: 1px solid var(--border); }
-    .wf-layer { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-    .wf-node { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; min-width: 120px; text-align: center; transition: border-color .15s; }
-    .wf-node:hover { border-color: var(--blue); }
-    .wf-terminal { border-style: double; border-width: 3px; }
-    .wf-node-id { font-size: 12px; font-weight: 700; font-family: var(--mono); color: var(--text); letter-spacing: -0.01em; }
-    .wf-node-agent { font-size: 11px; color: var(--blue); margin-top: 3px; }
-    .wf-node-model { font-size: 10px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
-    .wf-arrow { font-size: 11px; color: var(--text-dim); padding: 6px 0; text-align: center; letter-spacing: 0.5px; }
     .compose-input-wrap { position: relative; margin-top: 20px; }
     .compose-textarea { width: 100%; padding: 12px 14px; padding-right: 48px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; font-family: var(--sans); resize: none; min-height: 48px; max-height: 200px; outline: none; color: var(--text); line-height: 1.5; transition: border-color .15s; }
     .compose-textarea::placeholder { color: var(--text-dim); }
@@ -553,11 +544,13 @@
       if (p[2] === 'discovery' && raw) {
         try {
           const card = JSON.parse(raw);
-          if (card.workflow_id) {
-            state.workflowCards.set(card.workflow_id, card);
+          const cardId = p[5];
+          if (cardId === 'supervisor') return;
+          if (cardId.startsWith('workflow-')) {
+            state.workflowCards.set(cardId, card);
             renderWorkflows();
-          } else if (card.agent_id && card.agent_id !== 'supervisor') {
-            state.agentCards.set(card.agent_id, card);
+          } else {
+            state.agentCards.set(cardId, card);
             renderAgents();
           }
         } catch(e) {}
@@ -645,24 +638,15 @@
       }));
     }
 
-    function workflowAgentIds() {
-      const ids = new Set();
-      for (const [, p] of state.workflowCards) {
-        if (p.agents) for (const a of p.agents) ids.add(a);
-      }
-      return ids;
-    }
-
     function renderAgents() {
       const el = document.getElementById('panel-agents');
-      const workflowAgents = workflowAgentIds();
-      const standalone = [...state.agentCards].filter(([id]) => !workflowAgents.has(id));
+      const standalone = [...state.agentCards];
       if (standalone.length === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No agents discovered</span></div>'; return; }
       let h = '';
       for (const [id, c] of standalone) {
         const active = state.composeTarget && state.composeTarget.type === 'agent' && state.composeTarget.id === id;
         h += `<div class="config-item${active ? ' active' : ''}" data-agent-id="${esc(id)}">
-          <div class="config-name">${esc(id)}${c.model ? `<span class="config-badge">${esc(c.model)}</span>` : ''}</div>
+          <div class="config-name">${esc(id)}${c.version ? `<span class="config-badge">v${esc(c.version)}</span>` : ''}</div>
           <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
         </div>`;
       }
@@ -688,9 +672,8 @@
       let h = '';
       for (const [id, c] of state.workflowCards) {
         const active = state.composeTarget && state.composeTarget.type === 'workflow' && state.composeTarget.id === id;
-        const taskCount = c.tasks ? c.tasks.length : 0;
         h += `<div class="config-item${active ? ' active' : ''}" data-workflow-id="${esc(id)}">
-          <div class="config-name">${esc(id)}${taskCount ? `<span class="config-badge">${taskCount} tasks</span>` : ''}</div>
+          <div class="config-name">${esc(id)}${c.version ? `<span class="config-badge">v${esc(c.version)}</span>` : ''}</div>
           <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
         </div>`;
       }
@@ -763,96 +746,15 @@
       const typeBadge = isAgent ? 'agent' : 'workflow';
 
       let propsHtml = '';
-      if (isAgent) {
-        if (card.model) propsHtml += `<span class="compose-prop"><span>Model</span> ${esc(card.model)}</span>`;
-        if (card.capabilities && card.capabilities.length) propsHtml += `<span class="compose-prop"><span>Tools</span> ${card.capabilities.includes('tool_use') ? 'yes' : 'no'}</span>`;
-        if (card.runtime) propsHtml += `<span class="compose-prop"><span>Runtime</span> ${esc(card.runtime)}</span>`;
-      } else {
-        if (card.tasks) propsHtml += `<span class="compose-prop"><span>Tasks</span> ${card.tasks.length}</span>`;
-        if (card.variables && card.variables.length) propsHtml += `<span class="compose-prop"><span>Variables</span> ${card.variables.join(', ')}</span>`;
-        if (card.agents && card.agents.length) propsHtml += `<span class="compose-prop"><span>Agents</span> ${card.agents.join(', ')}</span>`;
-      }
+      if (card.version) propsHtml += `<span class="compose-prop"><span>Version</span> ${esc(card.version)}</span>`;
+      if (card.skills && card.skills.length) propsHtml += `<span class="compose-prop"><span>Skills</span> ${card.skills.map(s => s.name).join(', ')}</span>`;
+      if (card.url) propsHtml += `<span class="compose-prop"><span>URL</span> ${esc(card.url)}</span>`;
 
-      // Workflow composition graph
-      let graphHtml = '';
-      if (!isAgent && card.tasks && card.tasks.length) {
-        const tasks = card.tasks;
-        const agentModels = {};
-        for (const [aid, ac] of state.agentCards) agentModels[aid] = { model: ac.model || '', runtime: ac.runtime || 'claude' };
-
-        // Group tasks by depth (BFS from entry nodes)
-        const taskMap = {};
-        tasks.forEach(t => taskMap[t.id] = t);
-        // Compute depth from needs (longest path from any root)
-        const depths = {};
-        function getDepth(id) {
-          if (depths[id] !== undefined) return depths[id];
-          const t = taskMap[id];
-          if (!t || !t.needs || t.needs.length === 0) { depths[id] = 0; return 0; }
-          const d = Math.max(...t.needs.map(n => getDepth(n))) + 1;
-          depths[id] = d;
-          return d;
-        }
-        tasks.forEach(t => getDepth(t.id));
-
-        // Build layers
-        const maxD = Math.max(...Object.values(depths));
-        const layers = [];
-        for (let d = 0; d <= maxD; d++) layers.push(tasks.filter(t => depths[t.id] === d));
-
-        let g = '<div class="wf-graph">';
-        layers.forEach((layer, di) => {
-          g += '<div class="wf-layer">';
-          layer.forEach(t => {
-            const am = agentModels[t.agent] || {};
-            const modelLabel = t.model || am.model || 'default';
-            const runtimeIcon = am.runtime === 'codex' ? '&#9883;' : '&#9670;';
-            const isTerminal = !t.next || t.next === 'output';
-            g += `<div class="wf-node${isTerminal ? ' wf-terminal' : ''}">
-              <div class="wf-node-id">${esc(t.id)}</div>
-              <div class="wf-node-agent">${runtimeIcon} ${esc(t.agent)}</div>
-              <div class="wf-node-model">${esc(modelLabel)}</div>
-            </div>`;
-          });
-          g += '</div>';
-          if (di < layers.length - 1) {
-            // Arrow between layers
-            const nextLayer = layers[di + 1];
-            const isJoin = nextLayer.length === 1 && layer.length > 1 && nextLayer[0].needs && nextLayer[0].needs.length > 1;
-            g += `<div class="wf-arrow">${isJoin ? '&#9660; join' : '&#9660;'}</div>`;
-          }
-        });
-        g += '</div>';
-        graphHtml = g;
-      }
-
-      let inputHtml = '';
-      if (isAgent) {
-        inputHtml = `<div class="compose-input-wrap">
-            <textarea class="compose-textarea" id="compose-text" placeholder="Message ${esc(name)}..." rows="3"></textarea>
-            <button class="compose-send" id="compose-btn" title="Send (Enter)">&#9654;</button>
-          </div>
-          <div class="compose-hint">Enter to send, Shift+Enter for newline</div>`;
-      } else {
-        const vars = card.variables || [];
-        let varsHtml = '';
-        for (let i = 0; i < vars.length; i++) {
-          const v = vars[i];
-          const isLast = i === vars.length - 1;
-          varsHtml += `<div style="display:flex;align-items:center;gap:8px">
-            <label style="font-size:12px;font-weight:500;color:var(--text-sec);min-width:80px">${esc(v)}</label>
-            <div style="flex:1;position:relative">
-              <textarea class="compose-var" data-var="${esc(v)}" placeholder="${esc(v)}" rows="2" style="width:100%;padding:8px 10px;${isLast ? 'padding-right:42px;' : ''}border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:var(--sans);outline:none;color:var(--text);transition:border-color .15s;resize:none;line-height:1.5;min-height:36px;max-height:150px"></textarea>
-              ${isLast ? '<button class="compose-send" id="compose-btn" title="Send (Enter)" style="position:absolute;right:4px;top:50%;transform:translateY(-50%)">&#9654;</button>' : ''}
-            </div>
-          </div>`;
-        }
-        if (vars.length === 0) {
-          varsHtml = `<div><button class="compose-send" id="compose-btn" title="Run workflow" style="position:static;width:auto;padding:8px 20px;font-size:12px;border-radius:6px">Run &#9654;</button></div>`;
-        }
-        inputHtml = `<div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">${varsHtml}</div>
-          <div class="compose-hint" style="margin-top:8px">Enter to run, Shift+Enter for newline</div>`;
-      }
+      const inputHtml = `<div class="compose-input-wrap">
+          <textarea class="compose-textarea" id="compose-text" placeholder="Message ${esc(name)}..." rows="3"></textarea>
+          <button class="compose-send" id="compose-btn" title="Send (Enter)">&#9654;</button>
+        </div>
+        <div class="compose-hint">Enter to send, Shift+Enter for newline</div>`;
 
       area.innerHTML = `<div class="compose-view">
         <div class="compose-card">
@@ -861,7 +763,6 @@
             ${desc ? `<div class="compose-card-desc">${esc(desc)}</div>` : ''}
             ${propsHtml ? `<div class="compose-card-props">${propsHtml}</div>` : ''}
           </div>
-          ${graphHtml}
           ${inputHtml}
         </div>
       </div>`;
@@ -880,53 +781,27 @@
         textarea.focus();
       }
       if (btn) btn.addEventListener('click', submitCompose);
-
-      // Enter to submit from var inputs, focus styling
-      area.querySelectorAll('.compose-var').forEach(inp => {
-        inp.addEventListener('keydown', e => {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitCompose(); }
-        });
-        inp.addEventListener('input', () => {
-          inp.style.height = 'auto';
-          inp.style.height = Math.min(inp.scrollHeight, 150) + 'px';
-        });
-        inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--blue)'; inp.style.boxShadow = '0 0 0 3px rgba(37,99,235,.08)'; });
-        inp.addEventListener('blur', () => { inp.style.borderColor = 'var(--border)'; inp.style.boxShadow = 'none'; });
-      });
-      const firstInput = area.querySelector('.compose-var');
-      if (firstInput && !textarea) firstInput.focus();
     }
 
     function submitCompose() {
       const textarea = document.getElementById('compose-text');
-      let text = textarea ? textarea.value.trim() : '';
+      const text = textarea ? textarea.value.trim() : '';
       const t = state.composeTarget;
       if (!t || !mqttClient || !state.connected) return;
-      if (t.type === 'agent' && !text) return; // agents need a prompt
+      if (!text) return;
 
       const requestId = 'dash-' + crypto.randomUUID().slice(0, 8);
       const replyTopic = `$a2a/v1/reply/skitter/default/dashboard/${crypto.randomUUID().slice(0,8)}`;
-      const vars = {};
-      document.querySelectorAll('.compose-var').forEach(inp => {
-        if (inp.value.trim()) vars[inp.dataset.var] = inp.value.trim();
-      });
-
-      let msgText = text;
       const metadata = { sender: 'dashboard' };
-      if (t.type !== 'agent') {
-        if (Object.keys(vars).length) metadata.variables = vars;
-        const varSummary = Object.values(vars).join(', ');
-        if (!msgText) msgText = varSummary ? `${t.id}: ${varSummary}` : t.id;
-      }
       const rpcMsg = {
         jsonrpc: '2.0', id: requestId, method: 'tasks/send',
         params: {
-          message: { role: 'user', parts: [{ type: 'text', text: msgText }] },
+          message: { role: 'user', parts: [{ type: 'text', text }] },
           metadata,
         },
       };
 
-      const target = t.type === 'agent' ? t.id : `workflow-${t.id}`;
+      const target = t.id;
       mqttClient.publish(`$a2a/v1/request/skitter/default/${target}`, JSON.stringify(rpcMsg), {
         qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(requestId) },
       });

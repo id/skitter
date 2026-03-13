@@ -48,25 +48,104 @@ def build_cards(
     return cards
 
 
-async def publish_cards(cards: dict[str, str]) -> None:
-    """Publish discovery cards as retained MQTT messages."""
-    async with aiomqtt.Client(
-        **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/discovery-publisher",
-        ),
-    ) as client:
-        for card_id, card_json in cards.items():
-            await client.publish(
-                topic_discovery(card_id),
-                card_json,
-                qos=1,
-                retain=True,
-            )
-    log.info("Published %d discovery cards", len(cards))
+class CardRegistry:
+    """Maintains one long-lived MQTT connection per discovery card.
+
+    Each card gets its own connection with client ID {org}/{unit}/{card_id},
+    so the broker can track per-agent liveness and annotate discovery card
+    deliveries with a2a-status: online/offline.
+    """
+
+    def __init__(self) -> None:
+        self._connections: dict[str, tuple[aiomqtt.Client, asyncio.Task]] = {}
+        self._payloads: dict[str, str] = {}
+
+    async def sync(self, cards: dict[str, str]) -> None:
+        """Diff current connections against desired cards and reconcile."""
+        current_ids = set(self._connections)
+        desired_ids = set(cards)
+
+        # Remove cards no longer desired
+        for card_id in current_ids - desired_ids:
+            await self._teardown(card_id, clear=True)
+
+        # Update changed cards (tear down + respawn)
+        for card_id in current_ids & desired_ids:
+            if self._payloads.get(card_id) != cards[card_id]:
+                await self._teardown(card_id, clear=False)
+                self._spawn(card_id, cards[card_id])
+
+        # Add new cards
+        for card_id in desired_ids - current_ids:
+            self._spawn(card_id, cards[card_id])
+
+        log.info("Card registry synced: %d cards active", len(self._connections))
+
+    async def close(self) -> None:
+        """Tear down all connections."""
+        for card_id in list(self._connections):
+            await self._teardown(card_id, clear=True)
+
+    def _spawn(self, card_id: str, card_json: str) -> None:
+        self._payloads[card_id] = card_json
+        task = asyncio.create_task(self._run(card_id, card_json))
+        # Client is set inside _run once connected; store placeholder
+        self._connections[card_id] = (None, task)  # type: ignore[arg-type]
+
+    async def _teardown(self, card_id: str, *, clear: bool) -> None:
+        entry = self._connections.pop(card_id, None)
+        self._payloads.pop(card_id, None)
+        if entry is None:
+            return
+        client, task = entry
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        if clear:
+            # Publish empty retained message to remove the card from broker
+            try:
+                async with aiomqtt.Client(
+                    **mqtt_client_kwargs(
+                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{card_id}",
+                    ),
+                ) as tmp:
+                    await tmp.publish(topic_discovery(card_id), b"", qos=1, retain=True)
+            except Exception:
+                log.warning("Failed to clear card %s from broker", card_id)
+
+    async def _run(self, card_id: str, card_json: str) -> None:
+        """Connect with per-agent client ID, publish card, stay alive."""
+        while True:
+            try:
+                async with aiomqtt.Client(
+                    **mqtt_client_kwargs(
+                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{card_id}",
+                    ),
+                ) as client:
+                    self._connections[card_id] = (
+                        client,
+                        self._connections[card_id][1],
+                    )
+                    await client.publish(
+                        topic_discovery(card_id),
+                        card_json,
+                        qos=1,
+                        retain=True,
+                    )
+                    log.info("Card %s published (client connected)", card_id)
+                    # Stay alive until cancelled
+                    await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("Card %s connection lost, reconnecting...", card_id)
+                await asyncio.sleep(2)
 
 
 def main() -> None:
-    """CLI entry point: load definitions, build cards, publish."""
+    """CLI entry point: load definitions, build cards, publish and stay alive."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
     )
@@ -78,8 +157,16 @@ def main() -> None:
     for card_id in sorted(cards):
         print(f"  {card_id}")
 
-    asyncio.run(publish_cards(cards))
-    print("Done.")
+    async def _run() -> None:
+        registry = CardRegistry()
+        try:
+            await registry.sync(cards)
+            log.info("All cards published. Press Ctrl+C to stop.")
+            await asyncio.Event().wait()
+        finally:
+            await registry.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

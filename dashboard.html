@@ -96,6 +96,18 @@
     .compose-send:hover { opacity: .85; }
     .compose-send:disabled { opacity: .3; cursor: default; }
     .compose-hint { font-size: 11px; color: var(--text-dim); margin-top: 8px; text-align: right; }
+    .compose-vars { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+    .compose-var label { display: block; font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .compose-var input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: var(--sans); outline: none; color: var(--text); transition: border-color .15s; }
+    .compose-var input::placeholder { color: var(--text-dim); }
+    .compose-var input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.08); }
+    .compose-tasks { margin-top: 14px; border: 1px solid var(--border-light); border-radius: 8px; overflow: hidden; }
+    .compose-tasks-hdr { font-size: 11px; font-weight: 600; color: var(--text-sec); padding: 8px 12px; background: var(--bg-alt); border-bottom: 1px solid var(--border-light); }
+    .compose-task { padding: 8px 12px; font-size: 12px; line-height: 1.5; border-bottom: 1px solid var(--border-light); }
+    .compose-task:last-child { border-bottom: none; }
+    .compose-task-id { font-family: var(--mono); font-weight: 600; color: var(--text); }
+    .compose-task-agent { font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-left: 6px; }
+    .compose-task-desc { color: var(--text-sec); margin-top: 2px; }
 
     /* Session result */
     .session-result { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
@@ -750,8 +762,19 @@
       if (card.skills && card.skills.length) propsHtml += `<span class="compose-prop"><span>Skills</span> ${card.skills.map(s => s.name).join(', ')}</span>`;
       if (card.url) propsHtml += `<span class="compose-prop"><span>URL</span> ${esc(card.url)}</span>`;
 
-      const inputHtml = `<div class="compose-input-wrap">
-          <textarea class="compose-textarea" id="compose-text" placeholder="Message ${esc(name)}..." rows="3"></textarea>
+      const tasks = card.metadata && card.metadata.tasks;
+      const tasksHtml = tasks && tasks.length ? `<div class="compose-tasks">
+        <div class="compose-tasks-hdr">Tasks</div>
+        ${tasks.map(tk => `<div class="compose-task"><span class="compose-task-id">${esc(tk.id)}</span><span class="compose-task-agent">${esc(tk.agent)}</span><div class="compose-task-desc">${esc(tk.description)}</div></div>`).join('')}
+      </div>` : '';
+
+      const varNames = card.metadata && card.metadata.variables && card.metadata.variables.length ? card.metadata.variables : null;
+      const varsHtml = varNames ? `<div class="compose-vars">${varNames.map(v =>
+        `<div class="compose-var"><label for="var-${esc(v)}">${esc(v)}</label><input id="var-${esc(v)}" type="text" placeholder="Enter ${esc(v)}..." /></div>`
+      ).join('')}</div>` : '';
+
+      const inputHtml = `${tasksHtml}${varsHtml}<div class="compose-input-wrap" style="margin-top:${tasksHtml || varsHtml ? '12' : '20'}px">
+          <textarea class="compose-textarea" id="compose-text" placeholder="${varsHtml ? 'Session label (optional)...' : `Message ${esc(name)}...`}" rows="3"></textarea>
           <button class="compose-send" id="compose-btn" title="Send (Enter)">&#9654;</button>
         </div>
         <div class="compose-hint">Enter to send, Shift+Enter for newline</div>`;
@@ -788,11 +811,24 @@
       const text = textarea ? textarea.value.trim() : '';
       const t = state.composeTarget;
       if (!t || !mqttClient || !state.connected) return;
-      if (!text) return;
+
+      const card = t.type === 'workflow' ? state.workflowCards.get(t.id) : null;
+      const varNames = card && card.metadata && card.metadata.variables;
+      const hasVars = varNames && varNames.length;
+
+      if (!text && !hasVars) return;
 
       const requestId = 'dash-' + crypto.randomUUID().slice(0, 8);
       const replyTopic = `$a2a/v1/reply/skitter/default/dashboard/${crypto.randomUUID().slice(0,8)}`;
       const metadata = { sender: 'dashboard' };
+      if (hasVars) {
+        const vars = {};
+        for (const v of varNames) {
+          const el = document.getElementById(`var-${v}`);
+          if (el) vars[v] = el.value.trim();
+        }
+        metadata.variables = vars;
+      }
       const rpcMsg = {
         jsonrpc: '2.0', id: requestId, method: 'tasks/send',
         params: {

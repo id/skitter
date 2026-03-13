@@ -58,6 +58,13 @@ def build_cards(
                 "description": wf.description,
                 "version": "0.1.0",
                 "url": url,
+                "metadata": {
+                    "variables": wf.variables,
+                    "tasks": [
+                        {"id": t.id, "agent": t.agent, "description": t.description}
+                        for t in wf.tasks
+                    ],
+                },
                 "skills": [
                     {
                         "id": wf.id,

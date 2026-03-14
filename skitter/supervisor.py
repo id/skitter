@@ -19,7 +19,7 @@ from skitter.config import (
     load_workflows,
     safe_format,
 )
-from skitter.discovery import build_cards
+from skitter.discovery import CardRegistry, build_cards
 from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
@@ -28,7 +28,6 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_dead_wildcard,
-    topic_discovery,
     topic_reload,
     topic_request_wildcard,
     topic_result,
@@ -235,20 +234,6 @@ async def _send_error(
 # --- Mode: listen (long-lived MQTT subscriber) ---
 
 
-async def _publish_discovery(
-    client: aiomqtt.Client,
-    cards: dict[str, str],
-) -> None:
-    for card_id, card_json in cards.items():
-        await client.publish(
-            topic_discovery(card_id),
-            card_json,
-            qos=1,
-            retain=True,
-        )
-    log.info("Published %d discovery cards", len(cards))
-
-
 async def handle_dead_event(client: aiomqtt.Client, payload: str) -> None:
     """Handle a worker death (LWT).
 
@@ -414,61 +399,69 @@ async def run_listen() -> None:
     if workflows:
         log.info("Loaded %d workflows: %s", len(workflows), ", ".join(workflows))
 
-    async with aiomqtt.Client(
-        **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor"),
-    ) as client:
-        await _publish_discovery(client, build_cards(agents, workflows))
+    registry = CardRegistry()
+    try:
+        await registry.sync(build_cards(agents, workflows))
 
-        await client.subscribe(topic_request_wildcard(), qos=1)
-        await client.subscribe(topic_dead_wildcard(), qos=1)
-        await client.subscribe(topic_reload(), qos=1)
-        log.info("Supervisor ready, listening on request/+, event/+/dead")
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor"),
+        ) as client:
+            await client.subscribe(topic_request_wildcard(), qos=1)
+            await client.subscribe(topic_dead_wildcard(), qos=1)
+            await client.subscribe(topic_reload(), qos=1)
+            log.info("Supervisor ready, listening on request/+, event/+/dead")
 
-        async for mqtt_msg in client.messages:
-            topic = str(mqtt_msg.topic)
-            payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
-            if not payload:
-                continue
-
-            if topic == topic_reload():
-                agents = load_agents()
-                workflows = load_workflows()
-                await _publish_discovery(client, build_cards(agents, workflows))
-                log.info(
-                    "Reloaded %d agents, %d workflows", len(agents), len(workflows)
-                )
-                continue
-
-            if "/request/" in topic and "/cancel" not in topic:
-                agent_id = _parse_agent_id_from_topic(topic)
-                if agent_id == "supervisor":
+            async for mqtt_msg in client.messages:
+                topic = str(mqtt_msg.topic)
+                payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
+                if not payload:
                     continue
-                caller_reply = get_response_topic(mqtt_msg) or ""
-                caller_corr = get_correlation_data(mqtt_msg) or ""
-                if not caller_reply or not caller_corr:
-                    log.warning("Request missing Response Topic or Correlation Data")
-                    if caller_reply:
-                        await _send_error(
-                            client,
-                            caller_reply,
-                            caller_corr,
-                            "Request must include MQTT v5 Response Topic and Correlation Data",
-                            code=A2A_TRANSPORT_PROTOCOL_ERROR,
-                            a2a_error="transport_protocol_error",
+
+                if topic == topic_reload():
+                    agents = load_agents()
+                    workflows = load_workflows()
+                    await registry.sync(build_cards(agents, workflows))
+                    log.info(
+                        "Reloaded %d agents, %d workflows",
+                        len(agents),
+                        len(workflows),
+                    )
+                    continue
+
+                if "/request/" in topic and "/cancel" not in topic:
+                    agent_id = _parse_agent_id_from_topic(topic)
+                    if agent_id == "supervisor":
+                        continue
+                    caller_reply = get_response_topic(mqtt_msg) or ""
+                    caller_corr = get_correlation_data(mqtt_msg) or ""
+                    if not caller_reply or not caller_corr:
+                        log.warning(
+                            "Request missing Response Topic or Correlation Data"
                         )
-                    continue
-                await handle_request(
-                    client,
-                    payload,
-                    caller_reply,
-                    caller_corr,
-                    agents,
-                    workflows,
-                    agent_id=agent_id,
-                )
+                        if caller_reply:
+                            await _send_error(
+                                client,
+                                caller_reply,
+                                caller_corr,
+                                "Request must include MQTT v5 Response Topic and Correlation Data",
+                                code=A2A_TRANSPORT_PROTOCOL_ERROR,
+                                a2a_error="transport_protocol_error",
+                            )
+                        continue
+                    await handle_request(
+                        client,
+                        payload,
+                        caller_reply,
+                        caller_corr,
+                        agents,
+                        workflows,
+                        agent_id=agent_id,
+                    )
 
-            elif topic.startswith("skitter/event/"):
-                await handle_dead_event(client, payload)
+                elif topic.startswith("skitter/event/"):
+                    await handle_dead_event(client, payload)
+    finally:
+        await registry.close()
 
 
 # --- Entry point ---

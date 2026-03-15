@@ -67,11 +67,6 @@ def topic_request(agent_id: str) -> str:
     return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
 
 
-def topic_request_wildcard() -> str:
-    """Wildcard for all agent requests: $a2a/v1/request/{org}/{unit}/+"""
-    return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/+"
-
-
 def topic_reply(agent_id: str, suffix: str) -> str:
     """Reply topic: $a2a/v1/reply/{org}/{unit}/{agent_id}/{suffix}"""
     return f"{_PREFIX}/reply/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{suffix}"

@@ -12,7 +12,6 @@ from skitter.mqtt import (
     topic_discovery_wildcard,
     topic_event,
     topic_request,
-    topic_request_wildcard,
     topic_result,
 )
 from skitter.types import (
@@ -153,11 +152,6 @@ class TestTopics:
     def test_result(self):
         t = topic_result("my-wf", "research", "session1")
         assert t == "skitter/result/my-wf/research/session1"
-
-    def test_request_wildcard(self):
-        t = topic_request_wildcard()
-        assert t.endswith("/+")
-        assert "/request/" in t
 
     def test_request_per_agent(self):
         t = topic_request("researcher")

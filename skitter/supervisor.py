@@ -15,8 +15,6 @@ import aiomqtt
 
 from skitter.config import safe_format
 from skitter.db import (
-    App,
-    AppVersion,
     DB,
     DBSession,
     DBTask,
@@ -39,7 +37,6 @@ from skitter.mqtt import (
     topic_a2a_event,
     topic_discovery_wildcard,
     topic_request,
-    topic_request_wildcard,
     topic_reply,
     topic_result,
 )
@@ -653,82 +650,42 @@ class Supervisor:
         caller_correlation: str,
         agent_id: str,
     ) -> None:
-        """Handle an inbound A2A request."""
+        """Handle an inbound A2A request for a composed app."""
         try:
             req = A2ARequest.from_json(payload)
         except Exception as e:
             log.error("Bad inbound JSON-RPC: %s", e)
             return
 
-        # Ignore our own dispatched requests (received via wildcard subscription)
-        if req.sender == "supervisor":
-            return
-
-        # Check if this is a composed app (has a published card)
         app = self._db.get_app(agent_id)
-        if app and app.card_json:
-            version = self._db.get_current_version(agent_id)
-            if not version:
-                await self._send_error(
-                    caller_reply_topic,
-                    caller_correlation,
-                    f"App '{agent_id}' has no published version",
-                    code=A2A_RESPONDER_UNAVAILABLE,
-                )
-                return
-
-            state = self.create_session_from_graph(
-                graph_json=version.graph_json,
-                app_version_id=version.id,
-                request=req,
-                caller_reply_topic=caller_reply_topic,
-                caller_correlation=caller_correlation,
-                variables=req.variables,
-            )
-            await self._start_session(state, f"App '{agent_id}'")
-            return
-
-        # Check if agent exists in discovery registry
-        if not self._registry.get(agent_id):
+        if not app or not app.card_json:
             await self._send_error(
                 caller_reply_topic,
                 caller_correlation,
-                f"Unknown agent or app: {agent_id}",
+                f"Unknown app: {agent_id}",
                 code=A2A_RESPONDER_UNAVAILABLE,
             )
             return
 
-        # Single agent — create a single-task session
-        graph = {
-            "tasks": [
-                {
-                    "id": agent_id,
-                    "agent": agent_id,
-                    "description": req.text,
-                    "needs": [],
-                    "next": "output",
-                }
-            ]
-        }
-        av_id = f"agent-{agent_id}-{uuid.uuid4().hex[:8]}"
-        if not self._db.get_app(agent_id):
-            self._db.create_app(App(id=agent_id, name=agent_id))
-        av = AppVersion(
-            id=av_id,
-            app_id=agent_id,
-            version=0,
-            graph_json=json.dumps(graph),
-        )
-        self._db.create_app_version(av)
+        version = self._db.get_current_version(agent_id)
+        if not version:
+            await self._send_error(
+                caller_reply_topic,
+                caller_correlation,
+                f"App '{agent_id}' has no published version",
+                code=A2A_RESPONDER_UNAVAILABLE,
+            )
+            return
 
         state = self.create_session_from_graph(
-            graph_json=av.graph_json,
-            app_version_id=av_id,
+            graph_json=version.graph_json,
+            app_version_id=version.id,
             request=req,
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
+            variables=req.variables,
         )
-        await self._start_session(state, f"Agent '{agent_id}'")
+        await self._start_session(state, f"App '{agent_id}'")
 
     async def _send_error(
         self,
@@ -767,13 +724,15 @@ class Supervisor:
 
     async def recover(self) -> None:
         """Recover state from DB on startup."""
-        # 1. Republish composed app cards
+        # 1. Subscribe to composed app request topics + republish cards
         for app in self._db.list_apps():
             if app.card_json:
+                if self._client:
+                    await self._client.subscribe(topic_request(app.id), qos=1)
                 pub = CardPublisher(app.id, app.card_json)
                 self._publishers[app.id] = pub
                 await pub.start()
-                log.info("Republished card for app %s", app.id)
+                log.info("Recovered app %s (subscribed + card published)", app.id)
 
         # 2. Rehydrate inflight sessions
         for db_session in self._db.list_sessions():
@@ -871,12 +830,12 @@ class Supervisor:
             ) as client:
                 self._client = client
 
-                # Subscribe to discovery, requests
+                # Subscribe to discovery + runtime API
                 await client.subscribe(topic_discovery_wildcard(), qos=1)
-                await client.subscribe(topic_request_wildcard(), qos=1)
-                log.info("Supervisor ready, listening on discovery and requests")
+                await client.subscribe(topic_request(RUNTIME_AGENT_ID), qos=1)
+                log.info("Supervisor ready")
 
-                # Recover inflight sessions from DB
+                # Recover apps (subscribe + republish cards) and inflight sessions
                 await self.recover()
 
                 async for mqtt_msg in client.messages:
@@ -889,8 +848,6 @@ class Supervisor:
 
                     elif "/request/" in topic and "/cancel" not in topic:
                         agent_id = _parse_agent_id_from_topic(topic)
-                        if agent_id == "supervisor":
-                            continue
 
                         caller_reply = get_response_topic(mqtt_msg) or ""
                         caller_corr = get_correlation_data(mqtt_msg) or ""

@@ -295,7 +295,7 @@ class TestAppCreation:
         self.db.close()
 
     def test_create_app(self):
-        from skitter.apps import create_app
+        from skitter.runtime_api import create_app
 
         app, version, card_json = create_app(
             self.db,
@@ -321,7 +321,7 @@ class TestAppCreation:
         assert len(card["metadata"]["tasks"]) == 1
 
     def test_version_increment(self):
-        from skitter.apps import create_app
+        from skitter.runtime_api import create_app
 
         app1, v1, _ = create_app(
             self.db, app_id="my-app", name="App", graph={"tasks": []}
@@ -1470,7 +1470,7 @@ class TestRuntimeApiIntegration:
         return sup, mock_client
 
     def _create_test_app(self):
-        from skitter.apps import create_app
+        from skitter.runtime_api import create_app
 
         return create_app(
             self.db,

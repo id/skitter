@@ -18,9 +18,10 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from skitter.apps import create_app
+import uuid
+
 from skitter.config import AgentDef
-from skitter.db import DB
+from skitter.db import App, AppVersion, DB
 from skitter.discovery import build_card
 from skitter.graph_gen import GraphValidationError, generate_graph
 
@@ -67,7 +68,7 @@ async def handle_query(
     if verb == "cancel" and noun == "session" and arg:
         return _cancel_session(db, arg)
     if verb == "create" and noun == "app" and arg:
-        return await _create_app(db, arg, registry)
+        return await _handle_create_app(db, arg, registry)
 
     return json.dumps({"error": f"Unknown query: {text.strip()}"})
 
@@ -163,7 +164,68 @@ def _cancel_session(db: DB, session_id: str) -> str:
     return json.dumps({CANCEL_KEY: session_id})
 
 
-async def _create_app(db: DB, arg: str, registry: DiscoveryRegistry | None) -> str:
+def create_app(
+    db: DB,
+    *,
+    app_id: str = "",
+    name: str,
+    description: str = "",
+    source_cards: list[dict] | None = None,
+    instructions: str = "",
+    graph: dict | None = None,
+) -> tuple[App, AppVersion, str]:
+    """Create or update a composed app. Returns (app, version, card_json)."""
+    app_id = app_id or uuid.uuid4().hex[:12]
+    source_cards = source_cards or []
+
+    existing = db.get_app(app_id)
+    if existing:
+        current = db.get_current_version(app_id)
+        next_version = (current.version + 1) if current else 1
+    else:
+        db.create_app(App(id=app_id, name=name, description=description))
+        next_version = 1
+
+    version_id = f"{app_id}-v{next_version}"
+    graph_json = json.dumps(graph) if graph else "{}"
+
+    av = AppVersion(
+        id=version_id,
+        app_id=app_id,
+        version=next_version,
+        source_cards=json.dumps(source_cards),
+        instructions=instructions,
+        graph_json=graph_json,
+    )
+    db.create_app_version(av)
+
+    # Build and persist discovery card
+    agent_def = AgentDef(id=app_id, name=name, description=description)
+    tasks = graph.get("tasks", []) if graph else []
+    metadata = {
+        "variables": graph.get("variables", []) if graph else [],
+        "tasks": [
+            {
+                "id": t["id"],
+                "agent": t.get("agent", ""),
+                "description": t.get("description", ""),
+            }
+            for t in tasks
+        ],
+    }
+    card = build_card(agent_def, metadata=metadata)
+    card_json = json.dumps(card)
+
+    db.update_app_card(app_id, card_json)
+    app = db.get_app(app_id)
+
+    log.info("Created app %s v%d (%d tasks)", app_id, next_version, len(tasks))
+    return app, av, card_json
+
+
+async def _handle_create_app(
+    db: DB, arg: str, registry: DiscoveryRegistry | None
+) -> str:
     """Create a composed app from agent IDs + natural language instructions."""
     try:
         spec = json.loads(arg)

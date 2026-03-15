@@ -1,6 +1,6 @@
 # Skitter
 
-MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker. A coordinator handles composed multi-agent apps — creating orchestration graphs from natural language via LLM, dispatching A2A requests, and resolving dependencies.
+MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker. A coordinator handles composed multi-agent apps: creating orchestration graphs from natural language via LLM, dispatching A2A requests, and resolving dependencies.
 
 ~3,500 lines of Python. Supports Claude Code and Codex CLI as agent runtimes.
 
@@ -18,7 +18,7 @@ uv sync
 # Start coordinator (terminal 1)
 uv run python -m skitter
 
-# Start an agent (terminal 2) — see "Agents" section for setup
+# Start an agent (terminal 2, see "Agents" section for setup)
 uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
 
 # Send a request (terminal 3)
@@ -51,15 +51,15 @@ Any MQTT v5 Client          MQTT Broker           Agent Runners
                       └────────────────────┘
 ```
 
-**Standalone agents** handle requests directly — no coordinator involved. Clients publish to the agent's request topic, the agent-runner processes it and replies.
+**Standalone agents** handle requests directly, no coordinator involved. Clients publish to the agent's request topic, the agent-runner processes it and replies.
 
 **Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests to individual agents following the dependency graph, and sends the final result back to the caller.
 
-**Creating composed apps** — send a `create app` request to the coordinator's `skitter` topic with agent IDs and natural language instructions. The coordinator looks up agent capabilities from their discovery cards, calls an LLM to generate an orchestration graph (validated for cycles, missing refs, and next/needs consistency), persists the app, and publishes its discovery card.
+**Creating composed apps:** send a `create app` request to the coordinator's `skitter` topic with agent IDs and natural language instructions. The coordinator looks up agent capabilities from their discovery cards, calls an LLM to generate an orchestration graph (validated for cycles, missing refs, and next/needs consistency), persists the app, and publishes its discovery card.
 
 ## Agents
 
-Agents use native CLI definitions directly — no extra config layer:
+Agents use native CLI definitions directly, no extra config layer:
 
 ```markdown
 # ~/.claude/agents/researcher.md
@@ -142,11 +142,11 @@ uv run python -m pytest tests/test_live.py -v -s --runtime claude
 uv run python -m pytest tests/test_live.py -v -s --runtime codex
 ```
 
-Live tests run agent-runners in Docker containers for full isolation — they never touch your local agent files. The coordinator runs as a local subprocess.
+Live tests run agent-runners in Docker containers for full isolation. They never touch your local agent files. The coordinator runs as a local subprocess.
 
 ## Limitations
 
-- Agent runners use `dangerouslySkipPermissions` — only run in trusted environments
+- Agent runners use `dangerouslySkipPermissions`, only run in trusted environments
 - Agent errors are passed as normal results to downstream tasks
 - No built-in authentication (rely on MQTT broker auth)
 

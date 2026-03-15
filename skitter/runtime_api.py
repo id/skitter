@@ -247,7 +247,10 @@ async def _handle_create_app(
     if not registry:
         return json.dumps({"error": "No discovery registry available"})
 
-    # Look up agent cards from registry
+    # Look up agent cards from registry.
+    # NOTE: registry presence doesn't guarantee the agent is online —
+    # discovery cards are retained on the broker after disconnect.
+    # Online/offline status is tracked broker-side via LWT.
     cards = []
     missing = []
     for aid in agent_ids:

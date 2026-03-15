@@ -943,16 +943,20 @@ class TestGraphValidation:
         with pytest.raises(GraphValidationError, match="Cycle"):
             validate_graph(graph, {"x", "y"})
 
-    def test_no_terminal(self):
+    def test_no_terminal_caught(self):
         from skitter.graph_gen import GraphValidationError, validate_graph
 
+        # A graph with no terminal and consistent next/needs requires a cycle,
+        # so it's caught by either the cycle or consistency check.
         graph = {
             "tasks": [
-                {"id": "t1", "agent": "a", "needs": [], "next": "t1"},
+                {"id": "t1", "agent": "a", "needs": [], "next": "t2"},
+                {"id": "t2", "agent": "b", "needs": ["t1"], "next": "t3"},
+                {"id": "t3", "agent": "c", "needs": ["t2"], "next": "t2"},
             ]
         }
-        with pytest.raises(GraphValidationError, match="terminal"):
-            validate_graph(graph, {"a"})
+        with pytest.raises(GraphValidationError):
+            validate_graph(graph, {"a", "b", "c"})
 
     def test_unknown_need(self):
         from skitter.graph_gen import GraphValidationError, validate_graph
@@ -975,6 +979,19 @@ class TestGraphValidation:
         }
         with pytest.raises(GraphValidationError, match="not a valid task ID"):
             validate_graph(graph, {"a"})
+
+    def test_next_needs_consistency(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        # t1.next=t2 but t2.needs is empty — inconsistent
+        graph = {
+            "tasks": [
+                {"id": "t1", "agent": "a", "needs": [], "next": "t2"},
+                {"id": "t2", "agent": "b", "needs": [], "next": "output"},
+            ]
+        }
+        with pytest.raises(GraphValidationError, match="does not list"):
+            validate_graph(graph, {"a", "b"})
 
 
 class TestGraphGeneration:

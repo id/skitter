@@ -31,6 +31,7 @@ Rules:
 - Task IDs must be unique.
 - "needs" lists upstream dependencies (tasks whose results this task requires).
 - "next" is the downstream task or "output" for terminal tasks.
+- If A.next = B, then B.needs MUST include A (consistency rule).
 - Use each agent at most once unless the instructions explicitly require multiple uses.
 """
 
@@ -106,6 +107,18 @@ def validate_graph(graph: dict, valid_agent_ids: set[str]) -> None:
 
     for tid in seen:
         _dfs(tid)
+
+    # Validate next/needs consistency: if A.next=B, then B must list A in needs.
+    # The supervisor dispatches based on `needs` only — inconsistency causes
+    # out-of-order execution.
+    needs_of: dict[str, list[str]] = {t["id"]: t.get("needs", []) for t in tasks}
+    for t in tasks:
+        nxt = t.get("next", "output")
+        if nxt and nxt != "output" and t["id"] not in needs_of.get(nxt, []):
+            raise GraphValidationError(
+                f"Task '{t['id']}' has next='{nxt}' but '{nxt}' does not "
+                f"list '{t['id']}' in needs"
+            )
 
     # At least one terminal task
     terminals = [t for t in tasks if not t.get("next") or t.get("next") == "output"]

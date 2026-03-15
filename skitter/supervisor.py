@@ -854,10 +854,10 @@ class Supervisor:
                 # Subscribe to discovery + runtime API
                 await client.subscribe(topic_discovery_wildcard(), qos=1)
                 await client.subscribe(topic_request(RUNTIME_AGENT_ID), qos=1)
-                log.info("Supervisor ready")
 
                 # Recover apps (subscribe + republish cards) and inflight sessions
                 await self.recover()
+                log.info("Supervisor ready")
 
                 async for mqtt_msg in client.messages:
                     topic = str(mqtt_msg.topic)

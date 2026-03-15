@@ -1,10 +1,10 @@
 """Standalone A2A agent process.
 
-Reads an agent definition YAML, connects to the broker, publishes its
-discovery card, and handles A2A requests by running a CLI tool (claude/codex)
-as a subprocess.
+Reads a native agent definition (Claude .md or Codex .toml), connects
+to the broker, publishes its discovery card, and handles A2A requests
+by running the CLI tool as a subprocess.
 
-    skitter agent-runner researcher
+    skitter agent-runner ~/.claude/agents/researcher.md
 
 Fully independent — no coordinator, no shared state.
 """
@@ -17,9 +17,7 @@ import sys
 
 import aiomqtt
 
-import yaml
-
-from skitter.config import AGENTS_DIR, AgentDef, BrokerConfig
+from skitter.config import AgentDef
 from skitter.discovery import CardPublisher, build_card
 from skitter.mqtt import (
     A2A_ORG,
@@ -226,47 +224,71 @@ async def handle_request(
     log.info("Request %s completed (%d chars)", req.request_id, len(result))
 
 
-def load_agent(name_or_path: str) -> AgentDef:
-    """Load a single agent definition from a YAML file.
-
-    Accepts either a name (resolves to ~/.skitter/agents/{name}.yaml)
-    or a path to a YAML file.
-    """
+def load_agent(path_str: str) -> AgentDef:
+    """Load an agent definition from a Claude .md or Codex .toml file."""
     from pathlib import Path
 
-    path = Path(name_or_path)
-    if not path.suffix:
-        path = AGENTS_DIR / f"{name_or_path}.yaml"
+    path = Path(path_str)
     if not path.is_file():
         log.error("Agent definition not found: %s", path)
         sys.exit(1)
 
-    data = yaml.safe_load(path.read_text())
-    if not isinstance(data, dict):
-        log.error("Invalid agent definition: %s", path)
+    suffix = path.suffix.lower()
+    if suffix == ".md":
+        return _load_claude_agent(path)
+    if suffix == ".toml":
+        return _load_codex_agent(path)
+
+    log.error("Unsupported agent file type: %s (expected .md or .toml)", suffix)
+    sys.exit(1)
+
+
+def _load_claude_agent(path) -> AgentDef:
+    """Parse a Claude agent .md file (YAML frontmatter between --- delimiters)."""
+    import yaml
+
+    text = path.read_text()
+    if not text.startswith("---"):
+        log.error("Claude agent file must start with --- frontmatter: %s", path)
         sys.exit(1)
 
-    agent_id = data.get("agent_id", path.stem)
-    broker_data = data.get("broker")
-    broker = (
-        BrokerConfig(
-            host=broker_data.get("host", ""),
-            port=int(broker_data.get("port", 0)),
-        )
-        if isinstance(broker_data, dict)
-        else None
-    )
+    end = text.find("\n---", 3)
+    if end == -1:
+        log.error("No closing --- in frontmatter: %s", path)
+        sys.exit(1)
+
+    frontmatter = yaml.safe_load(text[3:end])
+    if not isinstance(frontmatter, dict):
+        log.error("Invalid frontmatter in %s", path)
+        sys.exit(1)
+
+    agent_id = frontmatter.get("name", path.stem)
     return AgentDef(
         id=agent_id,
-        name=data.get("name", agent_id),
-        description=data.get("description", ""),
-        runtime=data.get("runtime", "claude"),
+        name=frontmatter.get("name", agent_id),
+        description=frontmatter.get("description", ""),
+        runtime="claude",
+        model=frontmatter.get("model", ""),
+        agent_file=path.stem,
+    )
+
+
+def _load_codex_agent(path) -> AgentDef:
+    """Parse a Codex agent .toml file."""
+    import tomllib
+
+    try:
+        data = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as e:
+        log.error("Invalid TOML in %s: %s", path, e)
+        sys.exit(1)
+    agent_id = path.stem
+    return AgentDef(
+        id=agent_id,
+        name=agent_id,
+        description=data.get("developer_instructions", "")[:100],
+        runtime="codex",
         model=data.get("model", ""),
-        agent_file=data.get("agent_file", ""),
-        broker=broker,
-        capabilities=data.get("capabilities", {}),
-        input_modes=data.get("input_modes", ["text/plain"]),
-        output_modes=data.get("output_modes", ["text/plain"]),
     )
 
 
@@ -352,15 +374,18 @@ def main() -> None:
     # Via __main__.py: sys.argv = ['...', 'agent-runner', '<name>']
     # Via direct: sys.argv = ['agent_runner.py', '<name>']
     if len(sys.argv) < 3 and "agent-runner" in sys.argv:
-        print("Usage: skitter agent-runner <agent_name>", file=sys.stderr)
+        print("Usage: skitter agent-runner <agent.md|agent.toml>", file=sys.stderr)
         sys.exit(1)
     if len(sys.argv) < 2:
-        print("Usage: python -m skitter.agent_runner <agent_name>", file=sys.stderr)
+        print(
+            "Usage: python -m skitter.agent_runner <agent.md|agent.toml>",
+            file=sys.stderr,
+        )
         sys.exit(1)
     # Take last arg — works for both dispatch paths
-    agent_name = sys.argv[-1]
+    agent_path = sys.argv[-1]
     try:
-        asyncio.run(run(agent_name))
+        asyncio.run(run(agent_path))
     except KeyboardInterrupt:
         log.info("Agent runner shutting down")
 

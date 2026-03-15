@@ -30,96 +30,52 @@ docker compose up -d   # local EMQX broker
 uv run python -m skitter   # start coordinator
 ```
 
-## Agent Configuration
+## Agents
 
-Skitter delegates agent identity to native CLI sub-agent systems. Each agent has two files:
+The agent-runner reads native CLI agent definitions directly — no extra config layer.
 
-**Orchestration stub** (`~/.skitter/agents/researcher.yaml`):
-```yaml
-name: Research Specialist
-description: Deep research with source citation
-runtime: claude    # "claude" or "codex"
-workspace: ""
-```
-
-**Native sub-agent** (`~/.claude/agents/researcher.md`):
+**Claude** (`~/.claude/agents/researcher.md`):
 ```markdown
 ---
 name: researcher
+description: Deep research with source citation
 model: sonnet
-maxTurns: 15
 memory: user
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 ---
 You are a research specialist. Be thorough, cite sources.
 ```
 
-The YAML filename stem must match the native sub-agent name. Agent personality, model, tools, and memory are owned by the native CLI system, not skitter.
-
-### Codex sub-agents
-
+**Codex** (`~/.codex/agents/coder.toml`):
 ```toml
-# ~/.codex/agents/coder.toml
 model = "gpt-5.1-codex-mini"
 sandbox_mode = "workspace-write"
 developer_instructions = "You are a senior developer."
 ```
 
-### Global config
+Start an agent-runner by pointing it at the file:
+
+```bash
+uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
+uv run python -m skitter agent-runner ~/.codex/agents/coder.toml
+```
+
+Runtime is inferred from file extension (`.md` → claude, `.toml` → codex).
+
+## Configuration
 
 ```yaml
 # ~/.skitter/config.yaml
-default_runtime: claude
+db:
+  backend: sqlite              # or "postgres"
+  sqlite_path: ~/.skitter/skitter.db
+  postgres_dsn: postgresql://...
+
+llm:
+  model: claude-haiku-4-5-20251001  # for graph generation
 ```
-
-## Workflow Templates
-
-```yaml
-# ~/.skitter/workflows/deep-research.yaml
-name: Deep Research
-description: Multi-source research with fact-checking
-variables:
-  - topic
-tasks:
-  - id: research_web
-    agent: researcher
-    description: "Research '{topic}' using web sources."
-    next: fact_check
-    needs: []
-  - id: research_academic
-    agent: researcher
-    description: "Research '{topic}' focusing on academic papers."
-    next: fact_check
-    needs: []
-  - id: fact_check
-    agent: reviewer
-    description: "Cross-reference findings about '{topic}'."
-    next: synthesize
-    needs: [research_web, research_academic]
-  - id: synthesize
-    agent: writer
-    description: "Combine all findings about '{topic}'."
-    next: output
-    needs: [fact_check]
-```
-
-Each task specifies `next` (another task id or `"output"` for terminal) and `needs` (upstream dependencies). `next` is auto-inferred from the reverse dependency graph if omitted. Tasks can override `model` per-task.
-
-## Docker Workers
-
-Workers can run in Docker containers for sandboxing:
-
-```bash
-uv run python -m skitter docker build
-uv run python -m skitter docker sync     # copy agent definitions
-SKITTER_SPAWN_MODE=docker uv run python -m skitter
-```
-
-Set `CLAUDE_CODE_OAUTH_TOKEN` in your environment (run `claude setup-token` to get one).
 
 ## Environment Variables
-
-Copy `.env.example` to `.env` for local development:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -129,47 +85,32 @@ Copy `.env.example` to `.env` for local development:
 | `MQTT_USER` / `MQTT_PASS` | (empty) | Broker auth |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
-| `SKITTER_SPAWN_MODE` | `subprocess` | `subprocess`, `docker`, or `fly` |
-| `SKITTER_WORKER_IMAGE` | `skitter-worker:latest` | Docker image for workers |
-| `SKITTER_DOCKER_NETWORK` | `skitter` | Docker network for workers |
+| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation |
+| `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | Claude auth for agent-runners |
 
 For cloud deployment, see `.env.cloud.example` and `docs/fly-deployment.md`.
 
 ## Topic Scheme
 
-Skitter uses two namespaces. `$a2a` follows the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) standard (client-facing). `skitter` is internal coordination.
+Two namespaces: `$a2a` follows [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) (client-facing), `skitter` is internal.
 
-### A2A topics (client-facing)
+### A2A topics
 
 ```
 $a2a/v1/
-  discovery/{org}/{unit}/{agent_id}          # Retained Agent Cards
+  discovery/{org}/{unit}/{agent_id}          # Retained Agent/App Cards
   request/{org}/{unit}/{agent_id}            # Requests
-  request/{org}/{unit}/{agent_id}/cancel     # Cancel signals
   reply/{org}/{unit}/{agent_id}/{suffix}     # Replies
+  event/{org}/{unit}/{agent_id}              # Session lifecycle events
 ```
 
 ### Skitter internal topics
 
 ```
 skitter/
-  session/{session_id}                       # Retained session spec (immutable)
-  result/{workflow_id}/{task}/{session_id}   # Retained inter-worker results
-  status/{workflow_id}/{task}/{session_id}   # Retained per-task status
-  usage/{workflow_id}/{task}/{session_id}    # Usage tracking
+  result/{app_version}/{task}/{session_id}   # Retained task results
   event/{agent}/{type}                       # alive/dead (LWT)
-  control/reload                             # Reload agents/workflows signal
 ```
-
-`workflow_id` equals `agent_id` for single-agent sessions. No `{org}/{unit}` in the `skitter` namespace.
-
-## Spec Deviations
-
-| Area | A2A Spec | Skitter |
-|---|---|---|
-| Streaming | Separate `TaskStatusUpdateEvent` + `TaskArtifactUpdateEvent` | `TaskStatusUpdateEvent` for both streaming and terminal |
-| Internal state | Part of `event/` topic tree | Separate `skitter/` namespace |
-| Retry / timeout | Exponential backoff, timeouts | Not implemented |
 
 ## Testing
 
@@ -177,13 +118,20 @@ skitter/
 # Unit tests (no broker needed)
 uv run python -m pytest tests/test_unit.py -q
 
-# Integration tests (needs local broker)
-uv run python -m pytest tests/test_e2e.py -v
+# Live tests (Docker + broker + runtime credentials)
+docker compose up -d
+docker build -f Dockerfile.agent -t skitter-agent:latest .
 
-# Live tests (runs actual Claude/Codex calls)
-unset CLAUDECODE && uv run python -m pytest tests/test_live_claude.py -v -s
-uv run python -m pytest tests/test_live_codex.py -v -s
+# Claude
+export CLAUDE_CODE_OAUTH_TOKEN='your-token'
+unset CLAUDECODE
+uv run python -m pytest tests/test_live.py -v -s --runtime claude
+
+# Codex (requires ~/.codex/auth.json)
+uv run python -m pytest tests/test_live.py -v -s --runtime codex
 ```
+
+Live tests run agent-runners in Docker containers — they never touch local agent files.
 
 ## Lint and Format
 

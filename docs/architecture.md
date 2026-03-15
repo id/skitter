@@ -2,36 +2,32 @@
 
 ## Design Principles
 
-1. **Stateless supervisor.** The supervisor makes no AI calls. It listens on wildcard topics (`$a2a/v1/request/{o}/{u}/+` and `skitter/event/+/dead`), creates sessions with `SessionTask` entries for every task, publishes the session as a retained MQTT message, and spawns all workers upfront. No dispatch loop, no join accumulation, no state tracking.
+1. **Agents are independent processes.** Each agent-runner wraps a CLI tool (claude, codex) as an A2A-over-MQTT agent. Started out of band — manually, via systemd, Docker, Fly. Each owns its discovery card and liveness connection. The coordinator just sees A2A agents on the broker.
 
-2. **Agents as A2A endpoints.** Clients address agents directly via `$a2a/v1/request/{org}/{unit}/{agent_id}`. The supervisor intercepts via wildcard subscription — invisible infrastructure.
+2. **Coordinator is a pure A2A orchestrator.** It publishes A2A requests and collects A2A replies. It doesn't know how agents are implemented, doesn't spawn processes, and doesn't import agent-runner code. Running a local Claude/Codex agent is an operational concern.
 
-3. **Self-coordinating workers.** Workers read their spec from the retained session message, wait for upstream chain results if they have `needs`, run the agent, and publish results. No supervisor dispatches tasks -- workers coordinate among themselves via retained MQTT messages.
+3. **Card ownership follows service ownership.** Individual agents own their cards (agent-runner publishes, its connection = liveness). Composed apps are owned by the coordinator (it services requests, its connection = liveness).
 
-4. **Chain-based routing.** Non-terminal workers publish retained chain results to suffixed event topics. Downstream workers with `needs` subscribe to upstream chain result topics and block until all inputs arrive. Terminal workers publish results directly to the caller.
+4. **DB-backed sessions.** Sessions and task state are persisted to SQLite (local) or PostgreSQL (production). On restart, the coordinator rehydrates inflight sessions and resubscribes to reply topics.
 
-5. **Immutable session spec.** The retained session message is written once by the supervisor and never modified. Per-task status is published to separate retained topics (`skitter/status/{workflow_id}/{task}/{sid}`). The dashboard merges per-task status over the session spec.
+5. **Write-ahead dispatch.** The coordinator persists `request_id`, `reply_topic`, `dispatched_at` before sending A2A requests. On crash recovery, it rebuilds session state from task rows.
 
-6. **MQTT v5 as the backbone.** The broker is the single source of truth. Retained messages = durable state, LWT = crash detection, pub/sub = decoupled fan-out.
+6. **MQTT v5 as the backbone.** The broker handles routing, fan-out, and liveness tracking. Retained messages for discovery cards and task results. LWT for crash detection.
 
-7. **A2A-over-MQTT.** All topics follow the A2A draft v0.1 scheme with application-defined suffixes after the agent ID. Agents and workflows are discoverable via retained discovery cards, auto-generated from YAML definitions (`skitter publish`). Requests are JSON-RPC 2.0 (`tasks/send`). Replies are `TaskStatusUpdateEvent` JSON-RPC responses. MQTT v5 Response Topic + Correlation Data for reply routing.
-
-8. **QA is a workflow concern.** The supervisor has no built-in QA logic. If you want fact-checking or review, add a reviewer task node to your workflow that depends on the work task.
-
-9. **Multi-runtime workers.** Workers invoke `claude` or `codex` as CLI subprocesses, parsing JSONL stdout for streaming events. No SDK imports in the worker process.
+7. **A2A-over-MQTT.** Topics follow the A2A draft scheme. Requests are JSON-RPC 2.0 (`tasks/send`). Replies are `TaskStatusUpdateEvent`. MQTT v5 Response Topic + Correlation Data for reply routing.
 
 ## Topic Scheme
 
-Skitter uses two namespaces: `$a2a` for the standard A2A protocol (client-facing) and `skitter` for internal coordination.
+Two namespaces: `$a2a` for the A2A protocol (client-facing) and `skitter` for internal coordination.
 
 ### A2A topics (client-facing)
 
 ```
 $a2a/v1/
-  discovery/{org}/{unit}/{agent_id}          # Retained Agent/Workflow Cards
-  request/{org}/{unit}/{agent_id}            # Requests (clients address agents directly)
-  request/{org}/{unit}/{agent_id}/cancel     # Cancel signal for agent
+  discovery/{org}/{unit}/{agent_id}          # Retained Agent/App Cards
+  request/{org}/{unit}/{agent_id}            # Requests
   reply/{org}/{unit}/{agent_id}/{suffix}     # Replies (Response Topic)
+  event/{org}/{unit}/{agent_id}              # Session lifecycle events
 ```
 
 Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A_ORG` / `SKITTER_A2A_UNIT`).
@@ -40,214 +36,197 @@ Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A
 
 ```
 skitter/
-  session/{session_id}                       # Retained session spec (immutable)
-  result/{workflow_id}/{task}/{session_id}   # Retained inter-worker results
-  status/{workflow_id}/{task}/{session_id}   # Retained per-task status
-  usage/{workflow_id}/{task}/{session_id}    # Usage tracking
+  result/{app_version}/{task}/{session_id}   # Retained task results (observability)
   event/{agent}/{type}                       # alive/dead (LWT)
-  control/reload                             # Reload agents/workflows signal
 ```
 
-The `skitter` namespace has no `{org}/{unit}` segments — it is internal infrastructure, not part of the A2A addressing scheme. `workflow_id` equals `agent_id` for single-agent sessions.
+### Coordinator subscriptions
 
-The supervisor subscribes to `$a2a/v1/request/{o}/{u}/+` (wildcard for all agent requests), `skitter/event/+/dead` (worker crash detection), and `skitter/control/reload`.
+The coordinator subscribes only to topics it owns — no wildcard on requests:
 
-## Chain-Based Execution
+| Topic | Purpose |
+|-------|---------|
+| `$a2a/v1/discovery/{org}/{unit}/+` | Agent discovery (registry) |
+| `$a2a/v1/request/{org}/{unit}/skitter` | Runtime API (queries, app creation) |
+| `$a2a/v1/request/{org}/{unit}/{app_id}` | Per-app request topics (one per DB app) |
+| `$a2a/v1/reply/{org}/{unit}/skitter/#` | Replies to dispatched tasks |
 
-### Simple Chain (single agent)
+When a new app is created, the coordinator subscribes to its request topic dynamically. Clients talk to standalone agents directly — no coordinator involvement.
+
+## Execution Flows
+
+### Standalone Agent Request
 
 ```mermaid
 sequenceDiagram
-    participant C as Caller
-    participant S as Supervisor
+    participant C as Client
     participant B as MQTT Broker
-    participant W as Worker
+    participant A as Agent Runner
 
     C->>B: Request to agent's topic
-    B->>S: Wildcard match (request/+)
-    S->>S: Create session (SessionTask entries)
-    S->>B: Retain session spec (skitter/session/{sid})
-    S->>W: Spawn process
-    W->>B: Read retained session
-    W->>W: Run agent (claude/codex CLI)
-    W->>C: TaskStatusUpdateEvent (working, QoS 0)
-    W->>B: Retain result (skitter/result/{wf}/{task}/{sid})
-    W->>C: TaskStatusUpdateEvent (completed, QoS 1)
+    B->>A: Deliver (agent subscribed)
+    A->>A: Run CLI tool (claude/codex)
+    A->>C: TaskStatusUpdateEvent (working, QoS 0)
+    A->>C: TaskStatusUpdateEvent (completed, QoS 1)
 ```
 
-### Linear Workflow (A -> B)
+No coordinator. The agent-runner handles the full request lifecycle.
+
+### Composed App Request (Linear: A → B)
 
 ```mermaid
 sequenceDiagram
-    participant S as Supervisor
+    participant C as Client
+    participant Co as Coordinator
     participant B as MQTT Broker
-    participant W1 as Worker A
-    participant W2 as Worker B
+    participant A1 as Agent A
+    participant A2 as Agent B
 
-    S->>B: Retain session (skitter/session/{sid})
-    S->>W1: Spawn A
-    S->>W2: Spawn B
-    W1->>B: Read retained session
-    W2->>B: Read retained session
-    W2->>B: Subscribe to result topic for A
-    W1->>W1: Run agent
-    W1->>B: Retain result (skitter/result/{wf}/A/{sid})
-    B->>W2: Deliver result (A)
-    W2->>W2: Run agent (with A's result as context)
-    W2->>B: Retain result (skitter/result/{wf}/B/{sid})
-    W2->>Caller: TaskStatusUpdateEvent (completed)
+    C->>B: Request to app topic
+    B->>Co: Deliver (coordinator subscribed)
+    Co->>Co: Create DB session, resolve graph
+    Co->>C: Ack (submitted)
+    Co->>B: Dispatch task to Agent A
+    B->>A1: Deliver request
+    A1->>A1: Run CLI tool
+    A1->>Co: Reply with result
+    Co->>Co: Complete task A, dispatch task B (with A's result as context)
+    Co->>B: Dispatch task to Agent B
+    B->>A2: Deliver request
+    A2->>A2: Run CLI tool
+    A2->>Co: Reply with result
+    Co->>Co: Complete task B, session done
+    Co->>C: TaskStatusUpdateEvent (completed)
 ```
 
-### Fan-in Join (A + B -> Join)
+### Composed App Request (Fan-in: A + B → Join)
 
 ```mermaid
 sequenceDiagram
-    participant S as Supervisor
+    participant Co as Coordinator
     participant B as MQTT Broker
-    participant WA as Worker A
-    participant WB as Worker B
-    participant WJ as Worker Join
+    participant A1 as Agent A
+    participant A2 as Agent B
+    participant AJ as Agent Join
 
-    S->>B: Retain session (specs for A, B, Join)
-    S->>WA: Spawn A
-    S->>WB: Spawn B
-    S->>WJ: Spawn Join
-    WA->>B: Read session, run agent
-    WB->>B: Read session, run agent
-    WJ->>B: Read session, subscribe to result topics for A + B
-    WA->>B: Retain result (skitter/result/{wf}/A/{sid})
-    WB->>B: Retain result (skitter/result/{wf}/B/{sid})
-    B->>WJ: Deliver A + B results
-    WJ->>WJ: Run agent (context = A + B results)
-    WJ->>B: Retain result (skitter/result/{wf}/Join/{sid})
-    WJ->>Caller: TaskStatusUpdateEvent (completed)
+    Co->>B: Dispatch A and B (parallel — no dependencies)
+    B->>A1: Deliver request
+    B->>A2: Deliver request
+    A1->>Co: Reply with result
+    A2->>Co: Reply with result
+    Co->>Co: Both done, dispatch Join (context = A + B results)
+    Co->>B: Dispatch Join
+    B->>AJ: Deliver request
+    AJ->>Co: Reply with result
+    Co->>Caller: TaskStatusUpdateEvent (completed)
 ```
 
-All workers are spawned immediately. Entry tasks (no `needs`) start work right away. Join tasks block on `wait_for_needs()`, subscribing to upstream result topics until all inputs arrive via MQTT retained messages.
+Tasks with no `needs` are dispatched immediately (parallel fan-out). Tasks with `needs` wait until all upstream results arrive. The coordinator manages the dependency resolution loop.
 
-### Direct-to-Caller Streaming
+### App Creation
 
-Workers stream `TaskStatusUpdateEvent` (state `working`) directly to the caller's Response Topic (QoS 0), bypassing the supervisor entirely.
+```mermaid
+sequenceDiagram
+    participant C as Client (NexHub)
+    participant Co as Coordinator
+    participant LLM as LLM API
 
-## Supervisor
-
-The supervisor (`skitter/supervisor.py`) is a long-lived MQTT subscriber that:
-
-1. Subscribes to `$a2a/v1/request/{org}/{unit}/+` (wildcard for all agent requests)
-2. Subscribes to `skitter/event/+/dead` (worker crash detection)
-3. Subscribes to `skitter/control/reload`
-4. On inbound request: extracts `agent_id` from the topic, generates a server-side `session_id` (A2A Task.id), creates a `Session` with `SessionTask` entries (each carrying its `runtime` and other orchestration metadata)
-5. Publishes the session as a retained message on `skitter/session/{session_id}`
-6. Sends initial "submitted" ack to the caller with the server-generated session_id as A2A Task.id (via MQTT Response Topic + Correlation Data)
-7. Spawns all workers (subprocess, Docker, or Fly Machines) -- every task gets a worker immediately
-8. Listens for dead events and respawns crashed workers (local/docker only — skipped on Fly)
-
-The supervisor holds no in-memory state about running sessions. It is restartable at any time.
-
-## Worker Self-Coordination
-
-Each worker (`skitter/worker.py`) runs as an independent process:
-
-1. Connect to MQTT with LWT on `skitter/event/{agent}/dead`
-2. Read the retained session spec from `skitter/session/{session_id}`
-3. Find own task by task name (`(session_id, task_name)` is the composite key)
-4. If task has `needs`: subscribe to upstream `skitter/result/{workflow_id}/{upstream_task}/{sid}` topics, block until all arrive
-5. Build prompt from task spec + upstream context
-6. Run agent as CLI subprocess (`claude` or `codex`), parse JSONL stdout
-7. Publish result:
-   - All tasks: retain result on `skitter/result/{workflow_id}/{task}/{sid}` (durable state for dashboard and downstream workers)
-   - Terminal tasks also: publish `TaskStatusUpdateEvent` (completed) to caller's Response Topic
-8. Publish usage stats, disconnect
-
-## Workflow Templates
-
-```yaml
-# ~/.skitter/workflows/deep-research.yaml
-name: Deep Research
-description: Multi-source research with fact-checking
-variables:
-  - topic
-tasks:
-  - id: research_web
-    agent: researcher
-    description: "Research '{topic}' using web sources."
-    next: fact_check
-    needs: []
-  - id: research_academic
-    agent: researcher
-    description: "Research '{topic}' focusing on academic papers."
-    next: fact_check
-    needs: []
-  - id: fact_check
-    agent: reviewer
-    description: "Cross-reference findings about '{topic}'."
-    next: synthesize
-    needs: [research_web, research_academic]
-  - id: synthesize
-    agent: writer
-    description: "Combine all findings about '{topic}'."
-    next: output
-    needs: [fact_check]
+    C->>Co: create app {name, instructions, agents}
+    Co->>Co: Look up agent cards from registry
+    Co->>LLM: Generate graph (cards + instructions)
+    LLM->>Co: {tasks: [{id, agent, needs, next, description}]}
+    Co->>Co: Validate (cycles, refs, next/needs consistency)
+    Co->>Co: Persist app + version in DB
+    Co->>Co: Subscribe to new app's request topic
+    Co->>Co: Publish discovery card
+    Co->>C: {app_id, version, card}
 ```
 
-`next` is auto-inferred from the reverse dependency graph if absent.
+## Coordinator
 
-## Agent Definitions
+The coordinator (`skitter/coordinator.py`) is a long-lived process that:
 
-```yaml
-# ~/.skitter/agents/researcher.yaml
-name: Research Specialist
-description: Deep research with source citation
-runtime: claude    # "claude" or "codex"
-workspace: ""      # custom cwd (default: ~/.skitter/workspaces/{task})
-```
+1. Publishes its own discovery card (`skitter`) for runtime API access
+2. Subscribes to discovery (agent registry), runtime API requests, and per-app request topics
+3. On startup: recovers app subscriptions + card publishers, rehydrates inflight sessions from DB
+4. On app request: creates a DB session with task graph, dispatches ready tasks, resolves dependencies as replies arrive
+5. On reply: completes/fails tasks, propagates failures, dispatches newly ready tasks, finalizes sessions
+6. On runtime query: handles `list apps`, `get session`, `cancel session`, `create app`, etc.
 
-Agent identity (personality, model, tools, memory) is owned by native CLI sub-agent systems (`~/.claude/agents/*.md` for Claude, `~/.codex/agents/*.toml` for Codex), not skitter. The YAML stub contains only orchestration metadata.
+### Session State
 
-## CLI Runtimes
+In-memory `SessionState` tracks pending/inflight/completed/failed tasks. DB is the source of truth — on crash, sessions are rebuilt from task rows.
 
-Workers invoke AI agents as CLI subprocesses:
+### Failure Handling
 
-**Claude** (`runtime: claude`):
-- Spawns `claude -p "{description}" --output-format stream-json --verbose --max-turns {n} --dangerously-skip-permissions`
-- Appends upstream context via `--append-system-prompt`
-- Parses JSONL: `assistant` events for text/tool_use, `result` events for usage/cost
+- Task failure propagates to all transitively dependent tasks
+- If any inflight task remains after a failure, the session waits; otherwise it fails immediately
+- Recovered inflight tasks get a 120s timeout — if no reply arrives, the task is failed
 
-**Codex** (`runtime: codex`):
-- Spawns `codex exec --json --full-auto --skip-git-repo-check "{prompt}"` with optional `--model`
-- Auth via `OPENAI_API_KEY` env var
-- Parses JSONL: `item.completed` for agent messages, `turn.completed` for usage
+## Agent Runner
 
-## Discovery Cards
+The agent-runner (`skitter/agent_runner.py`) is a standalone process:
 
-Discovery cards are auto-generated from agent/workflow YAML definitions and published as retained messages on `$a2a/v1/discovery/{org}/{unit}/{id}`. The dashboard and other clients use these to show available agents and workflows.
+1. Reads agent definition from `~/.skitter/agents/{id}.yaml`
+2. Connects to MQTT, publishes discovery card (retained)
+3. Subscribes to its request topic
+4. On request: runs the CLI tool as a subprocess, streams events back to caller
+5. Handles cancellation via `/cancel` topic
 
-- `skitter publish` — build cards from `~/.skitter/agents/*.yaml` and `~/.skitter/workflows/*.yaml`, publish to broker
-- The supervisor also publishes cards on startup and on reload (`skitter/control/reload`)
-- Standalone agents get individual cards; workflow-only agents are excluded (shown as part of their workflow card)
+The agent-runner reads native agent definitions directly — Claude `.md` files (YAML frontmatter) or Codex `.toml` files. No separate skitter config needed. Runtime is inferred from the file extension.
 
-## Configuration Manager
+## Runtime API
 
-The default `skitter` agent can create/modify agent and workflow YAML definitions at runtime:
-- Works in `~/.skitter/` directory
-- After writing files, runs `python -m skitter.reload` to notify the supervisor
-- Supervisor re-reads all YAML files and re-publishes discovery cards
+The `skitter` agent handles structured queries:
+
+| Command | Description |
+|---------|-------------|
+| `list apps` | All apps with current version info |
+| `get app {id}` | App details + version history |
+| `list sessions [app_id]` | Sessions, optionally filtered by app |
+| `get session {id}` | Session with all task states |
+| `cancel session {id}` | Cancel a running session |
+| `create app {json}` | Create composed app from agent IDs + instructions |
+
+Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` for external consumers (e.g., NexHub dashboard).
+
+## Database
+
+`DB` protocol in `skitter/db.py` with two backends:
+
+- **SQLite** — default, zero config, WAL mode. Good for local/single-instance.
+- **PostgreSQL** — for concurrent coordinators or high query volume.
+
+Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
+
+## Graph Generation
+
+`skitter/graph_gen.py` generates orchestration graphs from natural language:
+
+1. Build prompt from agent capabilities (discovery cards) + user instructions
+2. Call LLM via `skitter/llm.py` (litellm wrapper, lazy import)
+3. Validate: agent refs, task ID uniqueness, next refs, cycles (DFS on `needs` edges), next/needs consistency, terminal tasks
+4. Retry once on validation failure (include error in prompt)
 
 ## Recovery
 
-**Supervisor crash:** The supervisor is stateless. On restart it re-publishes discovery cards and resumes listening. It does not need to recover sessions -- all session state lives in retained MQTT messages, and workers are self-coordinating.
+**Coordinator crash:** On restart, recovers from DB — resubscribes to app request topics, republishes discovery cards, rehydrates inflight sessions, dispatches ready tasks.
 
-**Worker crash (local/docker):** LWT fires on `skitter/event/{agent}/dead`. The supervisor receives the dead event and respawns the worker. The new worker reads the same retained session spec, waits for any upstream results (which may already be retained on the broker), and re-runs the task from scratch.
+**Agent crash:** The broker clears the agent's discovery card (LWT). Inflight tasks dispatched to the agent will time out and fail. The coordinator propagates the failure to dependent tasks.
 
-**Worker crash (Fly):** Fly handles restarts via its own restart policy (`on-failure`, `max_retries=1`). The supervisor ignores dead events when `SPAWN_MODE=fly` to avoid conflicting with Fly's restart mechanism.
+**Broker restart:** Discovery cards and retained results are lost. Agents republish cards on reconnect. DB-backed session state survives broker restarts.
 
-**Broker restart:** Sessions and chain results are lost (retained messages are in-memory by default). Planned: persist sessions to `~/.skitter/` for durability beyond broker restarts.
+## Configuration
 
-## Worker Execution Modes
+```yaml
+# ~/.skitter/config.yaml
+db:
+  backend: sqlite              # or "postgres"
+  sqlite_path: ~/.skitter/skitter.db
+  postgres_dsn: postgresql://...
 
-Workers can run as local subprocesses (default) or Docker containers (`SKITTER_SPAWN_MODE=docker`). Docker mode passes both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` as env vars and connects to the `skitter` Docker network.
+llm:
+  model: claude-haiku-4-5-20251001  # for graph generation
+```
 
-## Cancel via A2A
-
-Cancel signals are published as JSON-RPC to `$a2a/v1/request/{org}/{unit}/{agent_id}/cancel` with `session_id` in the params to scope cancellation to a specific session. Workers run a separate cancel listener that matches on `session_id` (and optionally `task` name) before terminating the agent subprocess.
-
+Environment variables: `MQTT_HOST`, `MQTT_PORT`, `MQTT_TLS`, `MQTT_USER`, `MQTT_PASS`, `SKITTER_A2A_ORG`, `SKITTER_A2A_UNIT`, `SKITTER_LLM_MODEL`.

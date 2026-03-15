@@ -1,19 +1,19 @@
-"""Pull agent cards from broker and generate local stubs.
+"""Pull agent cards from broker and generate local agent files.
 
-    skitter pull
+    skitter pull [target_dir]
 
-Connects to the broker, reads all retained discovery cards, and writes:
-- ~/.skitter/agents/{id}.yaml  (agent definition stub)
-- ~/.claude/agents/{id}.md     (claude agent prompt stub)
+Connects to the broker, reads all retained discovery cards, and writes
+Claude agent .md files. Default target: current directory.
 """
 
 import asyncio
 import logging
+import sys
+from pathlib import Path
 
 import aiomqtt
 import yaml
 
-from skitter.config import AGENTS_DIR, CLAUDE_AGENTS_DIR
 from skitter.discovery import is_workflow_card, parse_card
 from skitter.mqtt import mqtt_client_kwargs, topic_discovery_wildcard
 
@@ -35,7 +35,6 @@ async def pull_cards(timeout: float = 5.0) -> list[dict]:
                         continue
                     try:
                         card = parse_card(payload)
-                        # Extract agent_id from topic
                         parts = str(msg.topic).split("/")
                         card["_agent_id"] = parts[-1] if parts else ""
                         cards.append(card)
@@ -47,76 +46,63 @@ async def pull_cards(timeout: float = 5.0) -> list[dict]:
     return cards
 
 
-def _write_agent_stub(agent_id: str, card: dict) -> list[str]:
-    """Write stub files for an agent. Returns list of files written."""
+def _write_agent_file(target_dir: Path, agent_id: str, card: dict) -> str | None:
+    """Write a Claude agent .md file if it doesn't exist. Returns path or None."""
+    md_path = target_dir / f"{agent_id}.md"
+    if md_path.exists():
+        return None
+    name = card.get("name", agent_id)
+    description = card.get("description", "")
+    frontmatter = yaml.dump(
+        {"name": agent_id, "description": description},
+        default_flow_style=False,
+        sort_keys=False,
+    ).rstrip()
+    md_path.write_text(f"---\n{frontmatter}\n---\n\nYou are {name}.\n")
+    return str(md_path)
+
+
+def generate_stubs(cards: list[dict], target_dir: Path) -> list[str]:
+    """Generate Claude agent .md files from discovered cards."""
+    target_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
-
-    # Agent definition YAML (use yaml.dump to safely escape values)
-    yaml_path = AGENTS_DIR / f"{agent_id}.yaml"
-    if not yaml_path.exists():
-        stub: dict = {
-            "name": card.get("name", agent_id),
-            "description": card.get("description", ""),
-            "agent_id": agent_id,
-            "runtime": "claude",
-        }
-        capabilities = card.get("capabilities", {})
-        if capabilities.get("streaming") is not None:
-            stub["capabilities"] = {"streaming": capabilities["streaming"]}
-        yaml_path.write_text(yaml.dump(stub, default_flow_style=False, sort_keys=False))
-        written.append(str(yaml_path))
-
-    # Claude agent prompt stub (use yaml.dump for frontmatter)
-    md_path = CLAUDE_AGENTS_DIR / f"{agent_id}.md"
-    if not md_path.exists():
-        name = card.get("name", agent_id)
-        description = card.get("description", "")
-        frontmatter = yaml.dump(
-            {"name": name, "description": description},
-            default_flow_style=False,
-            sort_keys=False,
-        ).rstrip()
-        md_path.write_text(f"---\n{frontmatter}\n---\n\nYou are {name}.\n")
-        written.append(str(md_path))
-
-    return written
-
-
-def generate_stubs(cards: list[dict]) -> list[str]:
-    """Generate local stub files from discovered cards."""
-    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    CLAUDE_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    all_written: list[str] = []
     for card in cards:
         agent_id = card.get("_agent_id", "")
         if not agent_id or agent_id in ("coordinator", "skitter"):
             continue
         if is_workflow_card(card):
             continue
-        all_written.extend(_write_agent_stub(agent_id, card))
-    return all_written
+        path = _write_agent_file(target_dir, agent_id, card)
+        if path:
+            written.append(path)
+    return written
 
 
-async def run() -> None:
+async def run(target_dir: Path) -> None:
     print("Pulling discovery cards from broker...")
     cards = await pull_cards()
     print(f"Found {len(cards)} cards")
 
-    written = generate_stubs(cards)
+    written = generate_stubs(cards, target_dir)
     if written:
-        print(f"Created {len(written)} stub files:")
+        print(f"Created {len(written)} agent files:")
         for f in written:
             print(f"  {f}")
     else:
-        print("All stub files already exist. Nothing to do.")
+        print("All agent files already exist. Nothing to do.")
 
 
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
     )
+    target = (
+        Path(sys.argv[-1])
+        if len(sys.argv) > 1 and sys.argv[-1] != "pull"
+        else Path.cwd()
+    )
     try:
-        asyncio.run(run())
+        asyncio.run(run(target))
     except KeyboardInterrupt:
         pass
 

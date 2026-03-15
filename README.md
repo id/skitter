@@ -1,123 +1,71 @@
 # Skitter
 
-Personal AI assistant built on MQTT. Define agents and workflows in YAML, run them locally or on Fly.io. Workers self-coordinate via retained MQTT messages, the supervisor just creates sessions and spawns workers. Supports both Claude Code and Codex CLI as runtimes.
+MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker. A coordinator handles composed multi-agent apps — creating orchestration graphs from natural language via LLM, dispatching A2A requests, and resolving dependencies.
 
-Small Python codebase (~2,700 lines).
+~3,500 lines of Python. Supports Claude Code and Codex CLI as agent runtimes.
 
 ## Quickstart (Local)
 
-You need Docker, Python 3.10+, [uv](https://docs.astral.sh/uv/), and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) logged in.
+You need Docker, Python 3.10+, [uv](https://docs.astral.sh/uv/), and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) logged in.
 
 ```bash
 # Start MQTT broker
 docker compose up -d
 
-# Install and run
+# Install
 uv sync
+
+# Start coordinator (terminal 1)
 uv run python -m skitter
 
-# Initialize predefined agents and workflows (in another terminal)
-uv run python -m skitter init
+# Start an agent (terminal 2) — see "Agents" section for setup
+uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
+
+# Send a request (terminal 3)
+uv run python -m skitter run "What are the key features of MQTT v5?"
 ```
 
-That's it. The supervisor is listening. Try it:
-
-```bash
-# Publish discovery cards (agents + workflows visible in dashboard)
-uv run python -m skitter publish
-
-# Run an agent
-uv run python -m skitter agents run researcher "What are the key features of MQTT v5?"
-
-# Run a multi-agent workflow
-uv run python -m skitter workflow run deep-research --var topic="MQTT v5"
-
-# Interactive chat
-uv run python -m skitter chat
-```
-
-Open `dashboard.html` in a browser to watch jobs execute in real time (connects directly to the broker via WebSocket, no backend needed).
-
-## Deploy to Fly.io
-
-Always-on supervisor (~$2/mo) with ephemeral worker machines. Workers auto-destroy after completing their task.
-
-```bash
-# Create Fly app (one-time)
-fly apps create skitter
-
-# Configure credentials
-cp .env.cloud.example .env.cloud
-# Fill in EMQX Serverless + Fly + Anthropic credentials
-
-# Deploy
-set -a && source .env.cloud && set +a
-uv run python -m skitter deploy --target fly
-```
-
-See [docs/fly-deployment.md](docs/fly-deployment.md) for the full setup guide.
+Open `dashboard.html` in a browser to watch jobs execute in real time (connects directly to the broker via WebSocket).
 
 ## How It Works
 
 ```
-Any MQTT v5 Client          MQTT Broker              Workers
+Any MQTT v5 Client          MQTT Broker           Agent Runners
 (CLI, dashboard,          (local or EMQX)      (claude / codex CLI)
  Telegram bot, etc.)
                       ┌────────────────────┐
- JSON request         │                    │
-────────────────────> │  request topic     │
- (v5 Response Topic   │       |            │
-  + Correlation Data) │       v            │
-                      │  ┌───────────┐     │    ┌───────────┐
-                      │  │Supervisor │     │    │ Worker A  │──┐
-                      │  │ (no LLM)  │─────────>│ (sonnet)  │  │
-                      │  └───────────┘     │    └───────────┘  │
-                      │  Publishes session │    ┌───────────┐  │  ┌──────────┐
-                      │  + spawns workers  │    │ Worker B  │  │  │  Google  │
-                      │                    │    │ (haiku)   │──┤<>│  Drive   │
-                      │                    │    └───────────┘  │  └──────────┘
-                      │                    │                   │   (via rclone
- result               │                    │                   │    or local
-<──────────────────────────────────────────────────────────────┘    mount)
- (direct to caller)   │                    │
+                      │                    │
+ Standalone agent     │                    │    ┌───────────┐
+─────────────────────>│  request topic  ───────>│ Agent A   │
+ (direct to agent)    │                    │    │ (sonnet)  │──> result
+                      │                    │    └───────────┘
+                      │                    │
+ Composed app         │  ┌─────────────┐   │    ┌───────────┐
+─────────────────────>│  │ Coordinator │───────>│ Agent A   │
+ (via coordinator)    │  │ (DAG, DB)   │   │    └───────────┘
+                      │  └─────────────┘   │    ┌───────────┐
+                      │   Resolves deps,   │    │ Agent B   │
+ result               │   dispatches A2A ──────>│ (haiku)   │
+<─────────────────────│                    │    └───────────┘
+                      │                    │
                       └────────────────────┘
 ```
 
-1. Any MQTT v5 client publishes a request to an agent's topic
-2. Supervisor intercepts via wildcard subscription, creates a session, spawns workers
-3. Workers read the session from retained MQTT and self-coordinate
-4. Workers with dependencies wait for upstream results before starting
-5. Workers with persistent workspaces sync files from Google Drive (or any rclone remote) before running, and sync back after
-6. Results stream directly back to the caller -- supervisor is not in the data path
+**Standalone agents** handle requests directly — no coordinator involved. Clients publish to the agent's request topic, the agent-runner processes it and replies.
 
-The broker handles routing, fan-out, and state (retained messages). The supervisor is stateless. Workers are ephemeral.
+**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests to individual agents following the dependency graph, and sends the final result back to the caller.
 
-## What You Can Build
+**Creating composed apps** — send a `create app` request to the coordinator's `skitter` topic with agent IDs and natural language instructions. The coordinator looks up agent capabilities from their discovery cards, calls an LLM to generate an orchestration graph (validated for cycles, missing refs, and next/needs consistency), persists the app, and publishes its discovery card.
 
-Skitter turns multi-agent workflows into something you can describe in a few lines of YAML and trigger from anywhere (CLI, dashboard, Telegram, cron). Some examples:
+## Agents
 
-- **Deep research pipelines.** Fan out to multiple researcher agents in parallel (web, academic, industry sources), join results through a fact-checker, and synthesize into a final report.
-- **Recurring market intelligence.** A scheduled workflow that discovers prospects, finds contacts, verifies data, and compiles a sales-ready report. Persistent workspaces on Google Drive let each run build on previous results -- excluding known accounts and avoiding duplicate leads.
-- **Code review and refactoring.** Chain a code analysis agent with a reviewer and a writer to produce structured reviews or migration plans across large codebases.
-- **Content pipelines.** Research a topic, draft content, review for accuracy and tone, then produce final copy -- each step handled by a specialized agent with the right tools.
-- **Data processing with memory.** Workflows that accumulate results across runs: competitive monitoring, weekly summaries, customer feedback analysis. Google Drive workspaces persist files between executions so agents can reference historical data.
-- **Multi-channel access.** The same workflows are accessible from the CLI, the browser dashboard, a Telegram bot, or any MQTT client. A ~100-line bridge script connects any new channel.
-
-## Agents and Workflows
-
-Agents are defined in two places: a slim orchestration stub for skitter, and a native sub-agent definition for the CLI runtime.
-
-```yaml
-# ~/.skitter/agents/researcher.yaml
-name: Research Specialist
-description: Deep research with source citation
-runtime: claude
-```
+Agents use native CLI definitions directly — no extra config layer:
 
 ```markdown
 # ~/.claude/agents/researcher.md
 ---
 name: researcher
+description: Deep research with source citation
 model: sonnet
 memory: user
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
@@ -125,68 +73,83 @@ tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 You are a research specialist. Be thorough, cite sources.
 ```
 
-Workflows chain multiple agents with fan-out, join, and dependency routing:
+Start an agent-runner by pointing it at the agent file:
 
-```yaml
-# ~/.skitter/workflows/deep-research.yaml
-tasks:
-  - id: research_web
-    agent: researcher
-    description: "Research '{topic}' using web sources."
-    next: fact_check
-  - id: research_academic
-    agent: researcher
-    description: "Research '{topic}' focusing on academic papers."
-    next: fact_check
-  - id: fact_check
-    agent: reviewer
-    needs: [research_web, research_academic]
-    next: synthesize
-  - id: synthesize
-    agent: writer
-    needs: [fact_check]
-    next: output
+```bash
+uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
+uv run python -m skitter agent-runner ~/.codex/agents/coder.toml
 ```
 
-### Persistent Workspaces
+Each agent-runner publishes a discovery card, handles A2A requests independently, and maintains its own MQTT connection for liveness tracking.
 
-Workflows can declare a persistent workspace backed by Google Drive (or any rclone remote). Workers sync files down before running and sync back after. Each task gets its own subdirectory but can read shared files and sibling task outputs.
+## Composed Apps
 
-```yaml
-# ~/.skitter/workflows/weekly-report.yaml
-workspace: weekly-report   # synced to Google Drive
-tasks:
-  - id: gather
-    agent: researcher
-    description: "Read previous reports from the workspace, then research new developments."
-    next: compile
-  - id: compile
-    agent: writer
-    needs: [gather]
-    next: output
+Create a multi-agent app by sending agent IDs and instructions to the coordinator:
+
+```bash
+uv run python -m skitter run 'create app {
+  "name": "Deep Research",
+  "instructions": "Research the topic using web sources, then fact-check the findings",
+  "agents": ["researcher", "reviewer"]
+}'
 ```
 
-Locally, the Google Drive desktop app provides direct filesystem access with no sync overhead. On Fly.io, rclone handles the transfer automatically.
+The coordinator generates and validates an orchestration graph via LLM, persists the app with versioning, and starts accepting requests on the new app's topic.
+
+## Deploy to Fly.io
+
+Always-on coordinator (~$2/mo) with EMQX Serverless as the broker.
+
+```bash
+fly apps create skitter
+
+cp .env.cloud.example .env.cloud
+# Fill in EMQX Serverless + Fly + API credentials
+
+set -a && source .env.cloud && set +a
+uv run python -m skitter deploy --target fly
+```
+
+See [docs/fly-deployment.md](docs/fly-deployment.md) for the full setup guide.
 
 ## Why MQTT?
 
-Instead of a monolithic orchestrator that handles routing, retries, fan-out, and load balancing on top of AI reasoning, skitter pushes all that infrastructure into the MQTT broker.
+Instead of a monolithic orchestrator, skitter pushes routing and fan-out into the MQTT broker.
 
-- **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge script that publishes requests and subscribes to replies. The supervisor is invisible.
-- **Run workers anywhere.** Local processes, Docker containers, or Fly Machines. As long as they can reach the broker, they work.
-- **Crash recovery.** Retained messages = durable state. Workers set LWT for crash detection. The supervisor respawns dead workers; the new worker picks up from the retained session.
-- **Free monitoring.** Subscribe to `$a2a/v1/#` and `skitter/#` with any MQTT client and watch every request, result, and internal coordination message in real time.
-- **Cheap cloud deploy.** Always-on supervisor (~$2/mo) on Fly.io with ephemeral worker machines billed per-second.
+- **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge script that publishes requests and subscribes to replies.
+- **Run agents anywhere.** Local processes, Docker containers, or cloud machines. As long as they can reach the broker, they work.
+- **Free monitoring.** Subscribe to `$a2a/v1/#` and `skitter/#` with any MQTT client and watch every request, result, and event in real time.
+- **Cheap cloud deploy.** Always-on coordinator (~$2/mo) on Fly.io, agents billed per-second.
 
 Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
 
+## Testing
+
+```bash
+# Unit tests (no broker needed)
+uv run python -m pytest tests/test_unit.py -q
+
+# Live tests (requires Docker + MQTT broker + runtime credentials)
+docker compose up -d                          # start EMQX broker
+docker build -f Dockerfile.agent -t skitter-agent:latest .  # build agent image
+
+# Claude (requires OAuth token)
+export CLAUDE_CODE_OAUTH_TOKEN='your-token'
+unset CLAUDECODE
+uv run python -m pytest tests/test_live.py -v -s --runtime claude
+
+# Codex (requires ~/.codex/auth.json)
+uv run python -m pytest tests/test_live.py -v -s --runtime codex
+```
+
+Live tests run agent-runners in Docker containers for full isolation — they never touch your local agent files. The coordinator runs as a local subprocess.
+
 ## Limitations
 
-- Agents run with `dangerouslySkipPermissions` -- only run in trusted environments
-- Worker errors are passed as normal results to downstream tasks
-- Sessions live in retained MQTT messages only (not persisted to disk)
+- Agent runners use `dangerouslySkipPermissions` — only run in trusted environments
+- Agent errors are passed as normal results to downstream tasks
 - No built-in authentication (rely on MQTT broker auth)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for project structure, configuration details, environment variables, testing, and the full topic scheme reference.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for project structure, configuration, environment variables, testing, and the full topic scheme reference.

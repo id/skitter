@@ -1,18 +1,19 @@
-"""Live e2e tests — agent-runner + coordinator + composed apps.
+"""Live e2e tests — agent-runner (Docker) + coordinator + composed apps.
 
-Tests the full A2A flow: agent-runner publishes discovery card, coordinator
-discovers it, client sends requests, coordinator orchestrates responses.
+Agent runners run in Docker containers for full isolation. The coordinator
+runs as a local subprocess.
 
 Requires:
-  - MQTT broker (localhost:1883 or configured via MQTT_HOST/MQTT_PORT)
-  - CLI for the selected runtime (`claude` or `codex`) on PATH
+  - Docker with the skitter network (docker compose up -d)
+  - MQTT broker on the skitter network
+  - Claude: CLAUDE_CODE_OAUTH_TOKEN env var
+  - Codex: ~/.codex/auth.json
 
 Usage:
+  unset CLAUDECODE
   uv run pytest tests/test_live.py -v -s                    # auto-detect runtime
   uv run pytest tests/test_live.py -v -s --runtime claude   # claude only
   uv run pytest tests/test_live.py -v -s --runtime codex    # codex only
-
-Note: claude tests require CLAUDECODE to be unset (can't run claude inside Claude Code).
 """
 
 from __future__ import annotations
@@ -29,14 +30,16 @@ from skitter.types import A2ARequest
 
 from .conftest import (
     clean_retained,
+    docker_available,
     needs_mqtt,
     runtime_available,
     send_and_collect,
     start_agent_runner,
     start_coordinator,
+    stop_container,
     stop_process,
     wait_for_discovery,
-    write_agent_yaml,
+    write_agent_file,
 )
 
 MODELS = {
@@ -47,17 +50,21 @@ MODELS = {
 # Set LLM model for graph generation (coordinator subprocess inherits env)
 os.environ.setdefault("SKITTER_LLM_MODEL", "claude-haiku-4-5-20251001")
 
+needs_docker = pytest.mark.skipif(not docker_available(), reason="Docker not available")
+
 
 def _pick_runtime(config) -> str:
     selected = config.getoption("--runtime", default=None)
     if selected:
         if not runtime_available(selected):
-            pytest.skip(f"{selected} CLI not available")
+            pytest.skip(f"{selected} credentials not available")
         return selected
     for rt in ("claude", "codex"):
         if runtime_available(rt):
             return rt
-    pytest.skip("No runtime available (need claude or codex CLI)")
+    pytest.skip(
+        "No runtime credentials (need CLAUDE_CODE_OAUTH_TOKEN or ~/.codex/auth.json)"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -74,34 +81,35 @@ def coordinator():
 
 @pytest.fixture(scope="module")
 def agent(runtime, coordinator):
-    """Start an agent-runner for the selected runtime, wait for discovery."""
+    """Start an agent-runner in Docker, wait for discovery."""
     agent_id = f"test-{runtime}"
     model = MODELS.get(runtime, "")
-    yaml_path = write_agent_yaml(agent_id, runtime, model)
-    proc = start_agent_runner(agent_id)
+    agent_path = write_agent_file(agent_id, runtime, model)
+    container_id = start_agent_runner(agent_path, runtime)
     yield agent_id
-    stop_process(proc)
-    yaml_path.unlink(missing_ok=True)
+    stop_container(container_id)
+    agent_path.unlink(missing_ok=True)
 
 
 @pytest.fixture(scope="module")
 def two_agents(runtime, coordinator):
-    """Start two agent-runners for composed app testing."""
+    """Start two agent-runners in Docker for composed app testing."""
     agent_a = f"test-{runtime}-a"
     agent_b = f"test-{runtime}-b"
     model = MODELS.get(runtime, "")
-    yaml_a = write_agent_yaml(agent_a, runtime, model)
-    yaml_b = write_agent_yaml(agent_b, runtime, model)
-    proc_a = start_agent_runner(agent_a)
-    proc_b = start_agent_runner(agent_b)
+    path_a = write_agent_file(agent_a, runtime, model)
+    path_b = write_agent_file(agent_b, runtime, model)
+    cid_a = start_agent_runner(path_a, runtime)
+    cid_b = start_agent_runner(path_b, runtime)
     yield agent_a, agent_b
-    stop_process(proc_a)
-    stop_process(proc_b)
-    yaml_a.unlink(missing_ok=True)
-    yaml_b.unlink(missing_ok=True)
+    stop_container(cid_a)
+    stop_container(cid_b)
+    path_a.unlink(missing_ok=True)
+    path_b.unlink(missing_ok=True)
 
 
 @needs_mqtt
+@needs_docker
 class TestLive:
     @pytest.mark.asyncio
     async def test_agent_discovery(self, agent):
@@ -126,6 +134,7 @@ class TestLive:
 
 
 @needs_mqtt
+@needs_docker
 class TestComposedApp:
     @pytest.mark.asyncio
     async def test_create_and_run_composed_app(self, two_agents):

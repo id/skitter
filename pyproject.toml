@@ -2,7 +2,7 @@
 name = "skitter"
 version = "0.1.0"
 description = "MQTT-based Personal AI Assistant"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "aiomqtt>=2.5.0",
     "litellm>=1.60",

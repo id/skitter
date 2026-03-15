@@ -488,48 +488,47 @@ class TestAgentRunnerCli:
 
 
 class TestLoadAgent:
-    def test_load_agent_with_all_fields(self, tmp_path):
-        (tmp_path / "test-agent.yaml").write_text(
-            "name: Test Agent\n"
-            "description: A test agent\n"
-            "agent_id: custom-id\n"
-            "runtime: claude\n"
+    def test_load_claude_agent(self, tmp_path):
+        (tmp_path / "researcher.md").write_text(
+            "---\n"
+            "name: researcher\n"
+            "description: Deep research\n"
             "model: sonnet\n"
-            "agent_file: test.md\n"
-            "broker:\n"
-            "  host: broker.example.com\n"
-            "  port: 8883\n"
-            "capabilities:\n"
-            "  streaming: true\n"
-            "input_modes: ['text/plain', 'application/json']\n"
-            "output_modes: ['text/plain']\n"
+            "---\n"
+            "You are a researcher.\n"
         )
         from skitter.agent_runner import load_agent
 
-        agent = load_agent(str(tmp_path / "test-agent.yaml"))
-        assert agent.id == "custom-id"
-        assert agent.name == "Test Agent"
+        agent = load_agent(str(tmp_path / "researcher.md"))
+        assert agent.id == "researcher"
+        assert agent.name == "researcher"
+        assert agent.description == "Deep research"
         assert agent.model == "sonnet"
-        assert agent.agent_file == "test.md"
-        assert agent.broker is not None
-        assert agent.broker.host == "broker.example.com"
-        assert agent.broker.port == 8883
-        assert agent.capabilities == {"streaming": True}
-        assert agent.input_modes == ["text/plain", "application/json"]
+        assert agent.runtime == "claude"
+        assert agent.agent_file == "researcher"
 
-    def test_load_agent_defaults(self, tmp_path):
-        (tmp_path / "simple.yaml").write_text(
-            "name: Simple\ndescription: A simple agent\n"
+    def test_load_claude_agent_minimal(self, tmp_path):
+        (tmp_path / "simple.md").write_text("---\nname: simple\n---\nBe brief.\n")
+        from skitter.agent_runner import load_agent
+
+        agent = load_agent(str(tmp_path / "simple.md"))
+        assert agent.id == "simple"
+        assert agent.description == ""
+        assert agent.model == ""
+        assert agent.runtime == "claude"
+
+    def test_load_codex_agent(self, tmp_path):
+        (tmp_path / "coder.toml").write_text(
+            'model = "gpt-5.1-codex-mini"\n'
+            'developer_instructions = "You are a senior developer."\n'
         )
         from skitter.agent_runner import load_agent
 
-        agent = load_agent(str(tmp_path / "simple.yaml"))
-        assert agent.id == "simple"
-        assert agent.model == ""
-        assert agent.agent_file == ""
-        assert agent.broker is None
-        assert agent.runtime == "claude"
-        assert agent.input_modes == ["text/plain"]
+        agent = load_agent(str(tmp_path / "coder.toml"))
+        assert agent.id == "coder"
+        assert agent.runtime == "codex"
+        assert agent.model == "gpt-5.1-codex-mini"
+        assert "senior developer" in agent.description
 
 
 # --- Safe format ---

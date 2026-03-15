@@ -10,8 +10,6 @@ import yaml
 log = logging.getLogger("skitter.config")
 
 SKITTER_DIR = Path.home() / ".skitter"
-AGENTS_DIR = SKITTER_DIR / "agents"
-CLAUDE_AGENTS_DIR = Path.home() / ".claude" / "agents"
 
 
 @dataclass

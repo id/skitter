@@ -1,7 +1,7 @@
 """Shared fixtures and helpers for live e2e tests.
 
-Provides: process management (coordinator, agent-runner), MQTT helpers
-(send_and_collect, wait_for_discovery), and agent config scaffolding.
+Provides: process management (coordinator, agent-runner in Docker),
+MQTT helpers (send_and_collect, wait_for_discovery), and agent config.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -33,7 +34,6 @@ from skitter.mqtt import (
     topic_reply,
     topic_result_wildcard,
 )
-from skitter.config import AGENTS_DIR
 from skitter.types import (
     A2ARequest,
     REPLY_ERROR,
@@ -42,6 +42,8 @@ from skitter.types import (
     classify_reply,
 )
 
+
+AGENT_IMAGE = os.environ.get("SKITTER_AGENT_IMAGE", "skitter-agent:latest")
 
 # ---------------------------------------------------------------------------
 # Skip conditions
@@ -62,16 +64,18 @@ def mqtt_available() -> bool:
         return False
 
 
+def docker_available() -> bool:
+    return bool(shutil.which("docker"))
+
+
 needs_mqtt = pytest.mark.skipif(not mqtt_available(), reason="No MQTT broker")
 
 
 def runtime_available(runtime: str) -> bool:
-    import shutil
-
     if runtime == "claude":
-        return bool(shutil.which("claude") and "CLAUDECODE" not in os.environ)
+        return bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
     if runtime == "codex":
-        return bool(shutil.which("codex"))
+        return Path.home().joinpath(".codex/auth.json").is_file()
     return False
 
 
@@ -86,27 +90,35 @@ def pytest_addoption(parser):
 
 
 # ---------------------------------------------------------------------------
-# Agent config scaffolding
+# Agent file scaffolding (written to temp dirs, mounted into Docker)
 # ---------------------------------------------------------------------------
 
 
-def write_agent_yaml(agent_id: str, runtime: str, model: str = "") -> Path:
-    """Write a minimal agent YAML to ~/.skitter/agents/. Returns the path."""
-    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = AGENTS_DIR / f"{agent_id}.yaml"
-    data: dict = {
-        "name": f"Test {runtime.title()} Agent",
-        "description": f"Minimal {runtime} test agent",
-        "runtime": runtime,
-    }
-    if model:
-        data["model"] = model
-    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+def write_agent_file(agent_id: str, runtime: str, model: str = "") -> Path:
+    """Write a native agent file to a temp dir. Returns the path."""
+    tmp = Path(tempfile.mkdtemp(prefix=f"skitter-test-{agent_id}-"))
+    if runtime == "codex":
+        path = tmp / f"{agent_id}.toml"
+        lines = []
+        if model:
+            lines.append(f'model = "{model}"')
+        lines.append(f'developer_instructions = "Minimal {runtime} test agent"')
+        path.write_text("\n".join(lines) + "\n")
+    else:
+        path = tmp / f"{agent_id}.md"
+        frontmatter = {
+            "name": agent_id,
+            "description": f"Minimal {runtime} test agent",
+        }
+        if model:
+            frontmatter["model"] = model
+        fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+        path.write_text(f"---\n{fm}---\nYou are a test agent. Be brief.\n")
     return path
 
 
 # ---------------------------------------------------------------------------
-# Process management — stdout goes to log files to avoid pipe buffer deadlock
+# Process management
 # ---------------------------------------------------------------------------
 
 
@@ -116,7 +128,7 @@ def _start_process(
     label: str = "process",
     timeout_s: float = 15.0,
 ) -> tuple[subprocess.Popen, Path]:
-    """Start a subprocess, wait for `marker` in its output. Returns (proc, log_path)."""
+    """Start a subprocess, wait for `marker` in its output."""
     log_path = Path(tempfile.mktemp(prefix=f"skitter-test-{label}-", suffix=".log"))
     log_file = log_path.open("w")
     env = os.environ.copy()
@@ -135,12 +147,11 @@ def _start_process(
     log_file.close()
     out = log_path.read_text()
     pytest.fail(f"{label} did not become ready within {timeout_s}s:\n{out}")
-    return proc, log_path  # unreachable, keeps type checker happy
+    return proc, log_path  # unreachable
 
 
 def start_coordinator() -> subprocess.Popen:
     """Start the coordinator with a fresh DB, wait for it to be ready."""
-    # Remove leftover DB from previous runs so recovery doesn't pollute tests
     db_path = Path.home() / ".skitter" / "skitter.db"
     for suffix in ("", "-wal", "-shm"):
         (db_path.parent / f"{db_path.name}{suffix}").unlink(missing_ok=True)
@@ -153,18 +164,98 @@ def start_coordinator() -> subprocess.Popen:
     return proc
 
 
-def start_agent_runner(agent_id: str) -> subprocess.Popen:
-    """Start an agent-runner subprocess, wait for it to be ready."""
-    proc, log_path = _start_process(
-        ["uv", "run", "python", "-m", "skitter", "agent-runner", agent_id],
-        marker="Listening on",
-        label=f"agent-{agent_id}",
+_image_checked = False
+
+
+def _ensure_agent_image() -> None:
+    """Build the agent Docker image if it doesn't exist."""
+    global _image_checked
+    if _image_checked:
+        return
+    result = subprocess.run(
+        ["docker", "image", "inspect", AGENT_IMAGE],
+        capture_output=True,
     )
-    return proc
+    if result.returncode != 0:
+        print(f"Building {AGENT_IMAGE}...")
+        subprocess.run(
+            ["docker", "build", "-f", "Dockerfile.agent", "-t", AGENT_IMAGE, "."],
+            check=True,
+        )
+    _image_checked = True
+
+
+def start_agent_runner(agent_path: str | Path, runtime: str) -> str:
+    """Start an agent-runner in Docker. Returns the container ID.
+
+    Claude: pass CLAUDE_CODE_OAUTH_TOKEN as env var.
+    Codex: mount ~/.codex/auth.json into the container.
+    """
+    _ensure_agent_image()
+    agent_path = Path(agent_path)
+    container_agent_path = f"/tmp/agents/{agent_path.name}"
+
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--network=skitter",
+        "-e",
+        "MQTT_HOST=emqx",
+        # Mount the agent file
+        "-v",
+        f"{agent_path}:{container_agent_path}:ro",
+    ]
+
+    if runtime == "claude":
+        if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            pytest.fail("CLAUDE_CODE_OAUTH_TOKEN required for claude runtime")
+        cmd.extend(["-e", "CLAUDE_CODE_OAUTH_TOKEN"])
+    elif runtime == "codex":
+        codex_auth = Path.home() / ".codex" / "auth.json"
+        if not codex_auth.is_file():
+            pytest.fail(f"Codex auth not found: {codex_auth}")
+        cmd.extend(["-v", f"{codex_auth}:/home/skitter/.codex/auth.json:ro"])
+
+    cmd.extend([AGENT_IMAGE, container_agent_path])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"Failed to start agent container: {result.stderr}")
+    container_id = result.stdout.strip()
+
+    # Wait for agent to be ready (check logs for marker)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        logs = subprocess.run(
+            ["docker", "logs", container_id], capture_output=True, text=True
+        )
+        if "Listening on" in logs.stdout or "Listening on" in logs.stderr:
+            return container_id
+        # Check if container died
+        inspect = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
+            capture_output=True,
+            text=True,
+        )
+        if inspect.stdout.strip() != "true":
+            all_logs = logs.stdout + logs.stderr
+            pytest.fail(f"Agent container exited early:\n{all_logs}")
+        time.sleep(0.5)
+
+    all_logs = subprocess.run(
+        ["docker", "logs", container_id], capture_output=True, text=True
+    )
+    stop_container(container_id)
+    pytest.fail(
+        f"Agent container not ready within 30s:\n{all_logs.stdout}\n{all_logs.stderr}"
+    )
+    return ""  # unreachable
 
 
 def stop_process(proc: subprocess.Popen) -> None:
-    """Gracefully stop a subprocess (SIGINT, then kill after timeout)."""
+    """Gracefully stop a subprocess."""
     if proc.poll() is not None:
         return
     proc.send_signal(signal.SIGINT)
@@ -175,12 +266,17 @@ def stop_process(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
+def stop_container(container_id: str) -> None:
+    """Stop a Docker container."""
+    subprocess.run(["docker", "stop", "-t", "5", container_id], capture_output=True)
+
+
 # ---------------------------------------------------------------------------
 # MQTT helpers
 # ---------------------------------------------------------------------------
 
 
-async def wait_for_discovery(agent_id: str, timeout: float = 10.0) -> dict:
+async def wait_for_discovery(agent_id: str, timeout: float = 30.0) -> dict:
     """Wait for an agent's discovery card to appear on the broker."""
     topic = topic_discovery(agent_id)
     async with aiomqtt.Client(

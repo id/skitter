@@ -1012,3 +1012,192 @@ class TestSessionWorkspaceRoundtrip:
         )
         session = Session.from_json(raw)
         assert session.tasks["a"].workspace == ""
+
+
+# --- Runtime API ---
+
+
+class TestRuntimeApi:
+    def setup_method(self):
+        from skitter.db import SqliteDB
+
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    def _populate(self):
+        from skitter.db import App, AppVersion, DBSession, DBTask
+
+        self.db.create_app(App(id="app1", name="App One", description="First app"))
+        self.db.create_app_version(
+            AppVersion(
+                id="app1-v1", app_id="app1", version=1, graph_json='{"tasks":[]}'
+            )
+        )
+        self.db.create_app_version(
+            AppVersion(
+                id="app1-v2", app_id="app1", version=2, graph_json='{"tasks":[]}'
+            )
+        )
+        self.db.create_session(
+            DBSession(id="s1", app_version_id="app1-v2", state="running")
+        )
+        self.db.create_task(
+            DBTask(
+                id="s1/research",
+                session_id="s1",
+                task_id="research",
+                agent="researcher",
+                state="pending",
+            )
+        )
+        self.db.update_task("s1/research", state="completed", result="found stuff")
+        self.db.create_task(
+            DBTask(
+                id="s1/review",
+                session_id="s1",
+                task_id="review",
+                agent="writer",
+                state="running",
+            )
+        )
+
+    def test_list_apps(self):
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(handle_query(self.db, "list apps"))
+        assert len(result["apps"]) == 1
+        assert result["apps"][0]["id"] == "app1"
+        assert result["apps"][0]["current_version"] == 2
+
+    def test_list_apps_empty(self):
+        from skitter.runtime_api import handle_query
+
+        result = json.loads(handle_query(self.db, "list apps"))
+        assert result["apps"] == []
+
+    def test_get_app(self):
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(handle_query(self.db, "get app app1"))
+        assert result["id"] == "app1"
+        assert result["name"] == "App One"
+        assert len(result["versions"]) == 2
+        assert result["versions"][0]["version"] == 1
+        assert result["versions"][1]["version"] == 2
+
+    def test_get_app_not_found(self):
+        from skitter.runtime_api import handle_query
+
+        result = json.loads(handle_query(self.db, "get app nonexistent"))
+        assert "error" in result
+
+    def test_list_sessions(self):
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(handle_query(self.db, "list sessions"))
+        assert len(result["sessions"]) == 1
+        assert result["sessions"][0]["id"] == "s1"
+        assert result["sessions"][0]["state"] == "running"
+
+    def test_list_sessions_by_app(self):
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(handle_query(self.db, "list sessions app1"))
+        assert len(result["sessions"]) == 1
+
+        result = json.loads(handle_query(self.db, "list sessions nonexistent"))
+        assert result["sessions"] == []
+
+    def test_get_session(self):
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(handle_query(self.db, "get session s1"))
+        assert result["id"] == "s1"
+        assert result["state"] == "running"
+        assert len(result["tasks"]) == 2
+        task_ids = {t["task_id"] for t in result["tasks"]}
+        assert task_ids == {"research", "review"}
+        research = next(t for t in result["tasks"] if t["task_id"] == "research")
+        assert research["state"] == "completed"
+        assert research["result"] == "found stuff"
+
+    def test_get_session_not_found(self):
+        from skitter.runtime_api import handle_query
+
+        result = json.loads(handle_query(self.db, "get session nonexistent"))
+        assert "error" in result
+
+    def test_cancel_session(self):
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(handle_query(self.db, "cancel session s1"))
+        assert result["cancelled"] == "s1"
+
+        session = self.db.get_session("s1")
+        assert session.state == "cancelled"
+
+    def test_cancel_session_not_running(self):
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        self.db.update_session_state("s1", "completed")
+        result = json.loads(handle_query(self.db, "cancel session s1"))
+        assert "error" in result
+        assert "not running" in result["error"].lower()
+
+    def test_cancel_session_not_found(self):
+        from skitter.runtime_api import handle_query
+
+        result = json.loads(handle_query(self.db, "cancel session nonexistent"))
+        assert "error" in result
+
+    def test_unknown_query(self):
+        from skitter.runtime_api import handle_query
+
+        result = json.loads(handle_query(self.db, "do something"))
+        assert "error" in result
+
+    def test_empty_query(self):
+        from skitter.runtime_api import handle_query
+
+        result = json.loads(handle_query(self.db, ""))
+        assert "error" in result
+
+    def test_runtime_card(self):
+        from skitter.runtime_api import AGENT_ID, runtime_card
+
+        card = runtime_card()
+        assert card["name"] == "Skitter Runtime"
+        assert card["skills"][0]["id"] == AGENT_ID
+
+
+class TestSupervisorRuntimeRouting:
+    """Test that the supervisor routes runtime queries correctly."""
+
+    def setup_method(self):
+        from skitter.db import SqliteDB
+
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    def test_handle_discovery_skips_runtime(self):
+        from skitter.runtime_api import AGENT_ID
+        from skitter.supervisor import Supervisor
+
+        sup = Supervisor(self.db)
+        # Should not add to registry
+        sup.handle_discovery(
+            f"$a2a/v1/discovery/skitter/default/{AGENT_ID}",
+            b'{"name":"Skitter Runtime"}',
+        )
+        assert sup.registry.get(AGENT_ID) is None

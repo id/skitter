@@ -27,6 +27,12 @@ from skitter.db import (
     open_db,
 )
 from skitter.discovery import CardPublisher, build_card, is_workflow_card, parse_card
+from skitter.runtime_api import (
+    AGENT_ID as RUNTIME_AGENT_ID,
+    CANCEL_KEY,
+    handle_query as runtime_query,
+    runtime_card,
+)
 from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
@@ -522,6 +528,64 @@ class Supervisor:
         del self._sessions[state.session_id]
         log.info("Session %s failed", state.session_id)
 
+    # --- Runtime API ---
+
+    async def _handle_runtime_query(
+        self,
+        payload: str,
+        reply_topic: str,
+        correlation: str,
+    ) -> None:
+        """Handle a runtime state query (list apps, get session, etc.)."""
+        try:
+            req = A2ARequest.from_json(payload)
+        except Exception as e:
+            log.error("Bad runtime query JSON: %s", e)
+            return
+
+        result_json = runtime_query(self._db, req.text)
+
+        # For cancel: clean up in-memory state and notify original caller
+        try:
+            result = json.loads(result_json)
+            if CANCEL_KEY in result:
+                await self._cancel_session_cleanup(result[CANCEL_KEY])
+        except Exception:
+            log.exception("Cancel cleanup failed")
+
+        # Reply to the query caller
+        if reply_topic and self._client:
+            event = make_status_event(
+                request_id=correlation,
+                task_id=req.request_id,
+                state="completed",
+                artifact_text=result_json,
+            )
+            props = make_properties(correlation_data=correlation)
+            await self._client.publish(reply_topic, event, qos=1, properties=props)
+
+    async def _cancel_session_cleanup(self, session_id: str) -> None:
+        """Clean up in-memory state after a session is cancelled in the DB."""
+        state = self._sessions.pop(session_id, None)
+        if not state:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        for tid in state.pending | state.inflight:
+            self._db.update_task(
+                f"{session_id}/{tid}", state="cancelled", completed_at=now
+            )
+        if state.caller_reply_topic and self._client:
+            event = make_status_event(
+                request_id=state.caller_correlation,
+                task_id=session_id,
+                state="cancelled",
+                message="Session cancelled via runtime API",
+            )
+            props = make_properties(correlation_data=state.caller_correlation)
+            await self._client.publish(
+                state.caller_reply_topic, event, qos=1, properties=props
+            )
+
     # --- Inbound request handling ---
 
     async def handle_request(
@@ -738,7 +802,7 @@ class Supervisor:
     def handle_discovery(self, topic: str, payload: bytes) -> None:
         """Process a discovery card update from the broker."""
         agent_id = topic.split("/")[-1]
-        if agent_id == "supervisor":
+        if agent_id in ("supervisor", RUNTIME_AGENT_ID):
             return
         if not payload:
             self._registry.remove(agent_id)
@@ -898,8 +962,12 @@ class Supervisor:
 
     async def run(self) -> None:
         """Main supervisor loop."""
-        # Publish workflow cards
+        # Publish workflow cards + runtime API card
         await self.publish_workflow_cards()
+        rt_card_json = json.dumps(runtime_card())
+        pub = CardPublisher(RUNTIME_AGENT_ID, rt_card_json)
+        self._publishers[RUNTIME_AGENT_ID] = pub
+        await pub.start()
 
         # Clean up stale cards
         await self.cleanup_stale_cards()
@@ -946,6 +1014,12 @@ class Supervisor:
                                     "and Correlation Data",
                                     code=A2A_TRANSPORT_PROTOCOL_ERROR,
                                 )
+                            continue
+
+                        if agent_id == RUNTIME_AGENT_ID:
+                            await self._handle_runtime_query(
+                                payload, caller_reply, caller_corr
+                            )
                             continue
 
                         await self.handle_request(

@@ -643,7 +643,7 @@ class TestAgentRunnerCli:
             pass
 
         with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result = await _run_cli(agent, "test", noop)
+            result = await _run_cli(agent, "test", noop, {})
             assert "claude" in result.lower()
             assert "not found" in result.lower()
 

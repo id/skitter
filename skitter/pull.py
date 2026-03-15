@@ -12,14 +12,11 @@ import logging
 
 import aiomqtt
 
-from skitter.config import AGENTS_DIR, SKITTER_DIR
+from skitter.config import AGENTS_DIR, CLAUDE_AGENTS_DIR
 from skitter.discovery import is_workflow_card, parse_card
 from skitter.mqtt import mqtt_client_kwargs, topic_discovery_wildcard
 
 log = logging.getLogger("skitter.pull")
-
-CLAUDE_AGENTS_DIR = SKITTER_DIR.parent / ".claude" / "agents"
-CODEX_AGENTS_DIR = SKITTER_DIR.parent / ".codex" / "agents"
 
 
 async def pull_cards(timeout: float = 5.0) -> list[dict]:
@@ -52,7 +49,6 @@ async def pull_cards(timeout: float = 5.0) -> list[dict]:
 def _write_agent_stub(agent_id: str, card: dict) -> list[str]:
     """Write stub files for an agent. Returns list of files written."""
     written: list[str] = []
-    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Agent definition YAML
     yaml_path = AGENTS_DIR / f"{agent_id}.yaml"
@@ -71,7 +67,6 @@ def _write_agent_stub(agent_id: str, card: dict) -> list[str]:
         written.append(str(yaml_path))
 
     # Claude agent prompt stub
-    CLAUDE_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     md_path = CLAUDE_AGENTS_DIR / f"{agent_id}.md"
     if not md_path.exists():
         name = card.get("name", agent_id)
@@ -87,6 +82,8 @@ def _write_agent_stub(agent_id: str, card: dict) -> list[str]:
 
 def generate_stubs(cards: list[dict]) -> list[str]:
     """Generate local stub files from discovered cards."""
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    CLAUDE_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     all_written: list[str] = []
     for card in cards:
         agent_id = card.get("_agent_id", "")

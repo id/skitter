@@ -89,10 +89,16 @@ class CardPublisher:
     liveness and annotates cards with a2a-status: online/offline.
     """
 
-    def __init__(self, card_id: str, card_json: str) -> None:
+    def __init__(
+        self,
+        card_id: str,
+        card_json: str,
+        *,
+        mqtt_kwargs: dict | None = None,
+    ) -> None:
         self._card_id = card_id
         self._card_json = card_json
-        self._client: aiomqtt.Client | None = None
+        self._mqtt_kwargs = mqtt_kwargs
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -111,14 +117,17 @@ class CardPublisher:
 
     async def _run(self) -> None:
         topic = topic_discovery(self._card_id)
+        base_kwargs = self._mqtt_kwargs or {}
+        kwargs = {
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/{self._card_id}",
+            ),
+            **base_kwargs,
+            "identifier": f"{A2A_ORG}/{A2A_UNIT}/{self._card_id}",
+        }
         while True:
             try:
-                async with aiomqtt.Client(
-                    **mqtt_client_kwargs(
-                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{self._card_id}",
-                    ),
-                ) as client:
-                    self._client = client
+                async with aiomqtt.Client(**kwargs) as client:
                     await client.publish(topic, self._card_json, qos=1, retain=True)
                     log.info("Card %s published (client connected)", self._card_id)
                     await asyncio.Event().wait()

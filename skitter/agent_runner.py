@@ -29,6 +29,7 @@ from skitter.mqtt import (
     topic_event,
     topic_request,
 )
+from skitter.spawn import worker_env
 from skitter.types import (
     A2ARequest,
     A2AResponse,
@@ -40,6 +41,9 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
 )
 log = logging.getLogger("skitter.agent_runner")
+
+# Max concurrent requests per agent runner
+_MAX_CONCURRENT = int(os.environ.get("SKITTER_AGENT_MAX_CONCURRENT", "4"))
 
 
 def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
@@ -76,12 +80,10 @@ async def _run_cli(
     agent: AgentDef,
     prompt: str,
     publish_stream: "callable",
+    env: dict[str, str],
 ) -> str:
     """Run the CLI tool as a subprocess, stream output, return final text."""
     cmd = _build_cli_cmd(agent, prompt)
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        env.pop("ANTHROPIC_API_KEY", None)
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -96,6 +98,14 @@ async def _run_cli(
         return f"Error: {binary} CLI not found on PATH"
 
     texts: list[str] = []
+
+    # Drain stderr concurrently to avoid deadlock if pipe buffer fills
+    async def _drain_stderr() -> str:
+        assert proc.stderr is not None
+        data = await proc.stderr.read()
+        return data.decode().strip()
+
+    stderr_task = asyncio.create_task(_drain_stderr())
 
     assert proc.stdout is not None
     async for line in proc.stdout:
@@ -129,11 +139,9 @@ async def _run_cli(
                     await publish_stream("text", text)
 
     await proc.wait()
-
-    if proc.stderr:
-        stderr = (await proc.stderr.read()).decode().strip()
-        if stderr:
-            log.warning("stderr: %s", stderr[:500])
+    stderr = await stderr_task
+    if stderr:
+        log.warning("stderr: %s", stderr[:500])
 
     if proc.returncode and proc.returncode != 0 and not texts:
         return f"(process exited with code {proc.returncode})"
@@ -144,31 +152,11 @@ async def _run_cli(
 def _mqtt_kwargs_for_agent(agent: AgentDef, **overrides) -> dict:
     """Build MQTT connection kwargs, using agent's broker config if set."""
     if agent.broker and agent.broker.host:
-        import ssl
-
-        kwargs: dict = {
-            "hostname": agent.broker.host,
-            "port": agent.broker.port or 8883,
-            "protocol": aiomqtt.ProtocolVersion.V5,
-        }
-        # Use TLS for non-localhost brokers
-        if agent.broker.host not in ("localhost", "127.0.0.1"):
-            tls_ctx = ssl.create_default_context()
-            ca_cert = os.environ.get("MQTT_CA_CERT", "")
-            if ca_cert:
-                tls_ctx.load_verify_locations(ca_cert)
-            kwargs["tls_context"] = tls_ctx
-        username = os.environ.get("MQTT_USERNAME", "") or os.environ.get(
-            "MQTT_USER", ""
+        return mqtt_client_kwargs(
+            hostname=agent.broker.host,
+            port=agent.broker.port or 8883,
+            **overrides,
         )
-        password = os.environ.get("MQTT_PASSWORD", "") or os.environ.get(
-            "MQTT_PASS", ""
-        )
-        if username:
-            kwargs["username"] = username
-            kwargs["password"] = password
-        kwargs.update(overrides)
-        return kwargs
     return mqtt_client_kwargs(**overrides)
 
 
@@ -178,6 +166,8 @@ async def handle_request(
     payload: str,
     reply_topic: str,
     correlation: str,
+    env: dict[str, str],
+    semaphore: asyncio.Semaphore,
 ) -> None:
     """Handle a single A2A request: run CLI, stream results, send reply."""
     try:
@@ -208,7 +198,8 @@ async def handle_request(
         )
         await client.publish(reply_topic, event, qos=0, properties=props)
 
-    result = await _run_cli(agent, req.text, publish_stream)
+    async with semaphore:
+        result = await _run_cli(agent, req.text, publish_stream, env)
 
     # Send terminal result
     terminal = make_status_event(
@@ -229,27 +220,33 @@ async def run(agent_name: str) -> None:
         log.error("Agent '%s' not found in ~/.skitter/agents/", agent_name)
         sys.exit(1)
 
-    agent_id = agent.id
-    log.info("Starting agent runner: %s (runtime=%s)", agent_id, agent.runtime)
+    log.info("Starting agent runner: %s (runtime=%s)", agent.id, agent.runtime)
+
+    # Compute env once at startup
+    env = worker_env()
 
     # Publish discovery card
     card = build_card(agent)
     card_json = json.dumps(card)
-    publisher = CardPublisher(agent_id, card_json)
+    publisher = CardPublisher(
+        agent.id, card_json, mqtt_kwargs=_mqtt_kwargs_for_agent(agent)
+    )
     await publisher.start()
 
     # LWT for crash detection
-    lwt_topic = topic_event(agent_id, "dead")
-    lwt_payload = json.dumps({"status": "dead", "agent": agent_id})
+    lwt_topic = topic_event(agent.id, "dead")
+    lwt_payload = json.dumps({"status": "dead", "agent": agent.id})
     will = aiomqtt.Will(topic=lwt_topic, payload=lwt_payload, qos=1)
 
-    request_topic = topic_request(agent_id)
+    request_topic = topic_request(agent.id)
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+    inflight: set[asyncio.Task] = set()
 
     try:
         async with aiomqtt.Client(
             **_mqtt_kwargs_for_agent(
                 agent,
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent_id}-runner",
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent.id}-runner",
                 will=will,
             ),
         ) as client:
@@ -276,11 +273,19 @@ async def run(agent_name: str) -> None:
                         await client.publish(reply_topic, resp.to_json(), qos=1)
                     continue
 
-                # Handle each request as a concurrent task
-                asyncio.create_task(
-                    handle_request(client, agent, payload, reply_topic, correlation)
+                task = asyncio.create_task(
+                    handle_request(
+                        client, agent, payload, reply_topic, correlation, env, semaphore
+                    )
                 )
+                inflight.add(task)
+                task.add_done_callback(inflight.discard)
     finally:
+        # Cancel inflight tasks on shutdown
+        for task in inflight:
+            task.cancel()
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
         await publisher.stop()
 
 
@@ -288,7 +293,7 @@ def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: skitter agent-runner <agent_name>", file=sys.stderr)
         sys.exit(1)
-    agent_name = sys.argv[1] if len(sys.argv) == 2 else sys.argv[2]
+    agent_name = sys.argv[-1]
     try:
         asyncio.run(run(agent_name))
     except KeyboardInterrupt:

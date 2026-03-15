@@ -132,22 +132,10 @@ async def handle_request(
     session_id = uuid.uuid4().hex[:16]
 
     # Detect workflow by checking if agent_id matches a workflow definition
-    workflow_id = agent_id if agent_id in workflows else ""
-    if workflow_id:
+    if agent_id in workflows:
+        workflow = workflows[agent_id]
+        workflow_id = agent_id
         agent_id = ""
-
-    if workflow_id:
-        workflow = workflows.get(workflow_id)
-        if not workflow:
-            await _send_error(
-                client,
-                caller_reply_topic,
-                caller_correlation,
-                f"Unknown workflow: {workflow_id}",
-                code=A2A_RESPONDER_UNAVAILABLE,
-                a2a_error="responder_unavailable",
-            )
-            return
         session = create_session(
             session_id,
             req.text,

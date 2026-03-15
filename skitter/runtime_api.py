@@ -1,6 +1,6 @@
 """Runtime state query handler.
 
-Registered as ``skitter-runtime`` — handles structured queries and
+Registered as ``skitter`` — handles structured queries and
 returns JSON results in standard A2A TaskStatusUpdateEvent replies.
 
 Queries:
@@ -26,17 +26,17 @@ from skitter.discovery import build_card
 from skitter.graph_gen import GraphValidationError, generate_graph
 
 if TYPE_CHECKING:
-    from skitter.supervisor import DiscoveryRegistry
+    from skitter.coordinator import DiscoveryRegistry
 
 log = logging.getLogger("skitter.runtime_api")
 
-AGENT_ID = "skitter-runtime"
+AGENT_ID = "skitter"
 CANCEL_KEY = "cancelled"
 CREATE_APP_KEY = "created_app"
 
 
 def runtime_card() -> dict:
-    """Build the discovery card for the skitter-runtime agent."""
+    """Build the discovery card for the skitter agent."""
     agent = AgentDef(
         id=AGENT_ID,
         name="Skitter Runtime",

@@ -11,4 +11,4 @@ USER root
 RUN pip install --no-cache-dir .
 USER skitter
 
-CMD ["python", "-m", "skitter.supervisor"]
+CMD ["python", "-m", "skitter.coordinator"]

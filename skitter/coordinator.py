@@ -1,4 +1,4 @@
-"""Supervisor — pure A2A orchestrator.
+"""Coordinator — pure A2A orchestrator.
 
 DB-backed session management, dependency resolution, and task dispatch.
 Sends A2A requests to agents, collects replies, manages the DAG.
@@ -54,7 +54,7 @@ from skitter.types import (
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
 )
-log = logging.getLogger("skitter.supervisor")
+log = logging.getLogger("skitter.coordinator")
 
 
 # --- In-memory session state for dependency resolution ---
@@ -165,11 +165,11 @@ class DiscoveryRegistry:
         return [aid for aid, card in self._cards.items() if is_workflow_card(card)]
 
 
-# --- Supervisor ---
+# --- Coordinator ---
 
 
-class Supervisor:
-    """Pure A2A orchestrator with DB-backed state."""
+class Coordinator:
+    """A2A orchestrator with DB-backed state."""
 
     def __init__(self, db: DB) -> None:
         self._db = db
@@ -310,7 +310,7 @@ class Supervisor:
             prompt = f"{context}\n\n{prompt}"
 
         request_id = uuid.uuid4().hex[:16]
-        reply_t = topic_reply("supervisor", f"{state.session_id}/{task_id}")
+        reply_t = topic_reply("skitter", f"{state.session_id}/{task_id}")
 
         # Write-ahead: persist dispatch info before sending
         db_task_id = f"{state.session_id}/{task_id}"
@@ -334,7 +334,7 @@ class Supervisor:
         a2a_req = A2ARequest(
             text=prompt,
             request_id=request_id,
-            sender="supervisor",
+            sender="coordinator",
         )
         request_topic = topic_request(target.agent)
         props = make_properties(
@@ -359,11 +359,10 @@ class Supervisor:
 
     async def handle_reply(self, topic: str, payload: str) -> None:
         """Process an A2A reply from an agent."""
-        # Parse topic: $a2a/v1/reply/{org}/{unit}/supervisor/{session_id}/{task_id}
+        # Parse topic: $a2a/v1/reply/{org}/{unit}/skitter/{session_id}/{task_id}
         parts = topic.split("/")
         if len(parts) < 7:
             return
-        # reply topic format: $a2a/v1/reply/{org}/{unit}/supervisor/{sid}/{tid}
         session_id = parts[-2]
         task_id = parts[-1]
 
@@ -730,7 +729,7 @@ class Supervisor:
     def handle_discovery(self, topic: str, payload: bytes) -> None:
         """Process a discovery card update from the broker."""
         agent_id = topic.split("/")[-1]
-        if agent_id in ("supervisor", RUNTIME_AGENT_ID):
+        if agent_id in ("coordinator", RUNTIME_AGENT_ID):
             return
         if not payload:
             self._registry.remove(agent_id)
@@ -838,7 +837,7 @@ class Supervisor:
     # --- Main loop ---
 
     async def run(self) -> None:
-        """Main supervisor loop."""
+        """Main coordinator loop."""
         # Publish runtime API card
         rt_card_json = json.dumps(runtime_card())
         pub = CardPublisher(RUNTIME_AGENT_ID, rt_card_json)
@@ -847,7 +846,7 @@ class Supervisor:
 
         try:
             async with aiomqtt.Client(
-                **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor"),
+                **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator"),
             ) as client:
                 self._client = client
 
@@ -857,7 +856,7 @@ class Supervisor:
 
                 # Recover apps (subscribe + republish cards) and inflight sessions
                 await self.recover()
-                log.info("Supervisor ready")
+                log.info("Coordinator ready")
 
                 async for mqtt_msg in client.messages:
                     topic = str(mqtt_msg.topic)
@@ -897,7 +896,7 @@ class Supervisor:
                             payload, caller_reply, caller_corr, agent_id
                         )
 
-                    elif "/reply/" in topic and "/supervisor/" in topic:
+                    elif "/reply/" in topic and "/skitter/" in topic:
                         if payload:
                             await self.handle_reply(topic, payload)
         finally:
@@ -906,7 +905,7 @@ class Supervisor:
                 await pub.stop()
 
     async def stop(self) -> None:
-        """Stop the supervisor and clean up."""
+        """Stop the coordinator and clean up."""
         for pub in self._publishers.values():
             await pub.stop()
         self._db.close()
@@ -923,11 +922,11 @@ def _parse_agent_id_from_topic(topic: str) -> str:
 
 def main() -> None:
     db = open_db()
-    supervisor = Supervisor(db)
+    coord = Coordinator(db)
     try:
-        asyncio.run(supervisor.run())
+        asyncio.run(coord.run())
     except KeyboardInterrupt:
-        log.info("Supervisor shutting down")
+        log.info("Coordinator shutting down")
     finally:
         db.close()
 

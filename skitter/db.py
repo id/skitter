@@ -1,6 +1,6 @@
 """Database interface with SQLite and PostgreSQL backends.
 
-All methods are synchronous — the supervisor calls them from async code
+All methods are synchronous — the coordinator calls them from async code
 via asyncio.loop.run_in_executor().
 """
 

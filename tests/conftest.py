@@ -1,6 +1,6 @@
 """Shared fixtures and helpers for live e2e tests.
 
-Provides: process management (supervisor, agent-runner), MQTT helpers
+Provides: process management (coordinator, agent-runner), MQTT helpers
 (send_and_collect, wait_for_discovery), and agent config scaffolding.
 """
 
@@ -138,8 +138,8 @@ def _start_process(
     return proc, log_path  # unreachable, keeps type checker happy
 
 
-def start_supervisor() -> subprocess.Popen:
-    """Start the supervisor with a fresh DB, wait for it to be ready."""
+def start_coordinator() -> subprocess.Popen:
+    """Start the coordinator with a fresh DB, wait for it to be ready."""
     # Remove leftover DB from previous runs so recovery doesn't pollute tests
     db_path = Path.home() / ".skitter" / "skitter.db"
     for suffix in ("", "-wal", "-shm"):
@@ -147,8 +147,8 @@ def start_supervisor() -> subprocess.Popen:
 
     proc, _ = _start_process(
         ["uv", "run", "python", "-m", "skitter"],
-        marker="listening on",
-        label="supervisor",
+        marker="ready",
+        label="coordinator",
     )
     return proc
 

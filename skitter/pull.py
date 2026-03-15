@@ -89,7 +89,7 @@ def generate_stubs(cards: list[dict]) -> list[str]:
     all_written: list[str] = []
     for card in cards:
         agent_id = card.get("_agent_id", "")
-        if not agent_id or agent_id == "supervisor":
+        if not agent_id or agent_id in ("coordinator", "skitter"):
             continue
         if is_workflow_card(card):
             continue

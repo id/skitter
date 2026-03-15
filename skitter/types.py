@@ -168,6 +168,6 @@ class TaskTarget:
     """A2A agent address for task dispatch."""
 
     agent: str  # A2A agent address: {org}/{unit}/{agent_id}
-    mqtt_host: str = ""  # broker host (empty = same broker as supervisor)
+    mqtt_host: str = ""  # broker host (empty = same broker as coordinator)
     mqtt_port: int = 8883
     http_url: str = ""  # for HTTP A2A targets (Phase 4)

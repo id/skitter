@@ -109,7 +109,7 @@ def validate_graph(graph: dict, valid_agent_ids: set[str]) -> None:
         _dfs(tid)
 
     # Validate next/needs consistency: if A.next=B, then B must list A in needs.
-    # The supervisor dispatches based on `needs` only — inconsistency causes
+    # The coordinator dispatches based on `needs` only — inconsistency causes
     # out-of-order execution.
     needs_of: dict[str, list[str]] = {t["id"]: t.get("needs", []) for t in tasks}
     for t in tasks:

@@ -1,4 +1,4 @@
-"""Tests for skitter supervisor architecture."""
+"""Tests for skitter coordinator architecture."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from skitter.config import AgentDef
-from skitter.supervisor import _parse_agent_id_from_topic
+from skitter.coordinator import _parse_agent_id_from_topic
 from skitter.mqtt import (
     topic_a2a_event,
     topic_discovery_wildcard,
@@ -159,8 +159,8 @@ class TestTopics:
         assert "/researcher" in t
 
     def test_a2a_event_topic(self):
-        t = topic_a2a_event("skitter-runtime")
-        assert t == "$a2a/v1/event/skitter/default/skitter-runtime"
+        t = topic_a2a_event("skitter")
+        assert t == "$a2a/v1/event/skitter/default/skitter"
 
 
 # --- Topic parsing ---
@@ -179,10 +179,10 @@ class TestTopicParsing:
         assert _parse_agent_id_from_topic("too/short") == ""
 
 
-# --- Session building (DB-backed supervisor) ---
+# --- Session building (DB-backed coordinator) ---
 
 
-class TestSupervisorSession:
+class TestCoordinatorSession:
     def setup_method(self):
         from skitter.db import SqliteDB
 
@@ -191,15 +191,15 @@ class TestSupervisorSession:
     def teardown_method(self):
         self.db.close()
 
-    def _make_supervisor(self):
-        from skitter.supervisor import Supervisor
+    def _make_coordinator(self):
+        from skitter.coordinator import Coordinator
 
-        return Supervisor(self.db)
+        return Coordinator(self.db)
 
     def test_create_session_from_graph(self):
         from skitter.db import App, AppVersion
 
-        sup = self._make_supervisor()
+        sup = self._make_coordinator()
         self.db.create_app(App(id="test-app", name="Test"))
         self.db.create_app_version(
             AppVersion(
@@ -245,7 +245,7 @@ class TestSupervisorSession:
     def test_variable_interpolation(self):
         from skitter.db import App, AppVersion
 
-        sup = self._make_supervisor()
+        sup = self._make_coordinator()
         self.db.create_app(App(id="test-app", name="Test"))
         self.db.create_app_version(
             AppVersion(
@@ -548,7 +548,7 @@ class TestSafeFormat:
 
 class TestDependencyResolution:
     def test_compute_ready_no_needs(self):
-        from skitter.supervisor import SessionState, SessionTask as ST, _compute_ready
+        from skitter.coordinator import SessionState, SessionTask as ST, _compute_ready
 
         state = SessionState(session_id="s1", app_version_id="v1")
         state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
@@ -558,7 +558,7 @@ class TestDependencyResolution:
         assert ready == ["a"]
 
     def test_compute_ready_after_completion(self):
-        from skitter.supervisor import SessionState, SessionTask as ST, _compute_ready
+        from skitter.coordinator import SessionState, SessionTask as ST, _compute_ready
 
         state = SessionState(session_id="s1", app_version_id="v1")
         state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
@@ -569,7 +569,7 @@ class TestDependencyResolution:
         assert ready == ["b"]
 
     def test_propagate_failure(self):
-        from skitter.supervisor import (
+        from skitter.coordinator import (
             SessionState,
             SessionTask as ST,
             _propagate_failure,
@@ -588,7 +588,7 @@ class TestDependencyResolution:
         assert "c" in state.failed
 
     def test_find_terminal_tasks(self):
-        from skitter.supervisor import (
+        from skitter.coordinator import (
             SessionState,
             SessionTask as ST,
             _find_terminal_tasks,
@@ -602,7 +602,7 @@ class TestDependencyResolution:
         assert set(terminals) == {"b", "c"}
 
     def test_build_context(self):
-        from skitter.supervisor import (
+        from skitter.coordinator import (
             SessionState,
             SessionTask as ST,
             _build_context,
@@ -623,7 +623,7 @@ class TestDependencyResolution:
 
 class TestDiscoveryRegistry:
     def test_update_and_get(self):
-        from skitter.supervisor import DiscoveryRegistry
+        from skitter.coordinator import DiscoveryRegistry
 
         reg = DiscoveryRegistry()
         reg.update("researcher", {"name": "Researcher"})
@@ -631,7 +631,7 @@ class TestDiscoveryRegistry:
         assert reg.get("unknown") is None
 
     def test_remove(self):
-        from skitter.supervisor import DiscoveryRegistry
+        from skitter.coordinator import DiscoveryRegistry
 
         reg = DiscoveryRegistry()
         reg.update("researcher", {"name": "Researcher"})
@@ -639,7 +639,7 @@ class TestDiscoveryRegistry:
         assert reg.get("researcher") is None
 
     def test_list_agents_vs_apps(self):
-        from skitter.supervisor import DiscoveryRegistry
+        from skitter.coordinator import DiscoveryRegistry
 
         reg = DiscoveryRegistry()
         reg.update("agent1", {"name": "Agent1"})
@@ -1307,7 +1307,7 @@ class TestRuntimeApi:
         from unittest.mock import AsyncMock
 
         from skitter.runtime_api import CREATE_APP_KEY, handle_query
-        from skitter.supervisor import DiscoveryRegistry
+        from skitter.coordinator import DiscoveryRegistry
 
         registry = DiscoveryRegistry()
         registry.update(
@@ -1375,7 +1375,7 @@ class TestRuntimeApi:
     @pytest.mark.asyncio
     async def test_create_app_missing_agent(self):
         from skitter.runtime_api import handle_query
-        from skitter.supervisor import DiscoveryRegistry
+        from skitter.coordinator import DiscoveryRegistry
 
         registry = DiscoveryRegistry()
         registry.update(
@@ -1404,8 +1404,8 @@ class TestRuntimeApi:
         assert "registry" in result["error"].lower()
 
 
-class TestSupervisorRuntimeRouting:
-    """Test that the supervisor routes runtime queries correctly."""
+class TestCoordinatorRuntimeRouting:
+    """Test that the coordinator routes runtime queries correctly."""
 
     def setup_method(self):
         from skitter.db import SqliteDB
@@ -1417,9 +1417,9 @@ class TestSupervisorRuntimeRouting:
 
     def test_handle_discovery_skips_runtime(self):
         from skitter.runtime_api import AGENT_ID
-        from skitter.supervisor import Supervisor
+        from skitter.coordinator import Coordinator
 
-        sup = Supervisor(self.db)
+        sup = Coordinator(self.db)
         # Should not add to registry
         sup.handle_discovery(
             f"$a2a/v1/discovery/skitter/default/{AGENT_ID}",
@@ -1432,9 +1432,9 @@ class TestSupervisorRuntimeRouting:
         """Verify _publish_event builds correct payload."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from skitter.supervisor import Supervisor
+        from skitter.coordinator import Coordinator
 
-        sup = Supervisor(self.db)
+        sup = Coordinator(self.db)
         mock_client = MagicMock()
         mock_client.publish = AsyncMock()
         sup._client = mock_client
@@ -1443,7 +1443,7 @@ class TestSupervisorRuntimeRouting:
         mock_client.publish.assert_called_once()
         topic, payload_str = mock_client.publish.call_args.args[:2]
         assert "/event/" in topic
-        assert "skitter-runtime" in topic
+        assert "/skitter" in topic
         payload = json.loads(payload_str)
         assert payload["event"] == "task_completed"
         assert payload["session_id"] == "sess1"
@@ -1453,9 +1453,9 @@ class TestSupervisorRuntimeRouting:
     @pytest.mark.asyncio
     async def test_publish_event_no_client(self):
         """No crash when client is None."""
-        from skitter.supervisor import Supervisor
+        from skitter.coordinator import Coordinator
 
-        sup = Supervisor(self.db)
+        sup = Coordinator(self.db)
         # _client is None by default — should not raise
         await sup._publish_event("session_created", "sess1")
 
@@ -1474,12 +1474,12 @@ class TestRuntimeApiIntegration:
     def teardown_method(self):
         self.db.close()
 
-    def _make_supervisor(self):
+    def _make_coordinator(self):
         from unittest.mock import AsyncMock, MagicMock
 
-        from skitter.supervisor import Supervisor
+        from skitter.coordinator import Coordinator
 
-        sup = Supervisor(self.db)
+        sup = Coordinator(self.db)
         mock_client = MagicMock()
         mock_client.publish = AsyncMock()
         mock_client.subscribe = AsyncMock()
@@ -1517,7 +1517,7 @@ class TestRuntimeApiIntegration:
     @pytest.mark.asyncio
     async def test_session_lifecycle_events(self):
         """Create app, dispatch session, complete tasks — verify all events."""
-        sup, mock_client = self._make_supervisor()
+        sup, mock_client = self._make_coordinator()
         self._create_test_app()
 
         # Create session
@@ -1585,7 +1585,7 @@ class TestRuntimeApiIntegration:
     @pytest.mark.asyncio
     async def test_session_failure_events(self):
         """Verify task_failed and session_failed events."""
-        sup, mock_client = self._make_supervisor()
+        sup, mock_client = self._make_coordinator()
         self._create_test_app()
 
         req = A2ARequest(text="test", request_id="r1")
@@ -1624,7 +1624,7 @@ class TestRuntimeApiIntegration:
     @pytest.mark.asyncio
     async def test_query_via_runtime_handler(self):
         """Verify queries through _handle_runtime_query produce correct A2A replies."""
-        sup, mock_client = self._make_supervisor()
+        sup, mock_client = self._make_coordinator()
         self._create_test_app()
 
         # Query: list apps
@@ -1649,7 +1649,7 @@ class TestRuntimeApiIntegration:
     @pytest.mark.asyncio
     async def test_query_get_session_via_handler(self):
         """Verify get session query returns task details."""
-        sup, mock_client = self._make_supervisor()
+        sup, mock_client = self._make_coordinator()
         self._create_test_app()
 
         # Create a session
@@ -1685,7 +1685,7 @@ class TestRuntimeApiIntegration:
     @pytest.mark.asyncio
     async def test_cancel_via_handler_cleans_up(self):
         """Verify cancel session cleans up DB + in-memory state."""
-        sup, mock_client = self._make_supervisor()
+        sup, mock_client = self._make_coordinator()
         self._create_test_app()
 
         req = A2ARequest(text="test", request_id="r1")
@@ -1739,7 +1739,7 @@ class TestRuntimeApiIntegration:
         """Verify that creating an app subscribes to its request topic and publishes card."""
         from unittest.mock import AsyncMock
 
-        sup, mock_client = self._make_supervisor()
+        sup, mock_client = self._make_coordinator()
 
         # Register agents in discovery
         sup.registry.update(
@@ -1803,7 +1803,7 @@ class TestRuntimeApiIntegration:
         assert "request/" in app_request_topics[0]
 
         # Should have a CardPublisher for the new app
-        app_ids = [k for k in sup._publishers if k != "skitter-runtime"]
+        app_ids = [k for k in sup._publishers if k != "skitter"]
         assert len(app_ids) == 1
 
         # Clean up publisher to avoid event loop warnings

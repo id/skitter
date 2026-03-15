@@ -6,7 +6,7 @@ as a subprocess.
 
     skitter agent-runner researcher
 
-Fully independent — no supervisor, no shared state.
+Fully independent — no coordinator, no shared state.
 """
 
 import asyncio

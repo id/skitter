@@ -4,21 +4,20 @@
 
 ```
 skitter/
-  supervisor.py    Stateless supervisor: wildcard MQTT listener, session creator, worker spawner
-  worker.py        Self-coordinating worker: reads session from MQTT, runs agent CLI, publishes results
-  discovery.py     Build + publish discovery cards from agent/workflow YAML definitions
-  spawn.py         Worker spawn backends: subprocess, docker, fly
+  coordinator.py   A2A orchestrator: session management, DAG dispatch, runtime API
+  agent_runner.py  Standalone A2A agent process (wraps claude/codex CLI)
+  runtime_api.py   Runtime state queries + app creation
+  graph_gen.py     LLM-based graph generation + validation
+  llm.py           LLM API wrapper (litellm)
+  discovery.py     Build + publish A2A discovery cards
+  db.py            Database interface (SQLite/PostgreSQL)
   fly.py           Fly Machines API client
   deploy_fly.py    Deploy to Fly (build image, set secrets)
   mqtt.py          MQTT connection settings, A2A topic builders, v5 property helpers
   config.py        ~/.skitter/ management, YAML loading, dataclasses
   types.py         Message type definitions
   cli.py           Chat client
-  agents_cli.py    `skitter agents` subcommands
-  workflow_cli.py  `skitter workflow` subcommands
-  docker_cli.py    `skitter docker` subcommands
   __main__.py      CLI dispatch
-  reload.py        Publish reload signal to supervisor
 ```
 
 Key docs: `docs/architecture.md` (detailed design), `docs/fly-deployment.md` (cloud setup).
@@ -28,7 +27,7 @@ Key docs: `docs/architecture.md` (detailed design), `docs/fly-deployment.md` (cl
 ```bash
 uv sync
 docker compose up -d   # local EMQX broker
-uv run python -m skitter   # start supervisor
+uv run python -m skitter   # start coordinator
 ```
 
 ## Agent Configuration

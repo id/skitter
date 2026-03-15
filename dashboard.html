@@ -527,7 +527,7 @@
             const artifact = ((r.artifact || {}).parts || [])[0]?.text || '';
 
             if (st === 'submitted') {
-              // Initial ack from supervisor — session will arrive via retained message
+              // Initial ack from coordinator — session will arrive via retained message
               renderAll();
             } else if (st === 'working' && msg && sid && taskName) {
               const k = `${sid}/${taskName}`;
@@ -557,7 +557,7 @@
         try {
           const card = JSON.parse(raw);
           const cardId = p[5];
-          if (cardId === 'supervisor') return;
+          if (cardId === 'coordinator' || cardId === 'skitter') return;
           if (card.metadata && card.metadata.tasks) {
             state.workflowCards.set(cardId, card);
             renderWorkflows();
@@ -842,7 +842,7 @@
         qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(requestId) },
       });
 
-      // Session ID will be assigned by the supervisor — auto-select when it arrives
+      // Session ID will be assigned by the coordinator — auto-select when it arrives
       state.pendingSelect = true;
       state.composeTarget = null;
       // Switch to sessions tab

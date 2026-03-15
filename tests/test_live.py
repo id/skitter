@@ -1,7 +1,7 @@
-"""Live e2e tests — agent-runner + supervisor + composed apps.
+"""Live e2e tests — agent-runner + coordinator + composed apps.
 
-Tests the full A2A flow: agent-runner publishes discovery card, supervisor
-discovers it, client sends requests, supervisor orchestrates responses.
+Tests the full A2A flow: agent-runner publishes discovery card, coordinator
+discovers it, client sends requests, coordinator orchestrates responses.
 
 Requires:
   - MQTT broker (localhost:1883 or configured via MQTT_HOST/MQTT_PORT)
@@ -31,7 +31,7 @@ from .conftest import (
     runtime_available,
     send_and_collect,
     start_agent_runner,
-    start_supervisor,
+    start_coordinator,
     stop_process,
     wait_for_discovery,
     write_agent_yaml,
@@ -61,14 +61,14 @@ def runtime(request):
 
 
 @pytest.fixture(scope="module")
-def supervisor():
-    proc = start_supervisor()
+def coordinator():
+    proc = start_coordinator()
     yield proc
     stop_process(proc)
 
 
 @pytest.fixture(scope="module")
-def agent(runtime, supervisor):
+def agent(runtime, coordinator):
     """Start an agent-runner for the selected runtime, wait for discovery."""
     agent_id = f"test-{runtime}"
     model = MODELS.get(runtime, "")
@@ -90,7 +90,7 @@ class TestLive:
 
     @pytest.mark.asyncio
     async def test_agent_query(self, agent):
-        """Send a query through the supervisor, get a response from the agent."""
+        """Send a query to the agent, get a response."""
         await clean_retained()
         req = A2ARequest(
             text="What is 2+2? Reply with just the number.",

@@ -55,7 +55,7 @@ def dispatch() -> None:
 
     Routes to the appropriate sub-module based on the first positional arg:
 
-        skitter                → supervisor (default)
+        skitter                → coordinator (default)
         skitter chat  [...]    → interactive MQTT chat client
         skitter run   [...]    → one-shot A2A request
     """
@@ -79,15 +79,15 @@ def dispatch() -> None:
             print("Usage: skitter run '<prompt>'", file=sys.stderr)
             sys.exit(1)
         _run_prompt("skitter", prompt)
-    elif subcmd == "supervisor":
-        from skitter.supervisor import main
+    elif subcmd in ("coordinator", "supervisor"):
+        from skitter.coordinator import main
 
         main()
     elif subcmd and not subcmd.startswith("-"):
         prompt = " ".join(sys.argv[1:])
         _run_prompt("skitter", prompt)
     else:
-        from skitter.supervisor import main
+        from skitter.coordinator import main
 
         main()
 

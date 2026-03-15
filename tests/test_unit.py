@@ -1312,9 +1312,9 @@ class TestRuntimeApiIntegration:
         )
         sid = state.session_id
 
-        # Dispatch ready tasks (research has no needs, should dispatch)
-        await sup.dispatch_ready(state)
+        # Simulate what handle_request does: publish session_created, then dispatch
         await sup._publish_event("session_created", sid)
+        await sup.dispatch_ready(state)
 
         # Collect event payloads from mock
         event_calls = [
@@ -1323,8 +1323,10 @@ class TestRuntimeApiIntegration:
             if "/event/" in str(call.args[0])
         ]
         event_types = [e["event"] for e in event_calls]
-        assert "task_started" in event_types
         assert "session_created" in event_types
+        assert "task_started" in event_types
+        # session_created must come before task_started
+        assert event_types.index("session_created") < event_types.index("task_started")
 
         # Simulate research task completion
         mock_client.publish.reset_mock()

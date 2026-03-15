@@ -212,7 +212,11 @@ class Supervisor:
         task_id: str = "",
         data: dict | None = None,
     ) -> None:
-        """Publish a session lifecycle event on the A2A event topic."""
+        """Publish a session lifecycle event on the A2A event topic.
+
+        Best-effort: failures are logged but never propagate to callers,
+        so ACL denials or transient disconnects cannot stall orchestration.
+        """
         if not self._client:
             return
         payload = {
@@ -224,11 +228,16 @@ class Supervisor:
             payload["task_id"] = task_id
         if data:
             payload["data"] = data
-        await self._client.publish(
-            topic_a2a_event(RUNTIME_AGENT_ID),
-            json.dumps(payload),
-            qos=1,
-        )
+        try:
+            await self._client.publish(
+                topic_a2a_event(RUNTIME_AGENT_ID),
+                json.dumps(payload),
+                qos=1,
+            )
+        except Exception:
+            log.warning(
+                "Failed to publish %s event for session %s", event_type, session_id
+            )
 
     # --- Session creation ---
 
@@ -621,7 +630,7 @@ class Supervisor:
                 request_id=state.caller_correlation,
                 task_id=session_id,
                 state="cancelled",
-                message="Session cancelled via runtime API",
+                artifact_text="Session cancelled via runtime API",
             )
             props = make_properties(correlation_data=state.caller_correlation)
             await self._client.publish(
@@ -679,8 +688,8 @@ class Supervisor:
                         caller_reply_topic, ack, qos=1, properties=props
                     )
 
-            await self.dispatch_ready(state)
             await self._publish_event("session_created", state.session_id)
+            await self.dispatch_ready(state)
             log.info(
                 "App '%s' session %s started (%d tasks)",
                 agent_id,
@@ -732,8 +741,8 @@ class Supervisor:
                             caller_reply_topic, ack, qos=1, properties=props
                         )
 
-                await self.dispatch_ready(state)
                 await self._publish_event("session_created", state.session_id)
+                await self.dispatch_ready(state)
                 log.info(
                     "Workflow '%s' session %s started (%d tasks)",
                     agent_id,
@@ -793,8 +802,8 @@ class Supervisor:
                     caller_reply_topic, ack, qos=1, properties=props
                 )
 
-        await self.dispatch_ready(state)
         await self._publish_event("session_created", state.session_id)
+        await self.dispatch_ready(state)
         log.info(
             "Agent '%s' session %s started",
             agent_id,

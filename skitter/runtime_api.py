@@ -1,6 +1,6 @@
 """Runtime state query handler.
 
-Registered as ``skitter-runtime`` — handles structured text queries and
+Registered as ``skitter-runtime`` — handles structured queries and
 returns JSON results in standard A2A TaskStatusUpdateEvent replies.
 
 Queries:

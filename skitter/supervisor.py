@@ -510,6 +510,8 @@ class Supervisor:
 
     async def _complete_session(self, state: SessionState) -> None:
         """Finalize a completed session — send result to caller."""
+        if state.session_id not in self._sessions:
+            return  # already finalized (race with timeout/failure)
         self._db.update_session_state(state.session_id, "completed")
 
         # Find terminal task results
@@ -534,11 +536,13 @@ class Supervisor:
             )
 
         await self._publish_event("session_completed", state.session_id)
-        del self._sessions[state.session_id]
+        self._sessions.pop(state.session_id, None)
         log.info("Session %s completed", state.session_id)
 
     async def _fail_session(self, state: SessionState, error: str) -> None:
         """Finalize a failed session."""
+        if state.session_id not in self._sessions:
+            return  # already finalized (race with timeout/failure)
         self._db.update_session_state(state.session_id, "failed")
 
         if state.caller_reply_topic and self._client:
@@ -558,7 +562,7 @@ class Supervisor:
             state.session_id,
             data={"error": error[:200]},
         )
-        del self._sessions[state.session_id]
+        self._sessions.pop(state.session_id, None)
         log.info("Session %s failed", state.session_id)
 
     # --- Runtime API ---
@@ -654,6 +658,10 @@ class Supervisor:
             req = A2ARequest.from_json(payload)
         except Exception as e:
             log.error("Bad inbound JSON-RPC: %s", e)
+            return
+
+        # Ignore our own dispatched requests (received via wildcard subscription)
+        if req.sender == "supervisor":
             return
 
         # Check if this is a composed app (has a published card)

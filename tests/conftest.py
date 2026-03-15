@@ -1,7 +1,7 @@
 """Shared fixtures and helpers for live e2e tests.
 
-Provides: supervisor subprocess management, MQTT retained message cleanup,
-and send_and_collect() for publishing requests and collecting replies.
+Provides: process management (supervisor, agent-runner), MQTT helpers
+(send_and_collect, wait_for_discovery), and agent config scaffolding.
 """
 
 from __future__ import annotations
@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import select
 import signal
 import socket
 import subprocess
+import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from skitter.mqtt import (
     A2A_UNIT,
     make_properties,
     mqtt_client_kwargs,
+    topic_discovery,
     topic_reply,
     topic_result_wildcard,
 )
@@ -63,65 +65,108 @@ def mqtt_available() -> bool:
 needs_mqtt = pytest.mark.skipif(not mqtt_available(), reason="No MQTT broker")
 
 
+def runtime_available(runtime: str) -> bool:
+    import shutil
+
+    if runtime == "claude":
+        return bool(shutil.which("claude") and "CLAUDECODE" not in os.environ)
+    if runtime == "codex":
+        return bool(shutil.which("codex"))
+    return False
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--runtime",
+        action="store",
+        default=None,
+        choices=["claude", "codex"],
+        help="Runtime to test (claude or codex). Default: auto-detect.",
+    )
+
+
 # ---------------------------------------------------------------------------
-# Fixtures
+# Agent config scaffolding
 # ---------------------------------------------------------------------------
 
 
-def write_test_configs(
-    agent_id: str,
-    runtime: str,
-    model: str = "",
-) -> list[Path]:
-    """Create temporary agent YAML in ~/.skitter/. Returns created paths."""
-    agent_yaml = AGENTS_DIR / f"{agent_id}.yaml"
-    created = []
-
+def write_agent_yaml(agent_id: str, runtime: str, model: str = "") -> Path:
+    """Write a minimal agent YAML to ~/.skitter/agents/. Returns the path."""
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = AGENTS_DIR / f"{agent_id}.yaml"
+    data: dict = {
+        "name": f"Test {runtime.title()} Agent",
+        "description": f"Minimal {runtime} test agent",
+        "runtime": runtime,
+    }
+    if model:
+        data["model"] = model
+    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    return path
 
-    if not agent_yaml.exists():
-        agent_yaml.write_text(
-            yaml.dump(
-                {
-                    "name": f"Test {runtime.title()} Agent",
-                    "description": f"Minimal {runtime} test agent",
-                    "runtime": runtime,
-                }
-            )
-        )
-        created.append(agent_yaml)
 
-    return created
+# ---------------------------------------------------------------------------
+# Process management — stdout goes to log files to avoid pipe buffer deadlock
+# ---------------------------------------------------------------------------
+
+
+def _start_process(
+    cmd: list[str],
+    marker: str,
+    label: str = "process",
+    timeout_s: float = 15.0,
+) -> tuple[subprocess.Popen, Path]:
+    """Start a subprocess, wait for `marker` in its output. Returns (proc, log_path)."""
+    log_path = Path(tempfile.mktemp(prefix=f"skitter-test-{label}-", suffix=".log"))
+    log_file = log_path.open("w")
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            log_file.close()
+            out = log_path.read_text()
+            pytest.fail(f"{label} exited early (rc={proc.returncode}): {out}")
+        if marker in log_path.read_text():
+            return proc, log_path
+        time.sleep(0.1)
+    proc.kill()
+    log_file.close()
+    out = log_path.read_text()
+    pytest.fail(f"{label} did not become ready within {timeout_s}s:\n{out}")
+    return proc, log_path  # unreachable, keeps type checker happy
 
 
 def start_supervisor() -> subprocess.Popen:
-    """Start the supervisor as a subprocess, wait for it to be ready."""
-    env = os.environ.copy()
-    env.pop("CLAUDECODE", None)
-    proc = subprocess.Popen(
+    """Start the supervisor with a fresh DB, wait for it to be ready."""
+    # Remove leftover DB from previous runs so recovery doesn't pollute tests
+    db_path = Path.home() / ".skitter" / "skitter.db"
+    for suffix in ("", "-wal", "-shm"):
+        (db_path.parent / f"{db_path.name}{suffix}").unlink(missing_ok=True)
+
+    proc, _ = _start_process(
         ["uv", "run", "python", "-m", "skitter"],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        marker="listening on",
+        label="supervisor",
     )
-    ready = False
-    for _ in range(100):  # up to 10 seconds
-        if proc.poll() is not None:
-            out = proc.stdout.read() if proc.stdout else ""
-            pytest.fail(f"Supervisor exited early: {out}")
-        if select.select([proc.stdout], [], [], 0.1)[0]:
-            line = proc.stdout.readline()
-            if "Supervisor ready" in line or "listening on" in line:
-                ready = True
-                break
-    if not ready:
-        proc.kill()
-        pytest.fail("Supervisor did not become ready within 10 seconds")
     return proc
 
 
-def stop_supervisor(proc: subprocess.Popen) -> None:
+def start_agent_runner(agent_id: str) -> subprocess.Popen:
+    """Start an agent-runner subprocess, wait for it to be ready."""
+    proc, log_path = _start_process(
+        ["uv", "run", "python", "-m", "skitter", "agent-runner", agent_id],
+        marker="Listening on",
+        label=f"agent-{agent_id}",
+    )
+    return proc
+
+
+def stop_process(proc: subprocess.Popen) -> None:
+    """Gracefully stop a subprocess (SIGINT, then kill after timeout)."""
+    if proc.poll() is not None:
+        return
     proc.send_signal(signal.SIGINT)
     try:
         proc.wait(timeout=5)
@@ -135,6 +180,27 @@ def stop_supervisor(proc: subprocess.Popen) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def wait_for_discovery(agent_id: str, timeout: float = 10.0) -> dict:
+    """Wait for an agent's discovery card to appear on the broker."""
+    topic = topic_discovery(agent_id)
+    async with aiomqtt.Client(
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/test-disco-{uuid.uuid4().hex[:6]}",
+        ),
+    ) as client:
+        await client.subscribe(topic, qos=1)
+        try:
+            async with asyncio.timeout(timeout):
+                async for msg in client.messages:
+                    if msg.payload:
+                        return json.loads(msg.payload)
+        except TimeoutError:
+            pytest.fail(
+                f"Discovery card for '{agent_id}' did not appear within {timeout}s"
+            )
+    return {}
+
+
 async def clean_retained():
     """Clear leftover retained messages from previous test runs."""
     async with aiomqtt.Client(
@@ -142,20 +208,14 @@ async def clean_retained():
             identifier=f"{A2A_ORG}/{A2A_UNIT}/test-cleaner-{uuid.uuid4().hex[:6]}",
         ),
     ) as client:
-        for pattern in [
-            topic_result_wildcard(),
-        ]:
-            await client.subscribe(pattern, qos=1)
-            try:
-                async with asyncio.timeout(0.5):
-                    async for msg in client.messages:
-                        if msg.retain and msg.payload:
-                            await client.publish(
-                                str(msg.topic), b"", qos=1, retain=True
-                            )
-            except TimeoutError:
-                pass
-            await client.unsubscribe(pattern)
+        await client.subscribe(topic_result_wildcard(), qos=1)
+        try:
+            async with asyncio.timeout(0.5):
+                async for msg in client.messages:
+                    if msg.retain and msg.payload:
+                        await client.publish(str(msg.topic), b"", qos=1, retain=True)
+        except TimeoutError:
+            pass
 
 
 async def send_and_collect(
@@ -163,7 +223,7 @@ async def send_and_collect(
     msg: A2ARequest,
     timeout: float = 60.0,
 ) -> str:
-    """Publish request via MQTT with v5 properties, collect reply."""
+    """Publish A2A request, stream replies, return terminal result."""
     test_id = uuid.uuid4().hex[:8]
     reply_t = topic_reply("test", test_id)
 

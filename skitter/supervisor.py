@@ -538,9 +538,9 @@ class Supervisor:
             log.error("Bad inbound JSON-RPC: %s", e)
             return
 
-        # Check if this is a composed app
+        # Check if this is a composed app (has a published card)
         app = self._db.get_app(agent_id)
-        if app:
+        if app and app.card_json:
             version = self._db.get_current_version(agent_id)
             if not version:
                 await self._send_error(
@@ -699,16 +699,22 @@ class Supervisor:
         variables = variables or {}
         tasks = []
         for t in wf.tasks:
-            tasks.append(
-                {
-                    "id": t.id,
-                    "agent": t.agent,
-                    "description": safe_format(t.description, variables),
-                    "needs": list(t.needs),
-                    "next": t.next,
-                }
-            )
-        return {"tasks": tasks}
+            task_dict: dict = {
+                "id": t.id,
+                "agent": t.agent,
+                "description": safe_format(t.description, variables),
+                "needs": list(t.needs),
+                "next": t.next,
+            }
+            if t.model:
+                task_dict["model"] = t.model
+            tasks.append(task_dict)
+        graph: dict = {"tasks": tasks}
+        if wf.workspace:
+            graph["workspace"] = wf.workspace
+        if wf.variables:
+            graph["variables"] = wf.variables
+        return graph
 
     async def _send_error(
         self,
@@ -800,12 +806,39 @@ class Supervisor:
 
             # Dispatch any newly ready tasks
             await self.dispatch_ready(state)
+
+            # Schedule timeout for recovered inflight tasks — if no reply
+            # arrives within the timeout, the task is assumed lost.
+            if state.inflight:
+                for tid in list(state.inflight):
+                    asyncio.create_task(
+                        self._timeout_inflight(state, tid, timeout=120.0)
+                    )
+
             log.info(
                 "Recovered session %s (%d tasks, %d inflight, %d pending)",
                 state.session_id,
                 len(state.graph),
                 len(state.inflight),
                 len(state.pending),
+            )
+
+    async def _timeout_inflight(
+        self, state: SessionState, task_id: str, timeout: float
+    ) -> None:
+        """Fail a recovered inflight task if no reply arrives within timeout."""
+        await asyncio.sleep(timeout)
+        if state.session_id in self._sessions and task_id in state.inflight:
+            log.warning(
+                "Recovered task %s/%s timed out after %.0fs — failing",
+                state.session_id,
+                task_id,
+                timeout,
+            )
+            await self._fail_task(
+                state,
+                task_id,
+                f"Task timed out during recovery (no reply within {timeout:.0f}s)",
             )
 
     # --- Workflow card publishing ---

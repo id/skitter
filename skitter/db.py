@@ -260,6 +260,10 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
 
 class SqliteDB:
     def __init__(self, path: str) -> None:
+        if path != ":memory:":
+            from pathlib import Path
+
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")

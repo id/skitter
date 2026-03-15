@@ -103,7 +103,7 @@ def cmd_run(workflow_id: str, variables: dict[str, str], wait: bool = True) -> N
 
     asyncio.run(
         send_and_wait(
-            topic_request(f"workflow-{workflow_id}"),
+            topic_request(workflow_id),
             req.to_json(),
             request_id,
             _print_reply,

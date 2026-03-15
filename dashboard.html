@@ -558,7 +558,7 @@
           const card = JSON.parse(raw);
           const cardId = p[5];
           if (cardId === 'supervisor') return;
-          if (cardId.startsWith('workflow-')) {
+          if (card.metadata && card.metadata.tasks) {
             state.workflowCards.set(cardId, card);
             renderWorkflows();
           } else {

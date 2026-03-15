@@ -118,7 +118,7 @@ async def run_chat(session_id: str) -> None:
 
                 # Route to the correct agent/workflow request topic
                 if workflow_id:
-                    request_topic = topic_request(f"workflow-{workflow_id}")
+                    request_topic = topic_request(workflow_id)
                 elif agent_id:
                     request_topic = topic_request(agent_id)
                 else:

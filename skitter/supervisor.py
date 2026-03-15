@@ -131,9 +131,9 @@ async def handle_request(
 
     session_id = uuid.uuid4().hex[:16]
 
-    workflow_id = ""
-    if agent_id.startswith("workflow-"):
-        workflow_id = agent_id.removeprefix("workflow-")
+    # Detect workflow by checking if agent_id matches a workflow definition
+    workflow_id = agent_id if agent_id in workflows else ""
+    if workflow_id:
         agent_id = ""
 
     if workflow_id:

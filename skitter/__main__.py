@@ -30,10 +30,14 @@ def dispatch() -> None:
         from skitter.docker_cli import main
 
         main()
-    elif subcmd == "publish":
-        from skitter.discovery import main as discovery_main
+    elif subcmd == "agent-runner":
+        from skitter.agent_runner import main as runner_main
 
-        discovery_main()
+        runner_main()
+    elif subcmd == "pull":
+        from skitter.pull import main as pull_main
+
+        pull_main()
     elif subcmd == "deploy":
         from skitter.deploy_fly import cmd_deploy_fly
 

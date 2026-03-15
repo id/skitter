@@ -252,8 +252,8 @@ class TestTopicParsing:
         assert _parse_agent_id_from_topic(topic) == "researcher"
 
     def test_parse_workflow_id(self):
-        topic = "$a2a/v1/request/skitter/default/workflow-quick-research"
-        assert _parse_agent_id_from_topic(topic) == "workflow-quick-research"
+        topic = "$a2a/v1/request/skitter/default/quick-research"
+        assert _parse_agent_id_from_topic(topic) == "quick-research"
 
     def test_parse_short_topic(self):
         assert _parse_agent_id_from_topic("too/short") == ""
@@ -482,11 +482,10 @@ class TestSpawn:
 
 class TestStorage:
     def test_config_loaders_exist(self):
-        from skitter.config import load_agents, load_cards, load_workflows
+        from skitter.config import load_agents, load_workflows
 
         assert callable(load_agents)
         assert callable(load_workflows)
-        assert callable(load_cards)
 
 
 # --- Respawn module ---

@@ -877,6 +877,237 @@ class TestLLMComplete:
                 await complete("hello", model="test-model")
 
 
+# --- Graph generation and validation ---
+
+
+class TestGraphValidation:
+    def test_valid_graph(self):
+        from skitter.graph_gen import validate_graph
+
+        graph = {
+            "tasks": [
+                {
+                    "id": "read",
+                    "agent": "reader",
+                    "description": "Read data",
+                    "needs": [],
+                    "next": "analyze",
+                },
+                {
+                    "id": "analyze",
+                    "agent": "analyzer",
+                    "description": "Analyze data",
+                    "needs": ["read"],
+                    "next": "output",
+                },
+            ]
+        }
+        validate_graph(graph, {"reader", "analyzer"})  # should not raise
+
+    def test_empty_tasks(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        with pytest.raises(GraphValidationError, match="non-empty"):
+            validate_graph({"tasks": []}, {"a"})
+
+    def test_unknown_agent(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        graph = {
+            "tasks": [{"id": "t1", "agent": "unknown", "needs": [], "next": "output"}]
+        }
+        with pytest.raises(GraphValidationError, match="unknown agent"):
+            validate_graph(graph, {"reader"})
+
+    def test_duplicate_task_id(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        graph = {
+            "tasks": [
+                {"id": "t1", "agent": "a", "needs": [], "next": "output"},
+                {"id": "t1", "agent": "a", "needs": [], "next": "output"},
+            ]
+        }
+        with pytest.raises(GraphValidationError, match="Duplicate"):
+            validate_graph(graph, {"a"})
+
+    def test_cycle_detected(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        graph = {
+            "tasks": [
+                {"id": "a", "agent": "x", "needs": ["b"], "next": "b"},
+                {"id": "b", "agent": "y", "needs": ["a"], "next": "output"},
+            ]
+        }
+        with pytest.raises(GraphValidationError, match="Cycle"):
+            validate_graph(graph, {"x", "y"})
+
+    def test_no_terminal(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        graph = {
+            "tasks": [
+                {"id": "t1", "agent": "a", "needs": [], "next": "t1"},
+            ]
+        }
+        with pytest.raises(GraphValidationError, match="terminal"):
+            validate_graph(graph, {"a"})
+
+    def test_unknown_need(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        graph = {
+            "tasks": [
+                {"id": "t1", "agent": "a", "needs": ["nonexistent"], "next": "output"},
+            ]
+        }
+        with pytest.raises(GraphValidationError, match="unknown task"):
+            validate_graph(graph, {"a"})
+
+    def test_invalid_next_reference(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        graph = {
+            "tasks": [
+                {"id": "t1", "agent": "a", "needs": [], "next": "nonexistent"},
+            ]
+        }
+        with pytest.raises(GraphValidationError, match="not a valid task ID"):
+            validate_graph(graph, {"a"})
+
+
+class TestGraphGeneration:
+    def _make_cards(self):
+        return [
+            {
+                "name": "Reader",
+                "description": "Reads sensor data",
+                "skills": [{"id": "reader", "name": "Reader"}],
+            },
+            {
+                "name": "Analyzer",
+                "description": "Analyzes data",
+                "skills": [{"id": "analyzer", "name": "Analyzer"}],
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_generate_valid_graph(self):
+        from unittest.mock import AsyncMock
+
+        from skitter.graph_gen import generate_graph
+
+        valid_graph = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "read",
+                        "agent": "reader",
+                        "description": "Read sensor data",
+                        "needs": [],
+                        "next": "analyze",
+                    },
+                    {
+                        "id": "analyze",
+                        "agent": "analyzer",
+                        "description": "Analyze the data",
+                        "needs": ["read"],
+                        "next": "output",
+                    },
+                ]
+            }
+        )
+
+        with patch("skitter.graph_gen.complete", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = valid_graph
+            graph = await generate_graph(
+                "Read and analyze sensors", self._make_cards(), model="test"
+            )
+
+        assert len(graph["tasks"]) == 2
+        assert graph["tasks"][0]["agent"] == "reader"
+
+    @pytest.mark.asyncio
+    async def test_generate_strips_markdown_fences(self):
+        from unittest.mock import AsyncMock
+
+        from skitter.graph_gen import generate_graph
+
+        fenced = '```json\n{"tasks": [{"id": "t1", "agent": "reader", "description": "do it", "needs": [], "next": "output"}]}\n```'
+
+        with patch("skitter.graph_gen.complete", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = fenced
+            graph = await generate_graph("Do it", self._make_cards(), model="test")
+
+        assert len(graph["tasks"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_generate_retries_on_validation_error(self):
+        from unittest.mock import AsyncMock
+
+        from skitter.graph_gen import generate_graph
+
+        bad_graph = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "agent": "nonexistent",
+                        "needs": [],
+                        "next": "output",
+                    }
+                ]
+            }
+        )
+        good_graph = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "agent": "reader",
+                        "description": "Read",
+                        "needs": [],
+                        "next": "output",
+                    }
+                ]
+            }
+        )
+
+        with patch("skitter.graph_gen.complete", new_callable=AsyncMock) as mock_llm:
+            mock_llm.side_effect = [bad_graph, good_graph]
+            graph = await generate_graph("Read", self._make_cards(), model="test")
+
+        assert mock_llm.call_count == 2
+        assert graph["tasks"][0]["agent"] == "reader"
+
+    @pytest.mark.asyncio
+    async def test_generate_fails_after_retries(self):
+        from unittest.mock import AsyncMock
+
+        from skitter.graph_gen import GraphValidationError, generate_graph
+
+        bad_graph = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "agent": "nonexistent",
+                        "needs": [],
+                        "next": "output",
+                    }
+                ]
+            }
+        )
+
+        with patch("skitter.graph_gen.complete", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = bad_graph
+            with pytest.raises(GraphValidationError, match="unknown agent"):
+                await generate_graph("Read", self._make_cards(), model="test")
+
+        assert mock_llm.call_count == 2
+
+
 # --- Runtime API ---
 
 

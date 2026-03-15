@@ -846,7 +846,7 @@ class Coordinator:
 
         try:
             async with aiomqtt.Client(
-                **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/skitter"),
+                **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator"),
             ) as client:
                 self._client = client
 

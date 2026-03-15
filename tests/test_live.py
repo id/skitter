@@ -17,6 +17,8 @@ Note: claude tests require CLAUDECODE to be unset (can't run claude inside Claud
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import uuid
 
@@ -41,6 +43,9 @@ MODELS = {
     "claude": os.environ.get("SKITTER_TEST_CLAUDE_MODEL", "haiku"),
     "codex": os.environ.get("SKITTER_TEST_CODEX_MODEL", ""),
 }
+
+# Set LLM model for graph generation (coordinator subprocess inherits env)
+os.environ.setdefault("SKITTER_LLM_MODEL", "claude-haiku-4-5-20251001")
 
 
 def _pick_runtime(config) -> str:
@@ -79,6 +84,23 @@ def agent(runtime, coordinator):
     yaml_path.unlink(missing_ok=True)
 
 
+@pytest.fixture(scope="module")
+def two_agents(runtime, coordinator):
+    """Start two agent-runners for composed app testing."""
+    agent_a = f"test-{runtime}-a"
+    agent_b = f"test-{runtime}-b"
+    model = MODELS.get(runtime, "")
+    yaml_a = write_agent_yaml(agent_a, runtime, model)
+    yaml_b = write_agent_yaml(agent_b, runtime, model)
+    proc_a = start_agent_runner(agent_a)
+    proc_b = start_agent_runner(agent_b)
+    yield agent_a, agent_b
+    stop_process(proc_a)
+    stop_process(proc_b)
+    yaml_a.unlink(missing_ok=True)
+    yaml_b.unlink(missing_ok=True)
+
+
 @needs_mqtt
 class TestLive:
     @pytest.mark.asyncio
@@ -102,15 +124,62 @@ class TestLive:
         assert "4" in result
         print(f"\nResult: {result}")
 
+
+@needs_mqtt
+class TestComposedApp:
     @pytest.mark.asyncio
-    async def test_unknown_agent_rejected(self, agent):
-        """Request for a nonexistent agent returns an error."""
-        req = A2ARequest(
-            text="Hello",
-            request_id=f"unknown-{uuid.uuid4().hex[:8]}",
+    async def test_create_and_run_composed_app(self, two_agents):
+        """Full flow: create app via runtime API, send request, verify orchestrated result."""
+        agent_a, agent_b = two_agents
+
+        # Wait for both agents to be discovered by broker
+        await wait_for_discovery(agent_a)
+        await wait_for_discovery(agent_b)
+
+        # Give coordinator time to process discovery messages
+        await asyncio.sleep(2)
+
+        # Step 1: Create composed app via skitter runtime API
+        spec = json.dumps(
+            {
+                "name": "Test Composed App",
+                "description": "E2E test app",
+                "instructions": (
+                    f"First, {agent_a} should say a short greeting. "
+                    f"Then, {agent_b} should summarize what {agent_a} said."
+                ),
+                "agents": [agent_a, agent_b],
+            }
+        )
+
+        create_req = A2ARequest(
+            text=f"create app {spec}",
+            request_id=f"create-{uuid.uuid4().hex[:8]}",
             sender="test",
         )
-        result = await send_and_collect(
-            topic_request("nonexistent-agent-xyz"), req, timeout=10.0
+        print("\nCreating composed app...")
+        create_result = await send_and_collect(
+            topic_request("skitter"), create_req, timeout=30.0
         )
-        assert "Unknown agent" in result
+        assert create_result, "Create app returned empty result"
+
+        result_data = json.loads(create_result)
+        assert "created_app" in result_data, f"Unexpected response: {create_result}"
+        app_id = result_data["created_app"]["app_id"]
+        version = result_data["created_app"]["version"]
+        print(f"Created app '{app_id}' v{version}")
+
+        # Give coordinator time to subscribe to the new app topic
+        await asyncio.sleep(1)
+
+        # Step 2: Send a request to the composed app
+        await clean_retained()
+        app_req = A2ARequest(
+            text="Please greet me warmly.",
+            request_id=f"app-{uuid.uuid4().hex[:8]}",
+            sender="test",
+        )
+        print(f"Sending request to composed app '{app_id}'...")
+        result = await send_and_collect(topic_request(app_id), app_req, timeout=120.0)
+        assert result, "Composed app returned empty result"
+        print(f"\nComposed app result: {result}")

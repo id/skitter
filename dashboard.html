@@ -557,7 +557,7 @@
         try {
           const card = JSON.parse(raw);
           const cardId = p[5];
-          if (cardId === 'coordinator' || cardId === 'skitter') return;
+          if (cardId === 'skitter') return;
           if (card.metadata && card.metadata.tasks) {
             state.workflowCards.set(cardId, card);
             renderWorkflows();

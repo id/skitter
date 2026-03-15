@@ -82,6 +82,11 @@ def topic_reply(agent_id: str, suffix: str) -> str:
     return f"{_PREFIX}/reply/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{suffix}"
 
 
+def topic_a2a_event(agent_id: str) -> str:
+    """A2A event topic: $a2a/v1/event/{org}/{unit}/{agent_id}"""
+    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
+
+
 # --- Skitter internal topics (retained coordination state) ---
 
 _SK = "skitter"

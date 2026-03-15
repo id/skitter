@@ -40,6 +40,7 @@ from skitter.mqtt import (
     get_response_topic,
     make_properties,
     mqtt_client_kwargs,
+    topic_a2a_event,
     topic_discovery,
     topic_discovery_wildcard,
     topic_request,
@@ -202,6 +203,33 @@ class Supervisor:
     def registry(self) -> DiscoveryRegistry:
         return self._registry
 
+    # --- Session events ---
+
+    async def _publish_event(
+        self,
+        event_type: str,
+        session_id: str,
+        task_id: str = "",
+        data: dict | None = None,
+    ) -> None:
+        """Publish a session lifecycle event on the A2A event topic."""
+        if not self._client:
+            return
+        payload = {
+            "event": event_type,
+            "session_id": session_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if task_id:
+            payload["task_id"] = task_id
+        if data:
+            payload["data"] = data
+        await self._client.publish(
+            topic_a2a_event(RUNTIME_AGENT_ID),
+            json.dumps(payload),
+            qos=1,
+        )
+
     # --- Session creation ---
 
     def create_session_from_graph(
@@ -336,6 +364,7 @@ class Supervisor:
             target.agent,
             request_id,
         )
+        await self._publish_event("task_started", state.session_id, task_id=task_id)
 
     # --- Reply handling ---
 
@@ -420,6 +449,7 @@ class Supervisor:
             )
 
         log.info("Task %s/%s completed", state.session_id, task_id)
+        await self._publish_event("task_completed", state.session_id, task_id=task_id)
 
         # Check if session is complete
         if not state.inflight and not state.pending:
@@ -476,6 +506,12 @@ class Supervisor:
             error[:100],
             len(newly_failed),
         )
+        await self._publish_event(
+            "task_failed",
+            state.session_id,
+            task_id=task_id,
+            data={"error": error[:200]},
+        )
 
         # Check if session is done (all inflight finished)
         if not state.inflight:
@@ -506,6 +542,7 @@ class Supervisor:
                 state.caller_reply_topic, event, qos=1, properties=props
             )
 
+        await self._publish_event("session_completed", state.session_id)
         del self._sessions[state.session_id]
         log.info("Session %s completed", state.session_id)
 
@@ -525,6 +562,11 @@ class Supervisor:
                 state.caller_reply_topic, event, qos=1, properties=props
             )
 
+        await self._publish_event(
+            "session_failed",
+            state.session_id,
+            data={"error": error[:200]},
+        )
         del self._sessions[state.session_id]
         log.info("Session %s failed", state.session_id)
 
@@ -638,6 +680,7 @@ class Supervisor:
                     )
 
             await self.dispatch_ready(state)
+            await self._publish_event("session_created", state.session_id)
             log.info(
                 "App '%s' session %s started (%d tasks)",
                 agent_id,
@@ -690,6 +733,7 @@ class Supervisor:
                         )
 
                 await self.dispatch_ready(state)
+                await self._publish_event("session_created", state.session_id)
                 log.info(
                     "Workflow '%s' session %s started (%d tasks)",
                     agent_id,
@@ -750,6 +794,7 @@ class Supervisor:
                 )
 
         await self.dispatch_ready(state)
+        await self._publish_event("session_created", state.session_id)
         log.info(
             "Agent '%s' session %s started",
             agent_id,

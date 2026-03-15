@@ -13,6 +13,7 @@ from skitter.config import (
 )
 from skitter.supervisor import _parse_agent_id_from_topic
 from skitter.mqtt import (
+    topic_a2a_event,
     topic_discovery_wildcard,
     topic_dead_wildcard,
     topic_event,
@@ -238,6 +239,10 @@ class TestTopics:
         t = topic_request("researcher")
         assert "/request/" in t
         assert "/researcher" in t
+
+    def test_a2a_event_topic(self):
+        t = topic_a2a_event("skitter-runtime")
+        assert t == "$a2a/v1/event/skitter/default/skitter-runtime"
 
 
 # --- Topic parsing ---
@@ -1201,3 +1206,35 @@ class TestSupervisorRuntimeRouting:
             b'{"name":"Skitter Runtime"}',
         )
         assert sup.registry.get(AGENT_ID) is None
+
+    @pytest.mark.asyncio
+    async def test_publish_event_structure(self):
+        """Verify _publish_event builds correct payload."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from skitter.supervisor import Supervisor
+
+        sup = Supervisor(self.db)
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        sup._client = mock_client
+
+        await sup._publish_event("task_completed", "sess1", task_id="research")
+        mock_client.publish.assert_called_once()
+        topic, payload_str = mock_client.publish.call_args.args[:2]
+        assert "/event/" in topic
+        assert "skitter-runtime" in topic
+        payload = json.loads(payload_str)
+        assert payload["event"] == "task_completed"
+        assert payload["session_id"] == "sess1"
+        assert payload["task_id"] == "research"
+        assert "timestamp" in payload
+
+    @pytest.mark.asyncio
+    async def test_publish_event_no_client(self):
+        """No crash when client is None."""
+        from skitter.supervisor import Supervisor
+
+        sup = Supervisor(self.db)
+        # _client is None by default — should not raise
+        await sup._publish_event("session_created", "sess1")

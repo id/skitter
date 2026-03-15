@@ -28,6 +28,8 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_dead_wildcard,
+    topic_discovery,
+    topic_discovery_wildcard,
     topic_request_wildcard,
     topic_result,
     topic_session,
@@ -376,27 +378,46 @@ def _find_terminal_task(session: Session, start_task: str) -> str:
     return last_valid
 
 
-def _build_all_cards(
-    agents: dict[str, AgentDef],
+def _build_workflow_cards(
     workflows: dict[str, WorkflowDef],
 ) -> dict[str, str]:
-    """Build card JSON for all standalone agents and workflows."""
-    workflow_agents: set[str] = set()
-    for wf in workflows.values():
-        for t in wf.tasks:
-            workflow_agents.add(t.agent)
+    """Build card JSON for workflow/composed-app cards only.
 
+    Standalone agents self-register via agent_runner — the supervisor
+    does not publish cards for them.
+    """
     cards: dict[str, str] = {}
-    for agent in agents.values():
-        if agent.id in workflow_agents:
-            continue
-        cards[agent.id] = json.dumps(build_card(agent))
-
     for wf in workflows.values():
         wf_agent = AgentDef(id=wf.id, name=wf.name, description=wf.description)
         cards[wf.id] = json.dumps(build_card(wf_agent, workflow=wf))
-
     return cards
+
+
+async def _cleanup_stale_cards(active_ids: set[str]) -> None:
+    """Remove retained discovery cards for workflows no longer in config."""
+    try:
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor-cleanup"),
+        ) as client:
+            discovered: dict[str, bool] = {}
+            await client.subscribe(topic_discovery_wildcard(), qos=1)
+            try:
+                async with asyncio.timeout(3.0):
+                    async for msg in client.messages:
+                        card_id = str(msg.topic).split("/")[-1]
+                        if msg.payload:
+                            discovered[card_id] = True
+            except TimeoutError:
+                pass
+
+            for card_id in discovered:
+                if card_id not in active_ids and card_id != "supervisor":
+                    await client.publish(
+                        topic_discovery(card_id), b"", qos=1, retain=True
+                    )
+                    log.info("Cleared stale discovery card: %s", card_id)
+    except Exception:
+        log.warning("Failed to clean up stale discovery cards")
 
 
 async def run_listen() -> None:
@@ -409,12 +430,15 @@ async def run_listen() -> None:
     if workflows:
         log.info("Loaded %d workflows: %s", len(workflows), ", ".join(workflows))
 
-    cards = _build_all_cards(agents, workflows)
-    publishers: list[CardPublisher] = []
+    cards = _build_workflow_cards(workflows)
+    publishers: dict[str, CardPublisher] = {}
     for card_id, card_json in cards.items():
         pub = CardPublisher(card_id, card_json)
-        publishers.append(pub)
+        publishers[card_id] = pub
         await pub.start()
+
+    # Clean up stale workflow cards (workflows removed from config)
+    await _cleanup_stale_cards(set(cards.keys()))
 
     try:
         async with aiomqtt.Client(
@@ -463,7 +487,7 @@ async def run_listen() -> None:
                 elif topic.startswith("skitter/event/"):
                     await handle_dead_event(client, payload)
     finally:
-        for pub in publishers:
+        for pub in publishers.values():
             await pub.stop()
 
 

@@ -1,8 +1,7 @@
 """Tests for skitter supervisor architecture."""
 
-import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -12,14 +11,11 @@ from skitter.config import (
     WorkflowTask,
     WorkspaceConfig,
 )
-from skitter.supervisor import (
-    create_session,
-    _parse_agent_id_from_topic,
-)
+from skitter.supervisor import _parse_agent_id_from_topic
 from skitter.mqtt import (
     topic_discovery_wildcard,
-    topic_event,
     topic_dead_wildcard,
+    topic_event,
     topic_request,
     topic_request_wildcard,
     topic_result,
@@ -260,113 +256,104 @@ class TestTopicParsing:
         assert _parse_agent_id_from_topic("too/short") == ""
 
 
-# --- Session building ---
+# --- Session building (DB-backed supervisor) ---
 
 
-class TestCreateSession:
+class TestSupervisorSession:
     def setup_method(self):
-        self.agents = {
-            "researcher": AgentDef(
-                id="researcher",
-                name="Researcher",
-                runtime="claude",
-            ),
-            "writer": AgentDef(
-                id="writer",
-                name="Writer",
-                runtime="claude",
-            ),
-            "codex_agent": AgentDef(
-                id="codex_agent",
-                name="Codex Agent",
-                runtime="codex",
-            ),
-        }
-        self.workflow = WorkflowDef(
-            id="test",
-            name="Test Workflow",
-            variables=["topic"],
-            tasks=[
-                WorkflowTask(
-                    id="research",
-                    agent="researcher",
-                    description="Research '{topic}'",
-                    next="fact_check",
-                    needs=[],
-                ),
-                WorkflowTask(
-                    id="analyze",
-                    agent="researcher",
-                    description="Analyze '{topic}'",
-                    next="fact_check",
-                    needs=[],
-                ),
-                WorkflowTask(
-                    id="fact_check",
-                    agent="writer",
-                    description="Check '{topic}'",
-                    next="output",
-                    needs=["research", "analyze"],
-                ),
-            ],
-        )
+        from skitter.db import SqliteDB
 
-    def test_workflow_session(self):
-        session = create_session(
-            "c1",
-            "test",
-            workflow=self.workflow,
-            variables={"topic": "AI"},
-            agents=self.agents,
-        )
-        assert "research" in session.tasks
-        assert "analyze" in session.tasks
-        assert "fact_check" in session.tasks
-        assert session.tasks["research"].next == "fact_check"
-        assert session.tasks["fact_check"].needs == ["research", "analyze"]
-        assert session.workflow_id == "test"
+        self.db = SqliteDB(":memory:")
 
-    def test_agent_session_sets_output(self):
-        session = create_session(
-            "c1",
-            "test",
-            agent_id="researcher",
-            text="test",
-            agents=self.agents,
+    def teardown_method(self):
+        self.db.close()
+
+    def _make_supervisor(self):
+        from skitter.supervisor import Supervisor
+
+        return Supervisor(self.db)
+
+    def test_create_session_from_graph(self):
+        from skitter.db import App, AppVersion
+
+        sup = self._make_supervisor()
+        self.db.create_app(App(id="test-app", name="Test"))
+        self.db.create_app_version(
+            AppVersion(
+                id="v1",
+                app_id="test-app",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "research",
+                                "agent": "researcher",
+                                "description": "Research AI",
+                                "needs": [],
+                                "next": "review",
+                            },
+                            {
+                                "id": "review",
+                                "agent": "writer",
+                                "description": "Review results",
+                                "needs": ["research"],
+                                "next": "output",
+                            },
+                        ]
+                    }
+                ),
+            )
         )
-        assert "researcher" in session.tasks
-        assert session.tasks["researcher"].next == "output"
-        assert session.workflow_id == "researcher"
+        req = A2ARequest(text="test", request_id="r1")
+        state = sup.create_session_from_graph(
+            graph_json=self.db.get_app_version("v1").graph_json,
+            app_version_id="v1",
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        assert "research" in state.graph
+        assert "review" in state.graph
+        assert state.graph["review"].needs == ["research"]
+        assert "research" in state.pending
+        assert "review" in state.pending
 
     def test_variable_interpolation(self):
-        session = create_session(
-            "c1",
-            "test",
-            workflow=self.workflow,
+        from skitter.db import App, AppVersion
+
+        sup = self._make_supervisor()
+        self.db.create_app(App(id="test-app", name="Test"))
+        self.db.create_app_version(
+            AppVersion(
+                id="v1",
+                app_id="test-app",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "research",
+                                "agent": "researcher",
+                                "description": "Research '{topic}'",
+                                "needs": [],
+                                "next": "output",
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+        req = A2ARequest(text="test", request_id="r1")
+        state = sup.create_session_from_graph(
+            graph_json=self.db.get_app_version("v1").graph_json,
+            app_version_id="v1",
+            request=req,
+            caller_reply_topic="",
+            caller_correlation="",
             variables={"topic": "quantum"},
-            agents=self.agents,
         )
-        assert "quantum" in session.tasks["research"].description
-
-    def test_runtime_from_agent_def(self):
-        session = create_session(
-            "c1",
-            "test",
-            agent_id="codex_agent",
-            text="code something",
-            agents=self.agents,
-        )
-        assert session.tasks["codex_agent"].runtime == "codex"
-
-    def test_workflow_runtime_from_agent_def(self):
-        session = create_session(
-            "c1",
-            "test",
-            workflow=self.workflow,
-            variables={"topic": "AI"},
-            agents=self.agents,
-        )
-        assert session.tasks["research"].runtime == "claude"
+        assert "quantum" in state.graph["research"].description
 
 
 # --- Entry task detection ---
@@ -418,64 +405,53 @@ class TestEntryTasks:
         assert len(entry) == 0
 
 
-# --- Codex runtime dispatch ---
+# --- App creation ---
 
 
-class TestCodexDispatch:
-    @pytest.mark.asyncio
-    async def test_codex_not_installed(self):
-        """run_agent handles missing codex CLI."""
-        from skitter.worker import run_agent
+class TestAppCreation:
+    def setup_method(self):
+        from skitter.db import SqliteDB
 
-        task = SessionTask(
-            id="code",
-            agent="coder",
-            description="code something",
-            model="gpt-5-nano",
-            runtime="codex",
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    def test_create_app(self):
+        from skitter.apps import create_app
+
+        app, version, card_json = create_app(
+            self.db,
+            name="Test App",
+            description="A test",
+            graph={
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "agent": "researcher",
+                        "description": "do stuff",
+                        "needs": [],
+                        "next": "output",
+                    }
+                ]
+            },
         )
+        assert app is not None
+        assert version.version == 1
+        assert app.card_json != ""
+        card = json.loads(card_json)
+        assert card["name"] == "Test App"
+        assert len(card["metadata"]["tasks"]) == 1
 
-        async def noop_publish(item_type, content):
-            pass
+    def test_version_increment(self):
+        from skitter.apps import create_app
 
-        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result, usage, cost = await run_agent(
-                task, "", "/tmp", noop_publish, asyncio.Event()
-            )
-            assert "codex" in result.lower() and "not found" in result.lower()
-            assert usage is None
-
-    @pytest.mark.asyncio
-    async def test_claude_not_installed(self):
-        """run_agent handles missing claude CLI."""
-        from skitter.worker import run_agent
-
-        task = SessionTask(
-            id="research",
-            agent="researcher",
-            description="do something",
-            runtime="claude",
+        app1, v1, _ = create_app(
+            self.db, app_id="my-app", name="App", graph={"tasks": []}
         )
-
-        async def noop_publish(item_type, content):
-            pass
-
-        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result, usage, cost = await run_agent(
-                task, "", "/tmp", noop_publish, asyncio.Event()
-            )
-            assert "claude" in result.lower() and "not found" in result.lower()
-            assert usage is None
-
-
-# --- Spawn module ---
-
-
-class TestSpawn:
-    def test_spawn_module_exists(self):
-        from skitter.spawn import spawn_worker
-
-        assert callable(spawn_worker)
+        _, v2, _ = create_app(self.db, app_id="my-app", name="App", graph={"tasks": []})
+        assert v1.version == 1
+        assert v2.version == 2
 
 
 # --- Storage module ---
@@ -694,248 +670,111 @@ class TestAgentDefNewFields:
         assert agent.input_modes == ["text/plain"]
 
 
-# --- Respawn module ---
+# --- Dependency resolution ---
 
 
-class TestRespawn:
-    @pytest.mark.asyncio
-    async def test_respawn_with_missing_fields(self):
-        from skitter.supervisor import handle_dead_event
+class TestDependencyResolution:
+    def test_compute_ready_no_needs(self):
+        from skitter.supervisor import SessionState, SessionTask as ST, _compute_ready
 
-        client = MagicMock()
-        await handle_dead_event(client, json.dumps({"status": "dead"}))
+        state = SessionState(session_id="s1", app_version_id="v1")
+        state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
+        state.graph["b"] = ST(task_id="b", agent="r", description="d", needs=["a"])
+        state.pending = {"a", "b"}
+        ready = _compute_ready(state)
+        assert ready == ["a"]
 
-    @pytest.mark.asyncio
-    async def test_respawn_with_valid_event(self):
-        from skitter.supervisor import handle_dead_event
+    def test_compute_ready_after_completion(self):
+        from skitter.supervisor import SessionState, SessionTask as ST, _compute_ready
 
-        client = MagicMock()
-        with patch("skitter.supervisor.spawn_worker") as mock_spawn:
-            await handle_dead_event(
-                client,
-                json.dumps(
-                    {
-                        "status": "dead",
-                        "task": "research",
-                        "agent": "researcher",
-                        "session_id": "s1",
-                    }
-                ),
-            )
-            mock_spawn.assert_called_once_with("researcher", "s1", "research")
+        state = SessionState(session_id="s1", app_version_id="v1")
+        state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
+        state.graph["b"] = ST(task_id="b", agent="r", description="d", needs=["a"])
+        state.results["a"] = "done"
+        state.pending = {"b"}
+        ready = _compute_ready(state)
+        assert ready == ["b"]
 
-    def test_find_terminal_task(self):
-        from skitter.supervisor import _find_terminal_task
-
-        session = Session(session_id="s1", workflow_id="wf1")
-        session.tasks["a"] = SessionTask(id="a", agent="r", description="d", next="b")
-        session.tasks["b"] = SessionTask(id="b", agent="r", description="d", next="c")
-        session.tasks["c"] = SessionTask(
-            id="c", agent="r", description="d", next="output"
-        )
-        assert _find_terminal_task(session, "a") == "c"
-        assert _find_terminal_task(session, "b") == "c"
-        assert _find_terminal_task(session, "c") == "c"
-
-
-class TestFailTask:
-    """Test _fail_task publishes result, status, and caller notification."""
-
-    def _make_session(self):
-        session = Session(
-            session_id="s1",
-            workflow_id="wf1",
-            caller_reply_topic="$a2a/v1/reply/org/unit/caller",
-            caller_correlation="corr-1",
-        )
-        session.tasks["a"] = SessionTask(id="a", agent="r", description="d", next="b")
-        session.tasks["b"] = SessionTask(
-            id="b", agent="w", description="d", next="output"
-        )
-        return session
-
-    @pytest.mark.asyncio
-    async def test_publishes_result_and_status(self):
-        from skitter.supervisor import _fail_task
-
-        client = AsyncMock()
-        session = self._make_session()
-        await _fail_task(client, session, "a", "crash error")
-
-        # Should publish to result topic, status topic, and caller reply
-        assert client.publish.call_count == 3
-        topics = [c.args[0] for c in client.publish.call_args_list]
-        assert "skitter/result/wf1/a/s1" in topics
-        assert "skitter/status/wf1/a/s1" in topics
-        assert "$a2a/v1/reply/org/unit/caller" in topics
-        # Result should have failed=True for downstream cascade
-        for c in client.publish.call_args_list:
-            if "skitter/result/" in c.args[0]:
-                payload = json.loads(c.args[1])
-                assert payload["failed"] is True
-                break
-
-    @pytest.mark.asyncio
-    async def test_status_includes_last_active(self):
-        from skitter.supervisor import _fail_task
-
-        client = AsyncMock()
-        session = self._make_session()
-        await _fail_task(client, session, "a", "crash error")
-
-        # Find the status publish call
-        for c in client.publish.call_args_list:
-            if "skitter/status/" in c.args[0]:
-                payload = json.loads(c.args[1])
-                assert payload["status"] == "failed"
-                assert "last_active" in payload
-                break
-        else:
-            pytest.fail("No status publish found")
-
-    @pytest.mark.asyncio
-    async def test_caller_notified_with_terminal_task(self):
-        from skitter.supervisor import _fail_task
-
-        client = AsyncMock()
-        session = self._make_session()
-        await _fail_task(client, session, "a", "crash error")
-
-        # Caller notification should reference terminal task "b"
-        for c in client.publish.call_args_list:
-            if "$a2a/v1/reply/" in c.args[0]:
-                payload = json.loads(c.args[1])
-                meta = payload["result"]["status"]["metadata"]
-                assert meta["task_name"] == "b"  # terminal task, not "a"
-                assert payload["result"]["status"]["state"] == "failed"
-                break
-        else:
-            pytest.fail("No caller notification found")
-
-    @pytest.mark.asyncio
-    async def test_no_caller_if_no_reply_topic(self):
-        from skitter.supervisor import _fail_task
-
-        client = AsyncMock()
-        session = self._make_session()
-        session.caller_reply_topic = ""
-        await _fail_task(client, session, "a", "crash error")
-
-        # Only result + status, no caller reply
-        assert client.publish.call_count == 2
-
-
-class TestHandleDeadEventFly:
-    """Test handle_dead_event in Fly mode (no respawn, failure propagation)."""
-
-    @pytest.mark.asyncio
-    async def test_normal_exit_ignored(self):
-        """If result exists, dead event is a normal exit — no failure published."""
-        from skitter.supervisor import handle_dead_event
-
-        client = AsyncMock()
-        session = Session(session_id="s1", workflow_id="wf1")
-        session.tasks["t1"] = SessionTask(
-            id="t1", agent="r", description="d", next="output"
+    def test_propagate_failure(self):
+        from skitter.supervisor import (
+            SessionState,
+            SessionTask as ST,
+            _propagate_failure,
         )
 
-        with (
-            patch("skitter.spawn.SPAWN_MODE", "fly"),
-            patch(
-                "skitter.supervisor._probe_task_state",
-                return_value=(session, True),  # has_result=True
-            ),
-        ):
-            await handle_dead_event(
-                client,
-                json.dumps(
-                    {
-                        "status": "dead",
-                        "task": "t1",
-                        "agent": "r",
-                        "session_id": "s1",
-                    }
-                ),
-            )
+        state = SessionState(session_id="s1", app_version_id="v1")
+        state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
+        state.graph["b"] = ST(task_id="b", agent="r", description="d", needs=["a"])
+        state.graph["c"] = ST(task_id="c", agent="r", description="d", needs=["b"])
+        state.failed.add("a")
+        state.pending = {"b", "c"}
+        newly_failed = _propagate_failure(state, "a")
+        assert "b" in newly_failed
+        assert "c" in newly_failed
+        assert "b" in state.failed
+        assert "c" in state.failed
 
-        # No failure published
-        client.publish.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_crash_publishes_failure(self):
-        """If no result exists, dead event triggers failure propagation."""
-        from skitter.supervisor import handle_dead_event
-
-        client = AsyncMock()
-        session = Session(
-            session_id="s1",
-            workflow_id="wf1",
-            caller_reply_topic="$a2a/v1/reply/o/u/c",
-            caller_correlation="corr-1",
-        )
-        session.tasks["t1"] = SessionTask(
-            id="t1", agent="r", description="d", next="output"
+    def test_find_terminal_tasks(self):
+        from skitter.supervisor import (
+            SessionState,
+            SessionTask as ST,
+            _find_terminal_tasks,
         )
 
-        with (
-            patch("skitter.spawn.SPAWN_MODE", "fly"),
-            patch(
-                "skitter.supervisor._probe_task_state",
-                return_value=(session, False),  # has_result=False — crash
-            ),
-        ):
-            await handle_dead_event(
-                client,
-                json.dumps(
-                    {
-                        "status": "dead",
-                        "task": "t1",
-                        "agent": "r",
-                        "session_id": "s1",
-                    }
-                ),
-            )
+        state = SessionState(session_id="s1", app_version_id="v1")
+        state.graph["a"] = ST(task_id="a", agent="r", description="d", next="b")
+        state.graph["b"] = ST(task_id="b", agent="r", description="d", next="output")
+        state.graph["c"] = ST(task_id="c", agent="r", description="d", next="")
+        terminals = _find_terminal_tasks(state)
+        assert set(terminals) == {"b", "c"}
 
-        # Should have published result + status + caller notification
-        assert client.publish.call_count == 3
+    def test_build_context(self):
+        from skitter.supervisor import (
+            SessionState,
+            SessionTask as ST,
+            _build_context,
+        )
 
-    @pytest.mark.asyncio
-    async def test_local_mode_respawns(self):
-        """Local mode respawns instead of probing."""
-        from skitter.supervisor import handle_dead_event
-
-        client = MagicMock()
-        with patch("skitter.supervisor.spawn_worker") as mock_spawn:
-            await handle_dead_event(
-                client,
-                json.dumps(
-                    {
-                        "status": "dead",
-                        "task": "t1",
-                        "agent": "r",
-                        "session_id": "s1",
-                    }
-                ),
-            )
-            mock_spawn.assert_called_once_with("r", "s1", "t1")
+        state = SessionState(session_id="s1", app_version_id="v1")
+        state.results["a"] = "result A"
+        state.results["b"] = "result B"
+        task = ST(task_id="c", agent="w", description="d", needs=["a", "b"])
+        ctx = _build_context(state, task)
+        assert "result A" in ctx
+        assert "result B" in ctx
+        assert "Result from 'a'" in ctx
 
 
-# --- Join context from wait_for_needs ---
+# --- Discovery registry ---
 
 
-class TestJoinContext:
-    def test_build_context_from_results(self):
-        """Verify the context string format produced for join tasks."""
-        results = {"a": "result A", "b": "result B"}
-        parts = [
-            f"## Result from '{need_id}':\n{result}"
-            for need_id, result in results.items()
-        ]
-        context = "\n\n".join(parts)
-        assert "result A" in context
-        assert "result B" in context
-        assert "Result from 'a'" in context
-        assert "Result from 'b'" in context
+class TestDiscoveryRegistry:
+    def test_update_and_get(self):
+        from skitter.supervisor import DiscoveryRegistry
+
+        reg = DiscoveryRegistry()
+        reg.update("researcher", {"name": "Researcher"})
+        assert reg.get("researcher") == {"name": "Researcher"}
+        assert reg.get("unknown") is None
+
+    def test_remove(self):
+        from skitter.supervisor import DiscoveryRegistry
+
+        reg = DiscoveryRegistry()
+        reg.update("researcher", {"name": "Researcher"})
+        reg.remove("researcher")
+        assert reg.get("researcher") is None
+
+    def test_list_agents_vs_apps(self):
+        from skitter.supervisor import DiscoveryRegistry
+
+        reg = DiscoveryRegistry()
+        reg.update("agent1", {"name": "Agent1"})
+        reg.update("app1", {"name": "App1", "metadata": {"tasks": [{"id": "t1"}]}})
+        assert "agent1" in reg.list_agents()
+        assert "app1" not in reg.list_agents()
+        assert "app1" in reg.list_apps()
+        assert "agent1" not in reg.list_apps()
 
 
 # --- Persistent workspaces ---
@@ -971,54 +810,151 @@ class TestWorkspaceConfig:
         assert cfg.base_path == "my/workspaces"
 
 
-class TestWorkspaceSessionCreation:
+# --- DB module ---
+
+
+class TestSqliteDB:
     def setup_method(self):
-        self.agents = {
-            "researcher": AgentDef(id="researcher", name="R", runtime="claude"),
-            "writer": AgentDef(id="writer", name="W", runtime="claude"),
-        }
+        from skitter.db import SqliteDB
 
-    def test_workflow_with_workspace(self):
-        wf = WorkflowDef(
-            id="test",
-            name="Test",
-            workspace="my-workspace",
-            tasks=[
-                WorkflowTask(id="a", agent="researcher", description="do A", next="c"),
-                WorkflowTask(id="b", agent="researcher", description="do B", next="c"),
-                WorkflowTask(
-                    id="c",
-                    agent="writer",
-                    description="join",
-                    next="output",
-                    needs=["a", "b"],
-                ),
-            ],
-        )
-        session = create_session("s1", "test", workflow=wf, agents=self.agents)
-        # All tasks share the workspace slug; worker creates task subdirs
-        assert session.tasks["a"].workspace == "my-workspace"
-        assert session.tasks["b"].workspace == "my-workspace"
-        assert session.tasks["c"].workspace == "my-workspace"
+        self.db = SqliteDB(":memory:")
 
-    def test_workflow_without_workspace(self):
-        wf = WorkflowDef(
-            id="test",
-            name="Test",
-            tasks=[
-                WorkflowTask(
-                    id="a", agent="researcher", description="do A", next="output"
-                ),
-            ],
-        )
-        session = create_session("s1", "test", workflow=wf, agents=self.agents)
-        assert session.tasks["a"].workspace == ""
+    def teardown_method(self):
+        self.db.close()
 
-    def test_agent_session_no_workspace(self):
-        session = create_session(
-            "s1", "test", agent_id="researcher", text="hi", agents=self.agents
+    def test_app_crud(self):
+        from skitter.db import App
+
+        self.db.create_app(App(id="a1", name="Test App", description="desc"))
+        app = self.db.get_app("a1")
+        assert app is not None
+        assert app.name == "Test App"
+
+        self.db.update_app_card("a1", '{"name":"Test"}')
+        app = self.db.get_app("a1")
+        assert app.card_json == '{"name":"Test"}'
+
+        apps = self.db.list_apps()
+        assert len(apps) == 1
+
+        self.db.delete_app("a1")
+        assert self.db.get_app("a1") is None
+
+    def test_app_version(self):
+        from skitter.db import App, AppVersion
+
+        self.db.create_app(App(id="a1", name="Test"))
+        self.db.create_app_version(
+            AppVersion(id="v1", app_id="a1", version=1, graph_json='{"tasks":[]}')
         )
-        assert session.tasks["researcher"].workspace == ""
+        self.db.create_app_version(
+            AppVersion(id="v2", app_id="a1", version=2, graph_json='{"tasks":[]}')
+        )
+        current = self.db.get_current_version("a1")
+        assert current is not None
+        assert current.version == 2
+
+        versions = self.db.list_app_versions("a1")
+        assert len(versions) == 2
+
+    def test_session_and_tasks(self):
+        from skitter.db import App, AppVersion, DBSession, DBTask
+
+        self.db.create_app(App(id="a1", name="Test"))
+        self.db.create_app_version(AppVersion(id="v1", app_id="a1", version=1))
+        self.db.create_session(DBSession(id="s1", app_version_id="v1", state="running"))
+        self.db.create_task(
+            DBTask(
+                id="s1/t1",
+                session_id="s1",
+                task_id="t1",
+                agent="researcher",
+                state="pending",
+            )
+        )
+
+        session = self.db.get_session("s1")
+        assert session is not None
+        assert session.state == "running"
+
+        tasks = self.db.list_tasks("s1")
+        assert len(tasks) == 1
+        assert tasks[0].agent == "researcher"
+
+        self.db.update_task("s1/t1", state="completed", result="done")
+        task = self.db.get_task("s1/t1")
+        assert task.state == "completed"
+        assert task.result == "done"
+
+        self.db.update_session_state("s1", "completed")
+        session = self.db.get_session("s1")
+        assert session.state == "completed"
+        assert session.completed_at != ""
+
+    def test_cascade_delete(self):
+        from skitter.db import App, AppVersion, DBSession, DBTask
+
+        self.db.create_app(App(id="a1", name="Test"))
+        self.db.create_app_version(AppVersion(id="v1", app_id="a1", version=1))
+        self.db.create_session(DBSession(id="s1", app_version_id="v1"))
+        self.db.create_task(
+            DBTask(id="s1/t1", session_id="s1", task_id="t1", agent="r")
+        )
+        self.db.delete_app("a1")
+        assert self.db.get_app_version("v1") is None
+        assert self.db.get_session("s1") is None
+        assert self.db.get_task("s1/t1") is None
+
+    def test_list_sessions_by_app(self):
+        from skitter.db import App, AppVersion, DBSession
+
+        self.db.create_app(App(id="a1", name="App1"))
+        self.db.create_app(App(id="a2", name="App2"))
+        self.db.create_app_version(AppVersion(id="v1", app_id="a1", version=1))
+        self.db.create_app_version(AppVersion(id="v2", app_id="a2", version=1))
+        self.db.create_session(DBSession(id="s1", app_version_id="v1"))
+        self.db.create_session(DBSession(id="s2", app_version_id="v2"))
+
+        all_sessions = self.db.list_sessions()
+        assert len(all_sessions) == 2
+
+        a1_sessions = self.db.list_sessions(app_id="a1")
+        assert len(a1_sessions) == 1
+        assert a1_sessions[0].id == "s1"
+
+
+class TestTaskTarget:
+    def test_defaults(self):
+        from skitter.types import TaskTarget
+
+        t = TaskTarget(agent="researcher")
+        assert t.mqtt_host == ""
+        assert t.mqtt_port == 8883
+        assert t.http_url == ""
+
+
+class TestDBConfig:
+    def test_load_db_config_default(self, tmp_path):
+        from skitter.config import load_db_config
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("default_runtime: claude\n")
+        with patch("skitter.config.CONFIG_FILE", config_file):
+            cfg = load_db_config()
+        assert cfg.backend == "sqlite"
+        assert "skitter.db" in cfg.sqlite_path
+
+    def test_load_db_config_custom(self, tmp_path):
+        from skitter.config import load_db_config
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "db:\n  backend: postgres\n  postgres_dsn: postgresql://localhost/skitter\n"
+        )
+        with patch("skitter.config.CONFIG_FILE", config_file):
+            cfg = load_db_config()
+        assert cfg.backend == "postgres"
+        assert cfg.postgres_dsn == "postgresql://localhost/skitter"
 
 
 class TestResolveWorkspace:

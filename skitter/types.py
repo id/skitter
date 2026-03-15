@@ -164,6 +164,16 @@ class A2ARequest:
 
 
 @dataclass
+class TaskTarget:
+    """A2A agent address for task dispatch."""
+
+    agent: str  # A2A agent address: {org}/{unit}/{agent_id}
+    mqtt_host: str = ""  # broker host (empty = same broker as supervisor)
+    mqtt_port: int = 8883
+    http_url: str = ""  # for HTTP A2A targets (Phase 4)
+
+
+@dataclass
 class SessionTask:
     """Task record — single source of truth for task data."""
 

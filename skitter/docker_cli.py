@@ -7,8 +7,11 @@ from pathlib import Path
 
 from rich.console import Console
 
+import os
+
 from skitter.config import DOCKER_CLAUDE_DIR
-from skitter.spawn import WORKER_IMAGE
+
+WORKER_IMAGE = os.environ.get("SKITTER_WORKER_IMAGE", "skitter-worker:latest")
 
 console = Console()
 

@@ -63,6 +63,13 @@ class WorkspaceConfig:
     base_path: str = "skitter/workspaces"
 
 
+@dataclass
+class DBConfig:
+    backend: str = "sqlite"
+    sqlite_path: str = ""
+    postgres_dsn: str = ""
+
+
 class SafeFormatter(string.Formatter):
     """Formatter that leaves unknown {placeholders} untouched."""
 
@@ -132,6 +139,18 @@ def load_workspace_config() -> WorkspaceConfig:
         remote=data.get("remote", ""),
         local_mount=data.get("local_mount", ""),
         base_path=data.get("base_path", "skitter/workspaces"),
+    )
+
+
+def load_db_config() -> DBConfig:
+    """Read database config from ~/.skitter/config.yaml."""
+    data = _load_global_config().get("db", {})
+    if not isinstance(data, dict):
+        return DBConfig(sqlite_path=str(SKITTER_DIR / "skitter.db"))
+    return DBConfig(
+        backend=data.get("backend", "sqlite"),
+        sqlite_path=data.get("sqlite_path", str(SKITTER_DIR / "skitter.db")),
+        postgres_dsn=data.get("postgres_dsn", ""),
     )
 
 

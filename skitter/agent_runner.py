@@ -29,13 +29,21 @@ from skitter.mqtt import (
     topic_event,
     topic_request,
 )
-from skitter.spawn import worker_env
 from skitter.types import (
     A2ARequest,
     A2AResponse,
     A2A_TRANSPORT_PROTOCOL_ERROR,
     make_status_event,
 )
+
+
+def worker_env() -> dict[str, str]:
+    """Build env for agent processes — strip CLAUDECODE, prefer OAuth over API key."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        env.pop("ANTHROPIC_API_KEY", None)
+    return env
+
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"

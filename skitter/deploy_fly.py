@@ -1,11 +1,10 @@
 """Deploy skitter to Fly Machines.
 
 Builds + pushes a single Docker image to a single Fly app. The deploy
-creates a persistent supervisor machine (always-on, ~$2/mo). Workers
-are ephemeral machines created by the supervisor via Fly Machines API.
+creates a persistent supervisor machine (always-on). Agent runners are
+started independently (not spawned by the supervisor).
 """
 
-import json
 import logging
 import os
 import shutil
@@ -17,7 +16,9 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from skitter.config import AGENTS_DIR, CLAUDE_AGENTS_DIR, WORKFLOWS_DIR
-from skitter.fly import FLY_APP, FLY_REGION
+
+FLY_APP = os.environ.get("FLY_APP", "skitter")
+FLY_REGION = os.environ.get("FLY_REGION", "iad")
 
 load_dotenv()
 
@@ -100,7 +101,6 @@ def _prepare_build_context() -> Path:
         f'primary_region = "{FLY_REGION}"\n'
         "\n[build]\n\n"
         "[env]\n"
-        '  SKITTER_SPAWN_MODE = "fly"\n'
         "\n[processes]\n"
         '  app = "python -m skitter.supervisor"\n'
     )
@@ -144,7 +144,6 @@ def cmd_deploy_fly() -> None:
             "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
             "FLY_API_TOKEN": os.environ.get("FLY_API_TOKEN", ""),
             "FLY_APP": FLY_APP,
-            "FLY_WORKER_IMAGE": f"registry.fly.io/{FLY_APP}:latest",
             "FLY_REGION": FLY_REGION,
             "RCLONE_CONFIG_DATA": os.environ.get("RCLONE_CONFIG_DATA", ""),
         }
@@ -175,17 +174,6 @@ def cmd_deploy_fly() -> None:
         console.print(f"  Supervisor deployed to [bold]{FLY_APP}[/bold]")
     finally:
         shutil.rmtree(build_ctx, ignore_errors=True)
-
-    # 3. Update FLY_WORKER_IMAGE secret with the deployed image ref
-    result = _fly("machines", "list", "-a", FLY_APP, "--json", check=False)
-    if result.returncode == 0:
-        machines = json.loads(result.stdout)
-        for m in machines:
-            image_ref = m.get("config", {}).get("image", "")
-            if image_ref:
-                console.print(f"  Image: [bold]{image_ref}[/bold]")
-                _set_secrets({"FLY_WORKER_IMAGE": image_ref})
-                break
 
     console.print(f"\n[bold green]Done![/bold green] App: {FLY_APP}")
     console.print("  Supervisor publishes discovery cards on startup")

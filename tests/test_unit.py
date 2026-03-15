@@ -1238,3 +1238,276 @@ class TestSupervisorRuntimeRouting:
         sup = Supervisor(self.db)
         # _client is None by default — should not raise
         await sup._publish_event("session_created", "sess1")
+
+
+# --- Phase 3.3 Verification ---
+
+
+class TestRuntimeApiIntegration:
+    """Integration tests: create app, run session lifecycle, verify events + queries."""
+
+    def setup_method(self):
+        from skitter.db import SqliteDB
+
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    def _make_supervisor(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from skitter.supervisor import Supervisor
+
+        sup = Supervisor(self.db)
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        sup._client = mock_client
+        return sup, mock_client
+
+    def _create_test_app(self):
+        from skitter.apps import create_app
+
+        return create_app(
+            self.db,
+            app_id="test-app",
+            name="Test App",
+            description="Integration test app",
+            graph={
+                "tasks": [
+                    {
+                        "id": "research",
+                        "agent": "researcher",
+                        "description": "Do research",
+                        "needs": [],
+                        "next": "review",
+                    },
+                    {
+                        "id": "review",
+                        "agent": "writer",
+                        "description": "Review results",
+                        "needs": ["research"],
+                        "next": "output",
+                    },
+                ]
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_session_lifecycle_events(self):
+        """Create app, dispatch session, complete tasks — verify all events."""
+        sup, mock_client = self._make_supervisor()
+        self._create_test_app()
+
+        # Create session
+        req = A2ARequest(text="test request", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        sid = state.session_id
+
+        # Dispatch ready tasks (research has no needs, should dispatch)
+        await sup.dispatch_ready(state)
+        await sup._publish_event("session_created", sid)
+
+        # Collect event payloads from mock
+        event_calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/event/" in str(call.args[0])
+        ]
+        event_types = [e["event"] for e in event_calls]
+        assert "task_started" in event_types
+        assert "session_created" in event_types
+
+        # Simulate research task completion
+        mock_client.publish.reset_mock()
+        await sup._complete_task(state, "research", "Research findings")
+
+        event_calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/event/" in str(call.args[0])
+        ]
+        event_types = [e["event"] for e in event_calls]
+        assert "task_completed" in event_types
+        # review should now be dispatched
+        assert "task_started" in event_types
+
+        # Simulate review task completion (terminal task)
+        mock_client.publish.reset_mock()
+        await sup._complete_task(state, "review", "Final review")
+
+        event_calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/event/" in str(call.args[0])
+        ]
+        event_types = [e["event"] for e in event_calls]
+        assert "task_completed" in event_types
+        assert "session_completed" in event_types
+
+        # Verify session is cleaned up
+        assert sid not in sup._sessions
+
+        # Verify DB state
+        db_session = self.db.get_session(sid)
+        assert db_session.state == "completed"
+
+    @pytest.mark.asyncio
+    async def test_session_failure_events(self):
+        """Verify task_failed and session_failed events."""
+        sup, mock_client = self._make_supervisor()
+        self._create_test_app()
+
+        req = A2ARequest(text="test", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        sid = state.session_id
+        await sup.dispatch_ready(state)
+
+        # Fail the research task
+        mock_client.publish.reset_mock()
+        await sup._fail_task(state, "research", "Agent crashed")
+
+        event_calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/event/" in str(call.args[0])
+        ]
+        event_types = [e["event"] for e in event_calls]
+        assert "task_failed" in event_types
+        assert "session_failed" in event_types
+
+        failed_event = next(e for e in event_calls if e["event"] == "task_failed")
+        assert failed_event["task_id"] == "research"
+        assert "Agent crashed" in failed_event["data"]["error"]
+
+        # Verify cascade: review should be failed in DB
+        review_task = self.db.get_task(f"{sid}/review")
+        assert review_task.state == "failed"
+
+    @pytest.mark.asyncio
+    async def test_query_via_runtime_handler(self):
+        """Verify queries through _handle_runtime_query produce correct A2A replies."""
+        sup, mock_client = self._make_supervisor()
+        self._create_test_app()
+
+        # Query: list apps
+        req = A2ARequest(text="list apps", request_id="q1")
+        await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+
+        # Find the reply (non-event publish)
+        reply_calls = [
+            call
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/q"
+        ]
+        assert len(reply_calls) == 1
+        reply_data = json.loads(reply_calls[0].args[1])
+        # Should be a TaskStatusUpdateEvent with completed state
+        assert reply_data["result"]["status"]["state"] == "completed"
+        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        result = json.loads(artifact)
+        assert len(result["apps"]) == 1
+        assert result["apps"][0]["id"] == "test-app"
+
+    @pytest.mark.asyncio
+    async def test_query_get_session_via_handler(self):
+        """Verify get session query returns task details."""
+        sup, mock_client = self._make_supervisor()
+        self._create_test_app()
+
+        # Create a session
+        req = A2ARequest(text="test", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        sid = state.session_id
+
+        # Query: get session
+        mock_client.publish.reset_mock()
+        query_req = A2ARequest(text=f"get session {sid}", request_id="q2")
+        await sup._handle_runtime_query(query_req.to_json(), "reply/q", "corr-q2")
+
+        reply_calls = [
+            call
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/q"
+        ]
+        assert len(reply_calls) == 1
+        reply_data = json.loads(reply_calls[0].args[1])
+        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        result = json.loads(artifact)
+        assert result["id"] == sid
+        assert result["state"] == "running"
+        assert len(result["tasks"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_cancel_via_handler_cleans_up(self):
+        """Verify cancel session cleans up DB + in-memory state."""
+        sup, mock_client = self._make_supervisor()
+        self._create_test_app()
+
+        req = A2ARequest(text="test", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/caller",
+            caller_correlation="corr-caller",
+        )
+        sid = state.session_id
+        await sup.dispatch_ready(state)
+        assert sid in sup._sessions
+
+        # Cancel via runtime query
+        mock_client.publish.reset_mock()
+        cancel_req = A2ARequest(text=f"cancel session {sid}", request_id="q3")
+        await sup._handle_runtime_query(cancel_req.to_json(), "reply/q", "corr-q3")
+
+        # Session removed from memory
+        assert sid not in sup._sessions
+
+        # DB state is cancelled
+        db_session = self.db.get_session(sid)
+        assert db_session.state == "cancelled"
+
+        # Tasks are cancelled in DB
+        tasks = self.db.list_tasks(sid)
+        for t in tasks:
+            if t.state not in ("completed",):
+                assert t.state == "cancelled"
+
+        # Original caller was notified
+        caller_notified = any(
+            str(call.args[0]) == "reply/caller"
+            for call in mock_client.publish.call_args_list
+        )
+        assert caller_notified
+
+        # Query caller got a reply
+        query_reply = [
+            call
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/q"
+        ]
+        assert len(query_reply) == 1

@@ -25,7 +25,17 @@ says "make all my agents use codex", update default_runtime accordingly.
 
 Each agent needs up to three files depending on runtime. The sub-agent
 filename must match the skitter agent ID.
-After changes, run: python -m skitter.reload
+
+After creating or updating agent files, start (or restart) each agent's
+runner process:
+
+```bash
+skitter agent-runner <name>
+```
+
+Agents are self-registering — no reload, no publish, no supervisor restart
+needed. Each agent runner publishes its own discovery card and handles
+requests independently.
 
 ## Claude agents (runtime: claude)
 
@@ -52,13 +62,22 @@ mcpServers:                    # optional per-agent MCP servers
 System prompt goes here. This is the agent's personality and instructions.
 ```
 
-### 2. Skitter orchestration stub: ~/.skitter/agents/<name>.yaml
+### 2. Skitter agent definition: ~/.skitter/agents/<name>.yaml
 
 ```yaml
 name: Display Name
 description: What this agent does (for A2A discovery)
+agent_id: <name>               # A2A agent ID on the broker (defaults to filename)
 runtime: claude
-workspace: ""                  # optional custom cwd
+model: sonnet                  # optional model override
+agent_file: <name>.md          # claude agent file in ~/.claude/agents/
+broker:                        # optional — defaults to env vars
+  host: broker.emqx.io
+  port: 8883
+capabilities:
+  streaming: true
+input_modes: ["text/plain"]
+output_modes: ["text/plain"]
 ```
 
 ## Codex agents (runtime: codex)
@@ -89,13 +108,15 @@ description = "When to use this agent"
 config_file = "agents/<name>.toml"
 ```
 
-### 3. Skitter orchestration stub: ~/.skitter/agents/<name>.yaml
+### 3. Skitter agent definition: ~/.skitter/agents/<name>.yaml
 
 ```yaml
 name: Display Name
 description: What this agent does
+agent_id: <name>
 runtime: codex
-workspace: ""
+model: gpt-5.1-codex-mini      # optional model override
+agent_file: <name>.toml         # codex agent file in ~/.codex/agents/
 ```
 
 ## Workflow definitions: ~/.skitter/workflows/<name>.yaml

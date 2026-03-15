@@ -19,7 +19,7 @@ from skitter.config import (
     load_workflows,
     safe_format,
 )
-from skitter.discovery import CardRegistry, build_cards
+from skitter.discovery import CardPublisher, build_card
 from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
@@ -28,7 +28,6 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_dead_wildcard,
-    topic_reload,
     topic_request_wildcard,
     topic_result,
     topic_session,
@@ -389,6 +388,29 @@ def _find_terminal_task(session: Session, start_task: str) -> str:
     return last_valid
 
 
+def _build_all_cards(
+    agents: dict[str, AgentDef],
+    workflows: dict[str, WorkflowDef],
+) -> dict[str, str]:
+    """Build card JSON for all standalone agents and workflows."""
+    workflow_agents: set[str] = set()
+    for wf in workflows.values():
+        for t in wf.tasks:
+            workflow_agents.add(t.agent)
+
+    cards: dict[str, str] = {}
+    for agent in agents.values():
+        if agent.id in workflow_agents:
+            continue
+        cards[agent.id] = json.dumps(build_card(agent))
+
+    for wf in workflows.values():
+        wf_agent = AgentDef(id=wf.id, name=wf.name, description=wf.description)
+        cards[wf.id] = json.dumps(build_card(wf_agent, workflow=wf))
+
+    return cards
+
+
 async def run_listen() -> None:
     """Long-lived MQTT subscriber — local mode."""
     agents = load_agents()
@@ -399,33 +421,25 @@ async def run_listen() -> None:
     if workflows:
         log.info("Loaded %d workflows: %s", len(workflows), ", ".join(workflows))
 
-    registry = CardRegistry()
-    try:
-        await registry.sync(build_cards(agents, workflows))
+    cards = _build_all_cards(agents, workflows)
+    publishers: list[CardPublisher] = []
+    for card_id, card_json in cards.items():
+        pub = CardPublisher(card_id, card_json)
+        publishers.append(pub)
+        await pub.start()
 
+    try:
         async with aiomqtt.Client(
             **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor"),
         ) as client:
             await client.subscribe(topic_request_wildcard(), qos=1)
             await client.subscribe(topic_dead_wildcard(), qos=1)
-            await client.subscribe(topic_reload(), qos=1)
             log.info("Supervisor ready, listening on request/+, event/+/dead")
 
             async for mqtt_msg in client.messages:
                 topic = str(mqtt_msg.topic)
                 payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
                 if not payload:
-                    continue
-
-                if topic == topic_reload():
-                    agents = load_agents()
-                    workflows = load_workflows()
-                    await registry.sync(build_cards(agents, workflows))
-                    log.info(
-                        "Reloaded %d agents, %d workflows",
-                        len(agents),
-                        len(workflows),
-                    )
                     continue
 
                 if "/request/" in topic and "/cancel" not in topic:
@@ -461,7 +475,8 @@ async def run_listen() -> None:
                 elif topic.startswith("skitter/event/"):
                     await handle_dead_event(client, payload)
     finally:
-        await registry.close()
+        for pub in publishers:
+            await pub.stop()
 
 
 # --- Entry point ---

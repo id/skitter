@@ -19,7 +19,6 @@ from skitter.supervisor import (
 from skitter.mqtt import (
     topic_event,
     topic_dead_wildcard,
-    topic_reload,
     topic_request,
     topic_request_wildcard,
     topic_result,
@@ -232,10 +231,6 @@ class TestTopics:
     def test_task_status(self):
         t = topic_status("my-wf", "research", "session1")
         assert t == "skitter/status/my-wf/research/session1"
-
-    def test_reload(self):
-        t = topic_reload()
-        assert t == "skitter/control/reload"
 
     def test_request_wildcard(self):
         t = topic_request_wildcard()

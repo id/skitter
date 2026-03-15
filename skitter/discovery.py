@@ -117,14 +117,11 @@ class CardPublisher:
 
     async def _run(self) -> None:
         topic = topic_discovery(self._card_id)
-        base_kwargs = self._mqtt_kwargs or {}
-        kwargs = {
-            **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/{self._card_id}",
-            ),
-            **base_kwargs,
-            "identifier": f"{A2A_ORG}/{A2A_UNIT}/{self._card_id}",
-        }
+        identifier = f"{A2A_ORG}/{A2A_UNIT}/{self._card_id}"
+        if self._mqtt_kwargs:
+            kwargs = {**self._mqtt_kwargs, "identifier": identifier}
+        else:
+            kwargs = mqtt_client_kwargs(identifier=identifier)
         while True:
             try:
                 async with aiomqtt.Client(**kwargs) as client:

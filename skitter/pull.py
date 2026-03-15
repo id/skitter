@@ -11,6 +11,7 @@ import asyncio
 import logging
 
 import aiomqtt
+import yaml
 
 from skitter.config import AGENTS_DIR, CLAUDE_AGENTS_DIR
 from skitter.discovery import is_workflow_card, parse_card
@@ -50,31 +51,32 @@ def _write_agent_stub(agent_id: str, card: dict) -> list[str]:
     """Write stub files for an agent. Returns list of files written."""
     written: list[str] = []
 
-    # Agent definition YAML
+    # Agent definition YAML (use yaml.dump to safely escape values)
     yaml_path = AGENTS_DIR / f"{agent_id}.yaml"
     if not yaml_path.exists():
+        stub: dict = {
+            "name": card.get("name", agent_id),
+            "description": card.get("description", ""),
+            "agent_id": agent_id,
+            "runtime": "claude",
+        }
         capabilities = card.get("capabilities", {})
-        lines = [
-            f"name: {card.get('name', agent_id)}",
-            f"description: {card.get('description', '')}",
-            f"agent_id: {agent_id}",
-            "runtime: claude",
-        ]
         if capabilities.get("streaming") is not None:
-            lines.append("capabilities:")
-            lines.append(f"  streaming: {str(capabilities['streaming']).lower()}")
-        yaml_path.write_text("\n".join(lines) + "\n")
+            stub["capabilities"] = {"streaming": capabilities["streaming"]}
+        yaml_path.write_text(yaml.dump(stub, default_flow_style=False, sort_keys=False))
         written.append(str(yaml_path))
 
-    # Claude agent prompt stub
+    # Claude agent prompt stub (use yaml.dump for frontmatter)
     md_path = CLAUDE_AGENTS_DIR / f"{agent_id}.md"
     if not md_path.exists():
         name = card.get("name", agent_id)
         description = card.get("description", "")
-        md_path.write_text(
-            f"---\nname: {name}\ndescription: {description}\n---\n\n"
-            f"You are {name}. {description}\n"
-        )
+        frontmatter = yaml.dump(
+            {"name": name, "description": description},
+            default_flow_style=False,
+            sort_keys=False,
+        ).rstrip()
+        md_path.write_text(f"---\n{frontmatter}\n---\n\nYou are {name}.\n")
         written.append(str(md_path))
 
     return written

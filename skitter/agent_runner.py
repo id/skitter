@@ -198,8 +198,12 @@ async def handle_request(
         )
         await client.publish(reply_topic, event, qos=0, properties=props)
 
-    async with semaphore:
-        result = await _run_cli(agent, req.text, publish_stream, env)
+    try:
+        async with semaphore:
+            result = await _run_cli(agent, req.text, publish_stream, env)
+    except Exception:
+        log.exception("Request %s failed", req.request_id)
+        result = "(internal error)"
 
     # Send terminal result
     terminal = make_status_event(
@@ -273,13 +277,18 @@ async def run(agent_name: str) -> None:
                         await client.publish(reply_topic, resp.to_json(), qos=1)
                     continue
 
+                def _on_done(t: asyncio.Task) -> None:
+                    inflight.discard(t)
+                    if not t.cancelled() and t.exception():
+                        log.error("Request handler failed: %s", t.exception())
+
                 task = asyncio.create_task(
                     handle_request(
                         client, agent, payload, reply_topic, correlation, env, semaphore
                     )
                 )
                 inflight.add(task)
-                task.add_done_callback(inflight.discard)
+                task.add_done_callback(_on_done)
     finally:
         # Cancel inflight tasks on shutdown
         for task in inflight:
@@ -290,9 +299,15 @@ async def run(agent_name: str) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
+    # Via __main__.py: sys.argv = ['...', 'agent-runner', '<name>']
+    # Via direct: sys.argv = ['agent_runner.py', '<name>']
+    if len(sys.argv) < 3 and "agent-runner" in sys.argv:
         print("Usage: skitter agent-runner <agent_name>", file=sys.stderr)
         sys.exit(1)
+    if len(sys.argv) < 2:
+        print("Usage: python -m skitter.agent_runner <agent_name>", file=sys.stderr)
+        sys.exit(1)
+    # Take last arg — works for both dispatch paths
     agent_name = sys.argv[-1]
     try:
         asyncio.run(run(agent_name))

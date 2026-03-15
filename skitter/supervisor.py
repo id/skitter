@@ -577,7 +577,7 @@ class Supervisor:
             log.error("Bad runtime query JSON: %s", e)
             return
 
-        result_json = runtime_query(self._db, req.text)
+        result_json = await runtime_query(self._db, req.text, self._registry)
 
         # For cancel: clean up in-memory state and notify original caller
         try:

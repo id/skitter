@@ -1157,62 +1157,69 @@ class TestRuntimeApi:
             )
         )
 
-    def test_list_apps(self):
+    @pytest.mark.asyncio
+    async def test_list_apps(self):
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = json.loads(handle_query(self.db, "list apps"))
+        result = json.loads(await handle_query(self.db, "list apps"))
         assert len(result["apps"]) == 1
         assert result["apps"][0]["id"] == "app1"
         assert result["apps"][0]["current_version"] == 2
 
-    def test_list_apps_empty(self):
+    @pytest.mark.asyncio
+    async def test_list_apps_empty(self):
         from skitter.runtime_api import handle_query
 
-        result = json.loads(handle_query(self.db, "list apps"))
+        result = json.loads(await handle_query(self.db, "list apps"))
         assert result["apps"] == []
 
-    def test_get_app(self):
+    @pytest.mark.asyncio
+    async def test_get_app(self):
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = json.loads(handle_query(self.db, "get app app1"))
+        result = json.loads(await handle_query(self.db, "get app app1"))
         assert result["id"] == "app1"
         assert result["name"] == "App One"
         assert len(result["versions"]) == 2
         assert result["versions"][0]["version"] == 1
         assert result["versions"][1]["version"] == 2
 
-    def test_get_app_not_found(self):
+    @pytest.mark.asyncio
+    async def test_get_app_not_found(self):
         from skitter.runtime_api import handle_query
 
-        result = json.loads(handle_query(self.db, "get app nonexistent"))
+        result = json.loads(await handle_query(self.db, "get app nonexistent"))
         assert "error" in result
 
-    def test_list_sessions(self):
+    @pytest.mark.asyncio
+    async def test_list_sessions(self):
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = json.loads(handle_query(self.db, "list sessions"))
+        result = json.loads(await handle_query(self.db, "list sessions"))
         assert len(result["sessions"]) == 1
         assert result["sessions"][0]["id"] == "s1"
         assert result["sessions"][0]["state"] == "running"
 
-    def test_list_sessions_by_app(self):
+    @pytest.mark.asyncio
+    async def test_list_sessions_by_app(self):
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = json.loads(handle_query(self.db, "list sessions app1"))
+        result = json.loads(await handle_query(self.db, "list sessions app1"))
         assert len(result["sessions"]) == 1
 
-        result = json.loads(handle_query(self.db, "list sessions nonexistent"))
+        result = json.loads(await handle_query(self.db, "list sessions nonexistent"))
         assert result["sessions"] == []
 
-    def test_get_session(self):
+    @pytest.mark.asyncio
+    async def test_get_session(self):
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = json.loads(handle_query(self.db, "get session s1"))
+        result = json.loads(await handle_query(self.db, "get session s1"))
         assert result["id"] == "s1"
         assert result["state"] == "running"
         assert len(result["tasks"]) == 2
@@ -1222,47 +1229,53 @@ class TestRuntimeApi:
         assert research["state"] == "completed"
         assert research["result"] == "found stuff"
 
-    def test_get_session_not_found(self):
+    @pytest.mark.asyncio
+    async def test_get_session_not_found(self):
         from skitter.runtime_api import handle_query
 
-        result = json.loads(handle_query(self.db, "get session nonexistent"))
+        result = json.loads(await handle_query(self.db, "get session nonexistent"))
         assert "error" in result
 
-    def test_cancel_session(self):
+    @pytest.mark.asyncio
+    async def test_cancel_session(self):
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = json.loads(handle_query(self.db, "cancel session s1"))
+        result = json.loads(await handle_query(self.db, "cancel session s1"))
         assert result["cancelled"] == "s1"
 
         session = self.db.get_session("s1")
         assert session.state == "cancelled"
 
-    def test_cancel_session_not_running(self):
+    @pytest.mark.asyncio
+    async def test_cancel_session_not_running(self):
         from skitter.runtime_api import handle_query
 
         self._populate()
         self.db.update_session_state("s1", "completed")
-        result = json.loads(handle_query(self.db, "cancel session s1"))
+        result = json.loads(await handle_query(self.db, "cancel session s1"))
         assert "error" in result
         assert "not running" in result["error"].lower()
 
-    def test_cancel_session_not_found(self):
+    @pytest.mark.asyncio
+    async def test_cancel_session_not_found(self):
         from skitter.runtime_api import handle_query
 
-        result = json.loads(handle_query(self.db, "cancel session nonexistent"))
+        result = json.loads(await handle_query(self.db, "cancel session nonexistent"))
         assert "error" in result
 
-    def test_unknown_query(self):
+    @pytest.mark.asyncio
+    async def test_unknown_query(self):
         from skitter.runtime_api import handle_query
 
-        result = json.loads(handle_query(self.db, "do something"))
+        result = json.loads(await handle_query(self.db, "do something"))
         assert "error" in result
 
-    def test_empty_query(self):
+    @pytest.mark.asyncio
+    async def test_empty_query(self):
         from skitter.runtime_api import handle_query
 
-        result = json.loads(handle_query(self.db, ""))
+        result = json.loads(await handle_query(self.db, ""))
         assert "error" in result
 
     def test_runtime_card(self):
@@ -1271,6 +1284,107 @@ class TestRuntimeApi:
         card = runtime_card()
         assert card["name"] == "Skitter Runtime"
         assert card["skills"][0]["id"] == AGENT_ID
+
+    @pytest.mark.asyncio
+    async def test_create_app(self):
+        from unittest.mock import AsyncMock
+
+        from skitter.runtime_api import CREATE_APP_KEY, handle_query
+        from skitter.supervisor import DiscoveryRegistry
+
+        registry = DiscoveryRegistry()
+        registry.update(
+            "reader",
+            {
+                "name": "Reader",
+                "description": "Reads data",
+                "skills": [{"id": "reader", "name": "Reader"}],
+            },
+        )
+        registry.update(
+            "analyzer",
+            {
+                "name": "Analyzer",
+                "description": "Analyzes data",
+                "skills": [{"id": "analyzer", "name": "Analyzer"}],
+            },
+        )
+
+        graph = {
+            "tasks": [
+                {
+                    "id": "read",
+                    "agent": "reader",
+                    "description": "Read",
+                    "needs": [],
+                    "next": "analyze",
+                },
+                {
+                    "id": "analyze",
+                    "agent": "analyzer",
+                    "description": "Analyze",
+                    "needs": ["read"],
+                    "next": "output",
+                },
+            ]
+        }
+
+        spec = json.dumps(
+            {
+                "name": "Test App",
+                "description": "A test",
+                "instructions": "Read then analyze",
+                "agents": ["reader", "analyzer"],
+            }
+        )
+
+        with patch(
+            "skitter.runtime_api.generate_graph", new_callable=AsyncMock
+        ) as mock_gen:
+            mock_gen.return_value = graph
+            result = json.loads(
+                await handle_query(self.db, f"create app {spec}", registry)
+            )
+
+        assert CREATE_APP_KEY in result
+        assert result[CREATE_APP_KEY]["version"] == 1
+        assert "card" in result[CREATE_APP_KEY]
+
+        # Verify DB state
+        app = self.db.get_app(result[CREATE_APP_KEY]["app_id"])
+        assert app is not None
+        assert app.name == "Test App"
+
+    @pytest.mark.asyncio
+    async def test_create_app_missing_agent(self):
+        from skitter.runtime_api import handle_query
+        from skitter.supervisor import DiscoveryRegistry
+
+        registry = DiscoveryRegistry()
+        registry.update(
+            "reader",
+            {"name": "Reader", "skills": [{"id": "reader"}]},
+        )
+
+        spec = json.dumps(
+            {
+                "name": "Test",
+                "instructions": "Do stuff",
+                "agents": ["reader", "missing-agent"],
+            }
+        )
+        result = json.loads(await handle_query(self.db, f"create app {spec}", registry))
+        assert "error" in result
+        assert "missing-agent" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_app_no_registry(self):
+        from skitter.runtime_api import handle_query
+
+        spec = json.dumps({"name": "Test", "instructions": "Do stuff", "agents": ["a"]})
+        result = json.loads(await handle_query(self.db, f"create app {spec}"))
+        assert "error" in result
+        assert "registry" in result["error"].lower()
 
 
 class TestSupervisorRuntimeRouting:

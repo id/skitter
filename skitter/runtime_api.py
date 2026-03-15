@@ -9,19 +9,29 @@ Queries:
     list sessions [id]  → sessions, optionally filtered by app
     get session {id}    → session with all task states
     cancel session {id} → cancel a running session
+    create app {json}   → create a composed app from agent IDs + instructions
 """
+
+from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 
+from skitter.apps import create_app
 from skitter.config import AgentDef
 from skitter.db import DB
 from skitter.discovery import build_card
+from skitter.graph_gen import GraphValidationError, generate_graph
+
+if TYPE_CHECKING:
+    from skitter.supervisor import DiscoveryRegistry
 
 log = logging.getLogger("skitter.runtime_api")
 
 AGENT_ID = "skitter-runtime"
 CANCEL_KEY = "cancelled"
+CREATE_APP_KEY = "created_app"
 
 
 def runtime_card() -> dict:
@@ -34,7 +44,9 @@ def runtime_card() -> dict:
     return build_card(agent)
 
 
-def handle_query(db: DB, text: str) -> str:
+async def handle_query(
+    db: DB, text: str, registry: DiscoveryRegistry | None = None
+) -> str:
     """Parse a query command and return a JSON result string."""
     parts = text.strip().split(None, 2)
     if not parts:
@@ -54,6 +66,8 @@ def handle_query(db: DB, text: str) -> str:
         return _get_session(db, arg)
     if verb == "cancel" and noun == "session" and arg:
         return _cancel_session(db, arg)
+    if verb == "create" and noun == "app" and arg:
+        return await _create_app(db, arg, registry)
 
     return json.dumps({"error": f"Unknown query: {text.strip()}"})
 
@@ -147,3 +161,68 @@ def _cancel_session(db: DB, session_id: str) -> str:
         return json.dumps({"error": f"Session not running (state={session.state})"})
     db.update_session_state(session_id, "cancelled")
     return json.dumps({CANCEL_KEY: session_id})
+
+
+async def _create_app(db: DB, arg: str, registry: DiscoveryRegistry | None) -> str:
+    """Create a composed app from agent IDs + natural language instructions."""
+    try:
+        spec = json.loads(arg)
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"Invalid JSON: {e}"})
+
+    name = spec.get("name", "")
+    if not name:
+        return json.dumps({"error": "Missing 'name' in create app spec"})
+
+    instructions = spec.get("instructions", "")
+    if not instructions:
+        return json.dumps({"error": "Missing 'instructions' in create app spec"})
+
+    agent_ids = spec.get("agents", [])
+    if not agent_ids:
+        return json.dumps({"error": "Missing 'agents' in create app spec"})
+
+    if not registry:
+        return json.dumps({"error": "No discovery registry available"})
+
+    # Look up agent cards from registry
+    cards = []
+    missing = []
+    for aid in agent_ids:
+        card = registry.get(aid)
+        if card:
+            cards.append(card)
+        else:
+            missing.append(aid)
+
+    if missing:
+        return json.dumps({"error": f"Agents not found: {', '.join(missing)}"})
+
+    # Generate orchestration graph via LLM
+    try:
+        graph = await generate_graph(instructions, cards)
+    except GraphValidationError as e:
+        return json.dumps({"error": f"Graph generation failed: {e}"})
+    except Exception:
+        log.exception("Unexpected error generating graph")
+        return json.dumps({"error": "Graph generation failed unexpectedly"})
+
+    description = spec.get("description", "")
+    app, version, card_json = create_app(
+        db,
+        name=name,
+        description=description,
+        source_cards=cards,
+        instructions=instructions,
+        graph=graph,
+    )
+
+    return json.dumps(
+        {
+            CREATE_APP_KEY: {
+                "app_id": app.id,
+                "version": version.version,
+                "card": json.loads(card_json),
+            }
+        }
+    )

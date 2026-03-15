@@ -467,16 +467,6 @@ class TestCodexDispatch:
             assert usage is None
 
 
-# --- Reload signal ---
-
-
-class TestReload:
-    def test_reload_module_exists(self):
-        import skitter.reload
-
-        assert hasattr(skitter.reload, "main")
-
-
 # --- Spawn module ---
 
 

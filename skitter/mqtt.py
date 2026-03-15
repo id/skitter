@@ -57,6 +57,11 @@ def topic_discovery(agent_id: str) -> str:
     return f"{_PREFIX}/discovery/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
 
 
+def topic_discovery_wildcard(org: str = "", unit: str = "") -> str:
+    """Wildcard for all discovery cards: $a2a/v1/discovery/{org}/{unit}/+"""
+    return f"{_PREFIX}/discovery/{org or A2A_ORG}/{unit or A2A_UNIT}/+"
+
+
 def topic_request(agent_id: str) -> str:
     """Request topic: $a2a/v1/request/{org}/{unit}/{agent_id}"""
     return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
@@ -125,11 +130,6 @@ def topic_event(agent_id: str, event_type: str) -> str:
 def topic_dead_wildcard() -> str:
     """Wildcard for worker dead events: skitter/event/+/dead"""
     return f"{_SK}/event/+/dead"
-
-
-def topic_reload() -> str:
-    """Reload signal: skitter/control/reload"""
-    return f"{_SK}/control/reload"
 
 
 # --- MQTT v5 property helpers ---

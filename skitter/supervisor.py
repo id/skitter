@@ -24,6 +24,7 @@ from skitter.discovery import CardPublisher, is_workflow_card, parse_card
 from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
     CANCEL_KEY,
+    CREATE_APP_KEY,
     handle_query as runtime_query,
     runtime_card,
 )
@@ -579,13 +580,15 @@ class Supervisor:
 
         result_json = await runtime_query(self._db, req.text, self._registry)
 
-        # For cancel: clean up in-memory state and notify original caller
+        # Post-action hooks (cancel cleanup, app registration)
         try:
             result = json.loads(result_json)
             if CANCEL_KEY in result:
                 await self._cancel_session_cleanup(result[CANCEL_KEY])
+            if CREATE_APP_KEY in result:
+                await self._register_new_app(result[CREATE_APP_KEY])
         except Exception:
-            log.exception("Cancel cleanup failed")
+            log.exception("Runtime query post-action failed")
 
         # Reply to the query caller
         if reply_topic and self._client:
@@ -619,6 +622,24 @@ class Supervisor:
             await self._client.publish(
                 state.caller_reply_topic, event, qos=1, properties=props
             )
+
+    async def _register_new_app(self, app_info: dict) -> None:
+        """Subscribe to a newly created app's request topic and publish its card."""
+        app_id = app_info.get("app_id", "")
+        card = app_info.get("card")
+        if not app_id or not card:
+            return
+
+        # Subscribe to the new app's request topic
+        if self._client:
+            await self._client.subscribe(topic_request(app_id), qos=1)
+
+        # Publish its discovery card
+        card_json = json.dumps(card)
+        pub = CardPublisher(app_id, card_json)
+        self._publishers[app_id] = pub
+        await pub.start()
+        log.info("Registered new app %s (subscribed + card published)", app_id)
 
     # --- Inbound request handling ---
 

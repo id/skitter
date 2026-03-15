@@ -1716,3 +1716,79 @@ class TestRuntimeApiIntegration:
             if str(call.args[0]) == "reply/q"
         ]
         assert len(query_reply) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_app_subscribes_and_publishes(self):
+        """Verify that creating an app subscribes to its request topic and publishes card."""
+        from unittest.mock import AsyncMock
+
+        sup, mock_client = self._make_supervisor()
+
+        # Register agents in discovery
+        sup.registry.update(
+            "reader",
+            {
+                "name": "Reader",
+                "description": "Reads data",
+                "skills": [{"id": "reader", "name": "Reader"}],
+            },
+        )
+        sup.registry.update(
+            "analyzer",
+            {
+                "name": "Analyzer",
+                "description": "Analyzes data",
+                "skills": [{"id": "analyzer", "name": "Analyzer"}],
+            },
+        )
+
+        graph = {
+            "tasks": [
+                {
+                    "id": "read",
+                    "agent": "reader",
+                    "description": "Read",
+                    "needs": [],
+                    "next": "analyze",
+                },
+                {
+                    "id": "analyze",
+                    "agent": "analyzer",
+                    "description": "Analyze",
+                    "needs": ["read"],
+                    "next": "output",
+                },
+            ]
+        }
+
+        spec = json.dumps(
+            {
+                "name": "Test App",
+                "description": "A test",
+                "instructions": "Read then analyze",
+                "agents": ["reader", "analyzer"],
+            }
+        )
+
+        req = A2ARequest(text=f"create app {spec}", request_id="q1")
+        with patch(
+            "skitter.runtime_api.generate_graph", new_callable=AsyncMock
+        ) as mock_gen:
+            mock_gen.return_value = graph
+            await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+
+        # Should have subscribed to the new app's request topic
+        subscribe_calls = [
+            str(call.args[0]) for call in mock_client.subscribe.call_args_list
+        ]
+        app_request_topics = [t for t in subscribe_calls if "/request/" in t]
+        assert len(app_request_topics) == 1
+        assert "request/" in app_request_topics[0]
+
+        # Should have a CardPublisher for the new app
+        app_ids = [k for k in sup._publishers if k != "skitter-runtime"]
+        assert len(app_ids) == 1
+
+        # Clean up publisher to avoid event loop warnings
+        for pub in sup._publishers.values():
+            await pub.stop()

@@ -5,6 +5,7 @@ description = "MQTT-based Personal AI Assistant"
 requires-python = ">=3.10"
 dependencies = [
     "aiomqtt>=2.5.0",
+    "litellm>=1.60",
     "python-dotenv>=1.2.1",
     "typer>=0.9.0",
     "rich>=13.0.0",

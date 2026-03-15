@@ -1,7 +1,7 @@
 """Tests for skitter supervisor architecture."""
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -798,6 +798,83 @@ class TestDBConfig:
             cfg = load_db_config()
         assert cfg.backend == "postgres"
         assert cfg.postgres_dsn == "postgresql://localhost/skitter"
+
+    def test_load_llm_config_default(self, tmp_path):
+        from skitter.config import load_llm_config
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("")
+        with patch("skitter.config.CONFIG_FILE", config_file):
+            cfg = load_llm_config()
+        assert cfg.model == ""
+
+    def test_load_llm_config_custom(self, tmp_path):
+        from skitter.config import load_llm_config
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("llm:\n  model: claude-haiku-4-5-20251001\n")
+        with patch("skitter.config.CONFIG_FILE", config_file):
+            cfg = load_llm_config()
+        assert cfg.model == "claude-haiku-4-5-20251001"
+
+
+class TestLLMComplete:
+    def _mock_response(self, content="test response"):
+        from unittest.mock import AsyncMock
+
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = content
+        mock_ac = AsyncMock(return_value=mock_resp)
+        return mock_ac
+
+    @pytest.mark.asyncio
+    async def test_complete_calls_litellm(self):
+        from skitter.llm import complete
+
+        mock_ac = self._mock_response("test response")
+        with patch("litellm.acompletion", mock_ac):
+            result = await complete("hello", model="test-model")
+
+        assert result == "test response"
+        mock_ac.assert_called_once()
+        assert mock_ac.call_args.kwargs["model"] == "test-model"
+        msgs = mock_ac.call_args.kwargs["messages"]
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_complete_with_system(self):
+        from skitter.llm import complete
+
+        mock_ac = self._mock_response("ok")
+        with patch("litellm.acompletion", mock_ac):
+            await complete("hello", system="be helpful", model="test-model")
+
+        msgs = mock_ac.call_args.kwargs["messages"]
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "system"
+        assert msgs[1]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_complete_no_model_raises(self):
+        from skitter.llm import complete
+
+        with (
+            patch("skitter.llm.load_llm_config", return_value=MagicMock(model="")),
+            patch.dict("os.environ", {"SKITTER_LLM_MODEL": ""}),
+        ):
+            with pytest.raises(ValueError, match="No LLM model configured"):
+                await complete("hello")
+
+    @pytest.mark.asyncio
+    async def test_complete_none_content_raises(self):
+        from skitter.llm import complete
+
+        mock_ac = self._mock_response(None)
+        with patch("litellm.acompletion", mock_ac):
+            with pytest.raises(ValueError, match="no text content"):
+                await complete("hello", model="test-model")
 
 
 # --- Runtime API ---

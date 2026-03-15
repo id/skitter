@@ -41,6 +41,11 @@ class DBConfig:
     postgres_dsn: str = ""
 
 
+@dataclass
+class LLMConfig:
+    model: str = ""
+
+
 class SafeFormatter(string.Formatter):
     """Formatter that leaves unknown {placeholders} untouched."""
 
@@ -104,3 +109,11 @@ def load_db_config() -> DBConfig:
         sqlite_path=data.get("sqlite_path", str(SKITTER_DIR / "skitter.db")),
         postgres_dsn=data.get("postgres_dsn", ""),
     )
+
+
+def load_llm_config() -> LLMConfig:
+    """Read LLM config from ~/.skitter/config.yaml."""
+    data = _load_global_config().get("llm", {})
+    if not isinstance(data, dict):
+        return LLMConfig()
+    return LLMConfig(model=data.get("model", ""))

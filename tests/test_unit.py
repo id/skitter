@@ -5,23 +5,15 @@ from unittest.mock import patch
 
 import pytest
 
-from skitter.config import (
-    AgentDef,
-    WorkflowDef,
-    WorkflowTask,
-    WorkspaceConfig,
-)
+from skitter.config import AgentDef
 from skitter.supervisor import _parse_agent_id_from_topic
 from skitter.mqtt import (
     topic_a2a_event,
     topic_discovery_wildcard,
-    topic_dead_wildcard,
     topic_event,
     topic_request,
     topic_request_wildcard,
     topic_result,
-    topic_session,
-    topic_status,
 )
 from skitter.types import (
     A2ARequest,
@@ -31,8 +23,6 @@ from skitter.types import (
     REPLY_TERMINAL,
     REPLY_TEXT,
     REPLY_TOOL,
-    Session,
-    SessionTask,
     classify_reply,
     make_status_event,
 )
@@ -143,60 +133,6 @@ class TestStatusEvent:
         assert content == ""
 
 
-class TestSessionTask:
-    def test_roundtrip(self):
-        from dataclasses import asdict
-
-        task = SessionTask(
-            id="research",
-            agent="researcher",
-            description="do research",
-            runtime="claude",
-            next="review",
-            needs=["prep"],
-        )
-        d = asdict(task)
-        assert d["id"] == "research"
-        assert d["runtime"] == "claude"
-        assert d["next"] == "review"
-        assert d["needs"] == ["prep"]
-
-        restored = SessionTask(**d)
-        assert restored.id == "research"
-        assert restored.runtime == "claude"
-        assert restored.next == "review"
-        assert restored.needs == ["prep"]
-
-
-class TestSession:
-    def test_caller_fields(self):
-        session = Session(
-            session_id="c1",
-            label="test",
-            caller_reply_topic="reply/t",
-            caller_correlation="corr",
-        )
-        json_str = session.to_json()
-        restored = Session.from_json(json_str)
-        assert restored.caller_reply_topic == "reply/t"
-        assert restored.caller_correlation == "corr"
-
-    def test_roundtrip_with_tasks(self):
-        session = Session(session_id="c1", workflow_id="test-wf", label="test")
-        session.tasks["research"] = SessionTask(
-            id="research",
-            agent="researcher",
-            description="do stuff",
-            runtime="claude",
-            model="sonnet",
-        )
-        json_str = session.to_json()
-        restored = Session.from_json(json_str)
-        assert "research" in restored.tasks
-        assert restored.tasks["research"].runtime == "claude"
-        assert restored.workflow_id == "test-wf"
-
-
 # --- A2A error codes ---
 
 
@@ -214,21 +150,9 @@ class TestTopics:
         t = topic_event("researcher", "alive")
         assert t == "skitter/event/researcher/alive"
 
-    def test_dead_wildcard(self):
-        t = topic_dead_wildcard()
-        assert t == "skitter/event/+/dead"
-
     def test_result(self):
         t = topic_result("my-wf", "research", "session1")
         assert t == "skitter/result/my-wf/research/session1"
-
-    def test_session_topic(self):
-        t = topic_session("session1")
-        assert t == "skitter/session/session1"
-
-    def test_task_status(self):
-        t = topic_status("my-wf", "research", "session1")
-        assert t == "skitter/status/my-wf/research/session1"
 
     def test_request_wildcard(self):
         t = topic_request_wildcard()
@@ -364,52 +288,6 @@ class TestSupervisorSession:
 # --- Entry task detection ---
 
 
-class TestEntryTasks:
-    def test_finds_entry_tasks(self):
-        session = Session(session_id="c1", label="test")
-        session.tasks["a"] = SessionTask(
-            id="a",
-            agent="r",
-            description="",
-            needs=[],
-            next="c",
-        )
-        session.tasks["b"] = SessionTask(
-            id="b",
-            agent="r",
-            description="",
-            needs=[],
-            next="c",
-        )
-        session.tasks["c"] = SessionTask(
-            id="c",
-            agent="w",
-            description="",
-            needs=["a", "b"],
-            next="output",
-        )
-        entry = [
-            t for t in session.tasks.values() if not t.needs and t.status == "pending"
-        ]
-        assert len(entry) == 2
-        entry_ids = {t.id for t in entry}
-        assert entry_ids == {"a", "b"}
-
-    def test_skips_running(self):
-        session = Session(session_id="c1", label="test")
-        session.tasks["a"] = SessionTask(
-            id="a",
-            agent="r",
-            description="",
-            needs=[],
-            status="running",
-        )
-        entry = [
-            t for t in session.tasks.values() if not t.needs and t.status == "pending"
-        ]
-        assert len(entry) == 0
-
-
 # --- App creation ---
 
 
@@ -459,17 +337,6 @@ class TestAppCreation:
         assert v2.version == 2
 
 
-# --- Storage module ---
-
-
-class TestStorage:
-    def test_config_loaders_exist(self):
-        from skitter.config import load_agents, load_workflows
-
-        assert callable(load_agents)
-        assert callable(load_workflows)
-
-
 # --- Discovery cards ---
 
 
@@ -509,24 +376,21 @@ class TestBuildCard:
         assert card["capabilities"]["pushNotifications"] is False
         assert card["defaultInputModes"] == ["text/plain", "application/json"]
 
-    def test_workflow_card_has_metadata_tasks(self):
+    def test_composed_app_card_has_metadata_tasks(self):
         from skitter.discovery import build_card
 
-        agent = AgentDef(id="my-wf", name="My Workflow", description="A workflow")
-        wf = WorkflowDef(
-            id="my-wf",
-            name="My Workflow",
-            variables=["topic"],
-            tasks=[
-                WorkflowTask(
-                    id="step1",
-                    agent="researcher",
-                    description="Research {topic}",
-                    next="output",
-                ),
+        agent = AgentDef(id="my-app", name="My App", description="A composed app")
+        metadata = {
+            "variables": ["topic"],
+            "tasks": [
+                {
+                    "id": "step1",
+                    "agent": "researcher",
+                    "description": "Research {topic}",
+                },
             ],
-        )
-        card = build_card(agent, workflow=wf)
+        }
+        card = build_card(agent, metadata=metadata)
         assert "metadata" in card
         assert card["metadata"]["variables"] == ["topic"]
         assert len(card["metadata"]["tasks"]) == 1
@@ -629,8 +493,8 @@ class TestAgentRunnerCli:
             assert "not found" in result.lower()
 
 
-class TestAgentDefNewFields:
-    def test_load_agents_with_new_fields(self, tmp_path):
+class TestLoadAgent:
+    def test_load_agent_with_all_fields(self, tmp_path):
         (tmp_path / "test-agent.yaml").write_text(
             "name: Test Agent\n"
             "description: A test agent\n"
@@ -646,11 +510,10 @@ class TestAgentDefNewFields:
             "input_modes: ['text/plain', 'application/json']\n"
             "output_modes: ['text/plain']\n"
         )
-        from skitter.config import load_agents
+        from skitter.agent_runner import load_agent
 
-        agents = load_agents(agents_dir=tmp_path)
-        assert "custom-id" in agents
-        agent = agents["custom-id"]
+        agent = load_agent(str(tmp_path / "test-agent.yaml"))
+        assert agent.id == "custom-id"
         assert agent.name == "Test Agent"
         assert agent.model == "sonnet"
         assert agent.agent_file == "test.md"
@@ -660,19 +523,30 @@ class TestAgentDefNewFields:
         assert agent.capabilities == {"streaming": True}
         assert agent.input_modes == ["text/plain", "application/json"]
 
-    def test_load_agents_defaults(self, tmp_path):
+    def test_load_agent_defaults(self, tmp_path):
         (tmp_path / "simple.yaml").write_text(
             "name: Simple\ndescription: A simple agent\n"
         )
-        from skitter.config import load_agents
+        from skitter.agent_runner import load_agent
 
-        agents = load_agents(agents_dir=tmp_path)
-        assert "simple" in agents
-        agent = agents["simple"]
+        agent = load_agent(str(tmp_path / "simple.yaml"))
+        assert agent.id == "simple"
         assert agent.model == ""
         assert agent.agent_file == ""
         assert agent.broker is None
+        assert agent.runtime == "claude"
         assert agent.input_modes == ["text/plain"]
+
+
+# --- Safe format ---
+
+
+class TestSafeFormat:
+    def test_unknown_vars_left_intact(self):
+        from skitter.config import safe_format
+
+        desc = safe_format("Research {topic}, output as {format}.", {"topic": "AI"})
+        assert desc == "Research AI, output as {format}."
 
 
 # --- Dependency resolution ---
@@ -783,36 +657,6 @@ class TestDiscoveryRegistry:
 
 
 # --- Persistent workspaces ---
-
-
-class TestWorkspaceConfig:
-    def test_load_workspace_config_missing(self, tmp_path):
-        """No workspace key in config returns defaults."""
-        from skitter.config import load_workspace_config
-
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("default_runtime: claude\n")
-        with patch("skitter.config.CONFIG_FILE", config_file):
-            cfg = load_workspace_config()
-        assert cfg.remote == ""
-        assert cfg.local_mount == ""
-        assert cfg.base_path == "skitter/workspaces"
-
-    def test_load_workspace_config_present(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "workspace:\n"
-            "  remote: drive\n"
-            "  local_mount: /mnt/gdrive\n"
-            "  base_path: my/workspaces\n"
-        )
-        with patch("skitter.config.CONFIG_FILE", config_file):
-            from skitter.config import load_workspace_config
-
-            cfg = load_workspace_config()
-        assert cfg.remote == "drive"
-        assert cfg.local_mount == "/mnt/gdrive"
-        assert cfg.base_path == "my/workspaces"
 
 
 # --- DB module ---
@@ -960,63 +804,6 @@ class TestDBConfig:
             cfg = load_db_config()
         assert cfg.backend == "postgres"
         assert cfg.postgres_dsn == "postgresql://localhost/skitter"
-
-
-class TestResolveWorkspace:
-    def test_subprocess_with_local_mount(self, tmp_path):
-        from skitter.workspace import resolve_workspace
-
-        cfg = WorkspaceConfig(remote="drive", local_mount=str(tmp_path), base_path="ws")
-        with patch("skitter.workspace.load_workspace_config", return_value=cfg):
-            local, remote = resolve_workspace("my-ws", "subprocess")
-        assert local == tmp_path / "ws" / "my-ws"
-        assert local.is_dir()
-        assert remote == ""  # no rclone needed
-
-    def test_fly_mode_uses_rclone(self, tmp_path):
-        from skitter.workspace import resolve_workspace
-
-        cfg = WorkspaceConfig(remote="drive", base_path="ws")
-        with (
-            patch("skitter.workspace.load_workspace_config", return_value=cfg),
-            patch("skitter.workspace.WORKSPACES_DIR", tmp_path),
-        ):
-            local, remote = resolve_workspace("my-ws", "fly")
-        assert local == tmp_path / "my-ws"
-        assert local.is_dir()
-        assert remote == "drive:ws/my-ws"
-
-    def test_no_remote_configured_raises(self, tmp_path):
-        from skitter.workspace import resolve_workspace
-
-        cfg = WorkspaceConfig()  # no remote, no local_mount
-        with (
-            patch("skitter.workspace.load_workspace_config", return_value=cfg),
-            patch("skitter.workspace.WORKSPACES_DIR", tmp_path),
-            pytest.raises(RuntimeError, match="no rclone remote"),
-        ):
-            resolve_workspace("my-ws", "fly")
-
-
-class TestSessionWorkspaceRoundtrip:
-    def test_workspace_survives_json_roundtrip(self):
-        session = Session(session_id="s1")
-        session.tasks["a"] = SessionTask(
-            id="a", agent="r", description="d", workspace="my-ws"
-        )
-        restored = Session.from_json(session.to_json())
-        assert restored.tasks["a"].workspace == "my-ws"
-
-    def test_old_session_without_workspace(self):
-        """Sessions from before workspace support default to empty string."""
-        raw = json.dumps(
-            {
-                "session_id": "s1",
-                "tasks": {"a": {"id": "a", "agent": "r", "description": "d"}},
-            }
-        )
-        session = Session.from_json(raw)
-        assert session.tasks["a"].workspace == ""
 
 
 # --- Runtime API ---

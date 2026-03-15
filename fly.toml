@@ -1,0 +1,7 @@
+app = "skitter"
+primary_region = "iad"
+
+[build]
+
+[processes]
+  app = "python -m skitter.supervisor"

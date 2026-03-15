@@ -6,7 +6,7 @@ import logging
 
 import aiomqtt
 
-from skitter.config import AgentDef, WorkflowDef
+from skitter.config import AgentDef
 from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
@@ -23,11 +23,12 @@ def build_card(
     agent: AgentDef,
     *,
     url: str = "",
-    workflow: WorkflowDef | None = None,
+    metadata: dict | None = None,
 ) -> dict:
     """Build a single spec-conformant A2A Agent Card.
 
-    If workflow is provided, the card includes metadata.tasks for composed apps.
+    If metadata is provided (e.g. {"tasks": [...], "variables": [...]}),
+    it is included in the card for composed apps.
     """
     url = url or f"mqtt://{MQTT_HOST}:{MQTT_PORT}"
     capabilities = dict(agent.capabilities) if agent.capabilities else {}
@@ -56,23 +57,14 @@ def build_card(
         ],
     }
 
-    if workflow:
-        card["metadata"] = {
-            "variables": workflow.variables,
-            "tasks": [
-                {"id": t.id, "agent": t.agent, "description": t.description}
-                for t in workflow.tasks
-            ],
-        }
+    if metadata:
+        card["metadata"] = metadata
 
     return card
 
 
 def parse_card(payload: bytes) -> dict:
-    """Parse a discovery card from MQTT payload.
-
-    Returns the parsed card dict. Composed apps have metadata.tasks.
-    """
+    """Parse a discovery card from MQTT payload."""
     return json.loads(payload)
 
 

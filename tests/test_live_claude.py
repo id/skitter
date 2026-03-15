@@ -37,7 +37,7 @@ needs_claude = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def supervisor():
-    created = write_test_configs("test_claude", "claude", "test_workflow", CLAUDE_MODEL)
+    created = write_test_configs("test_claude", "claude", CLAUDE_MODEL)
     proc = start_supervisor()
     yield proc
     stop_supervisor(proc)

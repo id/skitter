@@ -34,9 +34,7 @@ needs_codex = pytest.mark.skipif(not shutil.which("codex"), reason="No codex CLI
 
 @pytest.fixture(scope="module")
 def supervisor():
-    created = write_test_configs(
-        "test_codex", "codex", "test_codex_workflow", CODEX_MODEL
-    )
+    created = write_test_configs("test_codex", "codex", CODEX_MODEL)
     proc = start_supervisor()
     yield proc
     stop_supervisor(proc)

@@ -17,7 +17,9 @@ import sys
 
 import aiomqtt
 
-from skitter.config import AgentDef, load_agents
+import yaml
+
+from skitter.config import AGENTS_DIR, AgentDef, BrokerConfig
 from skitter.discovery import CardPublisher, build_card
 from skitter.mqtt import (
     A2A_ORG,
@@ -37,7 +39,7 @@ from skitter.types import (
 )
 
 
-def worker_env() -> dict[str, str]:
+def agent_env() -> dict[str, str]:
     """Build env for agent processes — strip CLAUDECODE, prefer OAuth over API key."""
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -224,18 +226,58 @@ async def handle_request(
     log.info("Request %s completed (%d chars)", req.request_id, len(result))
 
 
+def load_agent(name_or_path: str) -> AgentDef:
+    """Load a single agent definition from a YAML file.
+
+    Accepts either a name (resolves to ~/.skitter/agents/{name}.yaml)
+    or a path to a YAML file.
+    """
+    from pathlib import Path
+
+    path = Path(name_or_path)
+    if not path.suffix:
+        path = AGENTS_DIR / f"{name_or_path}.yaml"
+    if not path.is_file():
+        log.error("Agent definition not found: %s", path)
+        sys.exit(1)
+
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict):
+        log.error("Invalid agent definition: %s", path)
+        sys.exit(1)
+
+    agent_id = data.get("agent_id", path.stem)
+    broker_data = data.get("broker")
+    broker = (
+        BrokerConfig(
+            host=broker_data.get("host", ""),
+            port=int(broker_data.get("port", 0)),
+        )
+        if isinstance(broker_data, dict)
+        else None
+    )
+    return AgentDef(
+        id=agent_id,
+        name=data.get("name", agent_id),
+        description=data.get("description", ""),
+        runtime=data.get("runtime", "claude"),
+        model=data.get("model", ""),
+        agent_file=data.get("agent_file", ""),
+        broker=broker,
+        capabilities=data.get("capabilities", {}),
+        input_modes=data.get("input_modes", ["text/plain"]),
+        output_modes=data.get("output_modes", ["text/plain"]),
+    )
+
+
 async def run(agent_name: str) -> None:
     """Main loop: publish card, listen for requests, handle them."""
-    agents = load_agents()
-    agent = agents.get(agent_name)
-    if not agent:
-        log.error("Agent '%s' not found in ~/.skitter/agents/", agent_name)
-        sys.exit(1)
+    agent = load_agent(agent_name)
 
     log.info("Starting agent runner: %s (runtime=%s)", agent.id, agent.runtime)
 
     # Compute env once at startup
-    env = worker_env()
+    env = agent_env()
 
     # Publish discovery card
     card = build_card(agent)

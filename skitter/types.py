@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 import json
 import time
 
@@ -171,41 +171,3 @@ class TaskTarget:
     mqtt_host: str = ""  # broker host (empty = same broker as supervisor)
     mqtt_port: int = 8883
     http_url: str = ""  # for HTTP A2A targets (Phase 4)
-
-
-@dataclass
-class SessionTask:
-    """Task record — single source of truth for task data."""
-
-    id: str
-    agent: str
-    description: str
-    model: str = ""
-    runtime: str = "claude"
-    status: str = "pending"
-    next: str = ""
-    needs: list[str] = field(default_factory=list)
-    workspace: str = ""  # persistent workspace path (slug or slug/task_id)
-
-
-@dataclass
-class Session:
-    session_id: str
-    workflow_id: str = ""
-    agent_id: str = ""
-    label: str = ""
-    variables: dict[str, str] = field(default_factory=dict)
-    caller_reply_topic: str = ""
-    caller_correlation: str = ""
-    tasks: dict[str, SessionTask] = field(default_factory=dict)
-    created_at: float = field(default_factory=time.time)
-
-    def to_json(self) -> str:
-        return json.dumps(asdict(self))
-
-    @classmethod
-    def from_json(cls, data: str) -> "Session":
-        d = json.loads(data)
-        tasks = {k: SessionTask(**v) for k, v in d.get("tasks", {}).items()}
-        d["tasks"] = tasks
-        return cls(**d)

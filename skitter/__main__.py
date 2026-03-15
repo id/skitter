@@ -1,4 +1,53 @@
+import asyncio
 import sys
+import uuid
+
+
+def _run_prompt(agent_id: str, prompt: str) -> None:
+    """Send a one-shot A2A request to an agent and print the reply."""
+    from rich.console import Console
+
+    from skitter.mqtt import send_and_wait, topic_request
+    from skitter.types import (
+        A2ARequest,
+        REPLY_ERROR,
+        REPLY_SUBMITTED,
+        REPLY_TERMINAL,
+        REPLY_TEXT,
+        REPLY_TOOL,
+    )
+
+    console = Console()
+
+    def on_reply(kind: str, content: str) -> bool:
+        if kind == REPLY_SUBMITTED:
+            console.print(f"[dim]Session: {content}[/dim]")
+        elif kind == REPLY_TEXT:
+            console.print(content, end="")
+        elif kind == REPLY_TOOL:
+            console.print(f"  [dim][tool] {content}[/dim]")
+        elif kind == REPLY_TERMINAL:
+            console.print(f"\n\n{content}")
+            return True
+        elif kind == REPLY_ERROR:
+            console.print(f"[red]Error: {content}[/red]")
+            return True
+        elif kind == "timeout":
+            console.print("[yellow]Timed out waiting for result[/yellow]")
+            return True
+        return False
+
+    request_id = f"run-{uuid.uuid4().hex[:8]}"
+    req = A2ARequest(text=prompt, request_id=request_id, sender="cli")
+
+    asyncio.run(
+        send_and_wait(
+            topic_request(agent_id),
+            req.to_json(),
+            request_id,
+            on_reply,
+        )
+    )
 
 
 def dispatch() -> None:
@@ -8,26 +57,12 @@ def dispatch() -> None:
 
         skitter                → supervisor (default)
         skitter chat  [...]    → interactive MQTT chat client
-        skitter agents [...]   → manage predefined agents
-        skitter workflow [...] → manage and run workflows
-        skitter init           → create ~/.skitter/ with example files
+        skitter run   [...]    → one-shot A2A request
     """
     subcmd = sys.argv[1] if len(sys.argv) > 1 else ""
 
     if subcmd == "chat":
         from skitter.cli import main
-
-        main()
-    elif subcmd == "agents":
-        from skitter.agents_cli import main
-
-        main()
-    elif subcmd == "workflow":
-        from skitter.workflow_cli import main
-
-        main()
-    elif subcmd == "docker":
-        from skitter.docker_cli import main
 
         main()
     elif subcmd == "agent-runner":
@@ -38,41 +73,19 @@ def dispatch() -> None:
         from skitter.pull import main as pull_main
 
         pull_main()
-    elif subcmd == "deploy":
-        from skitter.deploy_fly import cmd_deploy_fly
-
-        cmd_deploy_fly()
-    elif subcmd == "init":
-        from skitter.config import write_examples
-
-        agents_written, workflows_written = write_examples()
-        if agents_written:
-            print(f"Created agents: {', '.join(agents_written)}")
-        if workflows_written:
-            print(f"Created workflows: {', '.join(workflows_written)}")
-        if not agents_written and not workflows_written:
-            print("All example files already exist. Nothing to do.")
-        else:
-            print("Done. Files are in ~/.skitter/")
     elif subcmd == "run":
-        # skitter run "prompt" — one-shot default agent
-        from skitter.agents_cli import cmd_run
-
         prompt = " ".join(sys.argv[2:])
         if not prompt:
             print("Usage: skitter run '<prompt>'", file=sys.stderr)
             sys.exit(1)
-        cmd_run("skitter", prompt)
+        _run_prompt("skitter", prompt)
     elif subcmd == "supervisor":
         from skitter.supervisor import main
 
         main()
     elif subcmd and not subcmd.startswith("-"):
-        # skitter "prompt" — treat unrecognized subcommand as prompt
-        from skitter.agents_cli import cmd_run
-
         prompt = " ".join(sys.argv[1:])
-        cmd_run("skitter", prompt)
+        _run_prompt("skitter", prompt)
     else:
         from skitter.supervisor import main
 

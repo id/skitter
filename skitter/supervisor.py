@@ -13,20 +13,16 @@ from datetime import datetime, timezone
 
 import aiomqtt
 
-from skitter.config import (
-    WorkflowDef,
-    load_workflows,
-    safe_format,
-)
+from skitter.config import safe_format
 from skitter.db import (
     App,
     AppVersion,
+    DB,
     DBSession,
     DBTask,
-    SqliteDB,
     open_db,
 )
-from skitter.discovery import CardPublisher, build_card, is_workflow_card, parse_card
+from skitter.discovery import CardPublisher, is_workflow_card, parse_card
 from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
     CANCEL_KEY,
@@ -41,7 +37,6 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_a2a_event,
-    topic_discovery,
     topic_discovery_wildcard,
     topic_request,
     topic_request_wildcard,
@@ -172,26 +167,13 @@ class DiscoveryRegistry:
         return [aid for aid, card in self._cards.items() if is_workflow_card(card)]
 
 
-# --- Target resolution ---
-
-
-def resolve_target(agent_id: str, registry: DiscoveryRegistry) -> TaskTarget:
-    """Resolve an agent reference to a TaskTarget using the discovery registry."""
-    card = registry.get(agent_id)
-    if card:
-        # For now, all discovered agents are on the local broker
-        return TaskTarget(agent=agent_id)
-    # Agent not in registry — assume local broker, will fail at dispatch time
-    return TaskTarget(agent=agent_id)
-
-
 # --- Supervisor ---
 
 
 class Supervisor:
     """Pure A2A orchestrator with DB-backed state."""
 
-    def __init__(self, db: SqliteDB) -> None:
+    def __init__(self, db: DB) -> None:
         self._db = db
         self._sessions: dict[str, SessionState] = {}
         self._registry = DiscoveryRegistry()
@@ -281,7 +263,7 @@ class Supervisor:
             description = safe_format(t.get("description", ""), variables)
             needs = t.get("needs", [])
             agent = t.get("agent", "")
-            target = resolve_target(agent, self._registry)
+            target = TaskTarget(agent=agent)
 
             state.graph[tid] = SessionTask(
                 task_id=tid,
@@ -639,6 +621,27 @@ class Supervisor:
 
     # --- Inbound request handling ---
 
+    async def _start_session(self, state: SessionState, label: str) -> None:
+        """Send submitted ack, publish session_created event, dispatch ready tasks."""
+        if state.caller_reply_topic and self._client:
+            ack = make_status_event(
+                request_id=state.caller_correlation,
+                task_id=state.session_id,
+                state="submitted",
+            )
+            props = make_properties(correlation_data=state.caller_correlation)
+            await self._client.publish(
+                state.caller_reply_topic, ack, qos=1, properties=props
+            )
+        await self._publish_event("session_created", state.session_id)
+        await self.dispatch_ready(state)
+        log.info(
+            "%s session %s started (%d tasks)",
+            label,
+            state.session_id,
+            len(state.graph),
+        )
+
     async def handle_request(
         self,
         payload: str,
@@ -674,83 +677,11 @@ class Supervisor:
                 caller_correlation=caller_correlation,
                 variables=req.variables,
             )
-
-            # Send initial ack
-            if caller_reply_topic:
-                ack = make_status_event(
-                    request_id=caller_correlation,
-                    task_id=state.session_id,
-                    state="submitted",
-                )
-                props = make_properties(correlation_data=caller_correlation)
-                if self._client:
-                    await self._client.publish(
-                        caller_reply_topic, ack, qos=1, properties=props
-                    )
-
-            await self._publish_event("session_created", state.session_id)
-            await self.dispatch_ready(state)
-            log.info(
-                "App '%s' session %s started (%d tasks)",
-                agent_id,
-                state.session_id,
-                len(state.graph),
-            )
+            await self._start_session(state, f"App '{agent_id}'")
             return
 
         # Check if agent exists in discovery registry
         if not self._registry.get(agent_id):
-            # Try loading from workflows for backward compat
-            workflows = load_workflows()
-            if agent_id in workflows:
-                wf = workflows[agent_id]
-                graph = self._workflow_to_graph(wf, req.variables)
-                # Create a temporary app version
-                av_id = f"wf-{agent_id}-{uuid.uuid4().hex[:8]}"
-                av = AppVersion(
-                    id=av_id,
-                    app_id=agent_id,
-                    version=0,
-                    graph_json=json.dumps(graph),
-                )
-                # Ensure app exists
-                if not self._db.get_app(agent_id):
-                    self._db.create_app(
-                        App(id=agent_id, name=wf.name, description=wf.description)
-                    )
-                self._db.create_app_version(av)
-
-                state = self.create_session_from_graph(
-                    graph_json=av.graph_json,
-                    app_version_id=av_id,
-                    request=req,
-                    caller_reply_topic=caller_reply_topic,
-                    caller_correlation=caller_correlation,
-                    variables=req.variables,
-                )
-
-                if caller_reply_topic:
-                    ack = make_status_event(
-                        request_id=caller_correlation,
-                        task_id=state.session_id,
-                        state="submitted",
-                    )
-                    props = make_properties(correlation_data=caller_correlation)
-                    if self._client:
-                        await self._client.publish(
-                            caller_reply_topic, ack, qos=1, properties=props
-                        )
-
-                await self._publish_event("session_created", state.session_id)
-                await self.dispatch_ready(state)
-                log.info(
-                    "Workflow '%s' session %s started (%d tasks)",
-                    agent_id,
-                    state.session_id,
-                    len(state.graph),
-                )
-                return
-
             await self._send_error(
                 caller_reply_topic,
                 caller_correlation,
@@ -789,50 +720,7 @@ class Supervisor:
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
         )
-
-        if caller_reply_topic:
-            ack = make_status_event(
-                request_id=caller_correlation,
-                task_id=state.session_id,
-                state="submitted",
-            )
-            props = make_properties(correlation_data=caller_correlation)
-            if self._client:
-                await self._client.publish(
-                    caller_reply_topic, ack, qos=1, properties=props
-                )
-
-        await self._publish_event("session_created", state.session_id)
-        await self.dispatch_ready(state)
-        log.info(
-            "Agent '%s' session %s started",
-            agent_id,
-            state.session_id,
-        )
-
-    def _workflow_to_graph(
-        self, wf: WorkflowDef, variables: dict[str, str] | None = None
-    ) -> dict:
-        """Convert a WorkflowDef to graph JSON."""
-        variables = variables or {}
-        tasks = []
-        for t in wf.tasks:
-            task_dict: dict = {
-                "id": t.id,
-                "agent": t.agent,
-                "description": safe_format(t.description, variables),
-                "needs": list(t.needs),
-                "next": t.next,
-            }
-            if t.model:
-                task_dict["model"] = t.model
-            tasks.append(task_dict)
-        graph: dict = {"tasks": tasks}
-        if wf.workspace:
-            graph["workspace"] = wf.workspace
-        if wf.variables:
-            graph["variables"] = wf.variables
-        return graph
+        await self._start_session(state, f"Agent '{agent_id}'")
 
     async def _send_error(
         self,
@@ -903,7 +791,7 @@ class Supervisor:
                     description=t.description,
                     needs=needs,
                     next=t.next,
-                    target=resolve_target(t.agent, self._registry),
+                    target=TaskTarget(agent=t.agent),
                 )
 
                 if t.state == "completed":
@@ -959,72 +847,15 @@ class Supervisor:
                 f"Task timed out during recovery (no reply within {timeout:.0f}s)",
             )
 
-    # --- Workflow card publishing ---
-
-    async def publish_workflow_cards(self) -> None:
-        """Publish discovery cards for configured workflows."""
-        from skitter.config import AgentDef
-
-        workflows = load_workflows()
-        for wf in workflows.values():
-            wf_agent = AgentDef(id=wf.id, name=wf.name, description=wf.description)
-            card_json = json.dumps(build_card(wf_agent, workflow=wf))
-            if wf.id not in self._publishers:
-                pub = CardPublisher(wf.id, card_json)
-                self._publishers[wf.id] = pub
-                await pub.start()
-
-    async def cleanup_stale_cards(self) -> None:
-        """Remove retained discovery cards for workflows no longer in config."""
-        active_ids = set(self._publishers.keys())
-        try:
-            async with aiomqtt.Client(
-                **mqtt_client_kwargs(
-                    identifier=f"{A2A_ORG}/{A2A_UNIT}/supervisor-cleanup"
-                ),
-            ) as client:
-                discovered: set[str] = set()
-                await client.subscribe(topic_discovery_wildcard(), qos=1)
-                try:
-                    async with asyncio.timeout(3.0):
-                        async for msg in client.messages:
-                            card_id = str(msg.topic).split("/")[-1]
-                            if msg.payload:
-                                discovered.add(card_id)
-                except TimeoutError:
-                    pass
-
-                for card_id in discovered:
-                    if card_id not in active_ids and card_id != "supervisor":
-                        # Only clean up workflow cards (not standalone agents)
-                        try:
-                            card = parse_card(msg.payload)
-                            if is_workflow_card(card):
-                                await client.publish(
-                                    topic_discovery(card_id),
-                                    b"",
-                                    qos=1,
-                                    retain=True,
-                                )
-                                log.info("Cleared stale workflow card: %s", card_id)
-                        except Exception:
-                            pass
-        except Exception:
-            log.warning("Failed to clean up stale discovery cards")
-
     # --- Main loop ---
 
     async def run(self) -> None:
         """Main supervisor loop."""
-        # Publish workflow cards + runtime API card
-        await self.publish_workflow_cards()
+        # Publish runtime API card
         rt_card_json = json.dumps(runtime_card())
         pub = CardPublisher(RUNTIME_AGENT_ID, rt_card_json)
         self._publishers[RUNTIME_AGENT_ID] = pub
         await pub.start()
-
-        # Clean up stale cards
-        await self.cleanup_stale_cards()
 
         try:
             async with aiomqtt.Client(

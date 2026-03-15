@@ -9,15 +9,15 @@ import json
 import logging
 import uuid
 
-from skitter.config import AgentDef, WorkflowDef, WorkflowTask
-from skitter.db import App, AppVersion, SqliteDB
+from skitter.config import AgentDef
+from skitter.db import App, AppVersion, DB
 from skitter.discovery import build_card
 
 log = logging.getLogger("skitter.apps")
 
 
 def create_app(
-    db: SqliteDB,
+    db: DB,
     *,
     app_id: str = "",
     name: str,
@@ -57,23 +57,18 @@ def create_app(
     # Build discovery card for the composed app
     agent_def = AgentDef(id=app_id, name=name, description=description)
     tasks = graph.get("tasks", []) if graph else []
-    wf = WorkflowDef(
-        id=app_id,
-        name=name,
-        description=description,
-        variables=graph.get("variables", []) if graph else [],
-        tasks=[
-            WorkflowTask(
-                id=t["id"],
-                agent=t.get("agent", ""),
-                description=t.get("description", ""),
-                next=t.get("next", ""),
-                needs=t.get("needs", []),
-            )
+    metadata = {
+        "variables": graph.get("variables", []) if graph else [],
+        "tasks": [
+            {
+                "id": t["id"],
+                "agent": t.get("agent", ""),
+                "description": t.get("description", ""),
+            }
             for t in tasks
         ],
-    )
-    card = build_card(agent_def, workflow=wf)
+    }
+    card = build_card(agent_def, metadata=metadata)
     card_json = json.dumps(card)
 
     db.update_app_card(app_id, card_json)

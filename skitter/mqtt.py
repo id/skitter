@@ -72,11 +72,6 @@ def topic_request_wildcard() -> str:
     return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/+"
 
 
-def topic_request_cancel(agent_id: str) -> str:
-    """Cancel topic: $a2a/v1/request/{org}/{unit}/{agent_id}/cancel"""
-    return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/{agent_id}/cancel"
-
-
 def topic_reply(agent_id: str, suffix: str) -> str:
     """Reply topic: $a2a/v1/reply/{org}/{unit}/{agent_id}/{suffix}"""
     return f"{_PREFIX}/reply/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{suffix}"
@@ -92,16 +87,6 @@ def topic_a2a_event(agent_id: str) -> str:
 _SK = "skitter"
 
 
-def topic_session(session_id: str) -> str:
-    """Retained session: skitter/session/{sid}"""
-    return f"{_SK}/session/{session_id}"
-
-
-def topic_session_wildcard() -> str:
-    """Wildcard for sessions: skitter/session/+"""
-    return f"{_SK}/session/+"
-
-
 def topic_result(workflow_id: str, task: str, session_id: str) -> str:
     """Retained task result: skitter/result/{wf}/{task}/{sid}"""
     return f"{_SK}/result/{workflow_id}/{task}/{session_id}"
@@ -112,29 +97,9 @@ def topic_result_wildcard() -> str:
     return f"{_SK}/result/+/+/+"
 
 
-def topic_status(workflow_id: str, task: str, session_id: str) -> str:
-    """Retained task status: skitter/status/{wf}/{task}/{sid}"""
-    return f"{_SK}/status/{workflow_id}/{task}/{session_id}"
-
-
-def topic_status_wildcard() -> str:
-    """Wildcard for task statuses: skitter/status/+/+/+"""
-    return f"{_SK}/status/+/+/+"
-
-
-def topic_usage(workflow_id: str, task: str, session_id: str) -> str:
-    """Usage tracking: skitter/usage/{wf}/{task}/{sid}"""
-    return f"{_SK}/usage/{workflow_id}/{task}/{session_id}"
-
-
 def topic_event(agent_id: str, event_type: str) -> str:
-    """Worker lifecycle: skitter/event/{agent}/{type}"""
+    """Agent lifecycle: skitter/event/{agent}/{type}"""
     return f"{_SK}/event/{agent_id}/{event_type}"
-
-
-def topic_dead_wildcard() -> str:
-    """Wildcard for worker dead events: skitter/event/+/dead"""
-    return f"{_SK}/event/+/dead"
 
 
 # --- MQTT v5 property helpers ---

@@ -30,9 +30,8 @@ from skitter.mqtt import (
     mqtt_client_kwargs,
     topic_reply,
     topic_result_wildcard,
-    topic_session_wildcard,
 )
-from skitter.config import AGENTS_DIR, WORKFLOWS_DIR
+from skitter.config import AGENTS_DIR
 from skitter.types import (
     A2ARequest,
     REPLY_ERROR,
@@ -72,16 +71,13 @@ needs_mqtt = pytest.mark.skipif(not mqtt_available(), reason="No MQTT broker")
 def write_test_configs(
     agent_id: str,
     runtime: str,
-    workflow_id: str,
     model: str = "",
 ) -> list[Path]:
-    """Create temporary agent + workflow YAML in ~/.skitter/. Returns created paths."""
+    """Create temporary agent YAML in ~/.skitter/. Returns created paths."""
     agent_yaml = AGENTS_DIR / f"{agent_id}.yaml"
-    workflow_yaml = WORKFLOWS_DIR / f"{workflow_id}.yaml"
     created = []
 
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
 
     if not agent_yaml.exists():
         agent_yaml.write_text(
@@ -94,45 +90,6 @@ def write_test_configs(
             )
         )
         created.append(agent_yaml)
-
-    if not workflow_yaml.exists():
-        task_model = {"model": model} if model else {}
-        workflow_yaml.write_text(
-            yaml.dump(
-                {
-                    "name": f"Test {runtime.title()} Workflow",
-                    "description": "Fan-out + join test",
-                    "variables": ["topic"],
-                    "tasks": [
-                        {
-                            "id": "research_a",
-                            "agent": agent_id,
-                            "description": "In one sentence, name one fact about '{topic}'.",
-                            "next": "synthesize",
-                            "needs": [],
-                            **task_model,
-                        },
-                        {
-                            "id": "research_b",
-                            "agent": agent_id,
-                            "description": "In one sentence, name a different fact about '{topic}'.",
-                            "next": "synthesize",
-                            "needs": [],
-                            **task_model,
-                        },
-                        {
-                            "id": "synthesize",
-                            "agent": agent_id,
-                            "description": "Combine the facts about '{topic}' into a single sentence.",
-                            "next": "output",
-                            "needs": ["research_a", "research_b"],
-                            **task_model,
-                        },
-                    ],
-                }
-            )
-        )
-        created.append(workflow_yaml)
 
     return created
 
@@ -186,7 +143,6 @@ async def clean_retained():
         ),
     ) as client:
         for pattern in [
-            topic_session_wildcard(),
             topic_result_wildcard(),
         ]:
             await client.subscribe(pattern, qos=1)

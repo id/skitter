@@ -89,37 +89,23 @@ async def run_chat(session_id: str) -> None:
                     continue
 
                 # Parse invocation commands
-                workflow_id = ""
-                workflow_vars: dict[str, str] = {}
                 agent_id = ""
-                if text.startswith("/workflow "):
-                    from skitter.workflow_cli import parse_vars
-
-                    parts = text.split()
-                    workflow_id = parts[1] if len(parts) > 1 else ""
-                    workflow_vars = parse_vars(parts[2:])
-                    text = f"Workflow '{workflow_id}'"
-                elif text.startswith("/agent "):
+                if text.startswith("/agent "):
                     parts = text.split(None, 2)
                     agent_id = parts[1] if len(parts) > 1 else ""
                     text = parts[2] if len(parts) > 2 else ""
                     if not agent_id or not text:
                         print("Usage: /agent <agent_id> <description>")
                         continue
-                # else: no prefix — goes to default agent (skitter)
 
                 request_id = f"{session_id}-{uuid.uuid4().hex[:6]}"
                 req = A2ARequest(
                     text=text,
                     request_id=request_id,
                     sender="cli",
-                    variables=workflow_vars,
                 )
 
-                # Route to the correct agent/workflow request topic
-                if workflow_id:
-                    request_topic = topic_request(workflow_id)
-                elif agent_id:
+                if agent_id:
                     request_topic = topic_request(agent_id)
                 else:
                     request_topic = default_request

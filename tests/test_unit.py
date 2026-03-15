@@ -17,6 +17,7 @@ from skitter.supervisor import (
     _parse_agent_id_from_topic,
 )
 from skitter.mqtt import (
+    topic_discovery_wildcard,
     topic_event,
     topic_dead_wildcard,
     topic_request,
@@ -486,6 +487,211 @@ class TestStorage:
 
         assert callable(load_agents)
         assert callable(load_workflows)
+
+
+# --- Discovery cards ---
+
+
+class TestBuildCard:
+    def test_agent_card_schema(self):
+        from skitter.discovery import build_card
+
+        agent = AgentDef(
+            id="researcher",
+            name="Researcher",
+            description="Deep research with citations",
+        )
+        card = build_card(agent)
+        assert card["name"] == "Researcher"
+        assert card["description"] == "Deep research with citations"
+        assert card["version"] == "0.1.0"
+        assert card["protocolVersion"] == "0.2.5"
+        assert card["capabilities"]["streaming"] is True
+        assert card["capabilities"]["pushNotifications"] is False
+        assert card["defaultInputModes"] == ["text/plain"]
+        assert card["defaultOutputModes"] == ["text/plain"]
+        assert card["skills"][0]["id"] == "researcher"
+        assert "metadata" not in card
+
+    def test_agent_card_custom_capabilities(self):
+        from skitter.discovery import build_card
+
+        agent = AgentDef(
+            id="coder",
+            name="Coder",
+            description="Writes code",
+            capabilities={"streaming": False},
+            input_modes=["text/plain", "application/json"],
+        )
+        card = build_card(agent)
+        assert card["capabilities"]["streaming"] is False
+        assert card["capabilities"]["pushNotifications"] is False
+        assert card["defaultInputModes"] == ["text/plain", "application/json"]
+
+    def test_workflow_card_has_metadata_tasks(self):
+        from skitter.discovery import build_card
+
+        agent = AgentDef(id="my-wf", name="My Workflow", description="A workflow")
+        wf = WorkflowDef(
+            id="my-wf",
+            name="My Workflow",
+            variables=["topic"],
+            tasks=[
+                WorkflowTask(
+                    id="step1",
+                    agent="researcher",
+                    description="Research {topic}",
+                    next="output",
+                ),
+            ],
+        )
+        card = build_card(agent, workflow=wf)
+        assert "metadata" in card
+        assert card["metadata"]["variables"] == ["topic"]
+        assert len(card["metadata"]["tasks"]) == 1
+        assert card["metadata"]["tasks"][0]["id"] == "step1"
+
+    def test_card_has_url(self):
+        from skitter.discovery import build_card
+
+        agent = AgentDef(id="test", name="Test")
+        card = build_card(agent, url="mqtt://custom:1883")
+        assert card["url"] == "mqtt://custom:1883"
+
+
+class TestParseCard:
+    def test_parse_card(self):
+        from skitter.discovery import parse_card
+
+        raw = json.dumps({"name": "Test", "version": "0.1.0"}).encode()
+        card = parse_card(raw)
+        assert card["name"] == "Test"
+
+    def test_is_workflow_card(self):
+        from skitter.discovery import is_workflow_card
+
+        assert not is_workflow_card({"name": "Agent"})
+        assert not is_workflow_card({"name": "Agent", "metadata": {}})
+        assert is_workflow_card({"metadata": {"tasks": [{"id": "step1"}]}})
+
+
+class TestDiscoveryWildcard:
+    def test_default_org_unit(self):
+        t = topic_discovery_wildcard()
+        assert "/discovery/" in t
+        assert t.endswith("/+")
+
+    def test_custom_org_unit(self):
+        t = topic_discovery_wildcard("myorg", "myunit")
+        assert "myorg/myunit/+" in t
+
+
+# --- Agent runner ---
+
+
+class TestAgentRunnerCli:
+    def test_build_claude_cmd(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(
+            id="researcher",
+            name="Researcher",
+            runtime="claude",
+            model="sonnet",
+            agent_file="researcher.md",
+        )
+        cmd = _build_cli_cmd(agent, "test prompt")
+        assert cmd[0] == "claude"
+        assert "-p" in cmd
+        assert "test prompt" in cmd
+        assert "--agent" in cmd
+        assert "researcher" in cmd  # agent file without .md
+        assert "--model" in cmd
+        assert "sonnet" in cmd
+
+    def test_build_codex_cmd(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(
+            id="coder",
+            name="Coder",
+            runtime="codex",
+            model="gpt-5-nano",
+        )
+        cmd = _build_cli_cmd(agent, "code something")
+        assert cmd[0] == "codex"
+        assert "code something" in cmd
+        assert "--model" in cmd
+        assert "gpt-5-nano" in cmd
+
+    def test_build_claude_cmd_default_agent_file(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="researcher", name="Researcher", runtime="claude")
+        cmd = _build_cli_cmd(agent, "test")
+        # When agent_file is empty, uses agent.id
+        idx = cmd.index("--agent")
+        assert cmd[idx + 1] == "researcher"
+
+    @pytest.mark.asyncio
+    async def test_run_cli_missing_binary(self):
+        from skitter.agent_runner import _run_cli
+
+        agent = AgentDef(id="test", name="Test", runtime="claude")
+
+        async def noop(t, c):
+            pass
+
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+            result = await _run_cli(agent, "test", noop)
+            assert "claude" in result.lower()
+            assert "not found" in result.lower()
+
+
+class TestAgentDefNewFields:
+    def test_load_agents_with_new_fields(self, tmp_path):
+        (tmp_path / "test-agent.yaml").write_text(
+            "name: Test Agent\n"
+            "description: A test agent\n"
+            "agent_id: custom-id\n"
+            "runtime: claude\n"
+            "model: sonnet\n"
+            "agent_file: test.md\n"
+            "broker:\n"
+            "  host: broker.example.com\n"
+            "  port: 8883\n"
+            "capabilities:\n"
+            "  streaming: true\n"
+            "input_modes: ['text/plain', 'application/json']\n"
+            "output_modes: ['text/plain']\n"
+        )
+        from skitter.config import load_agents
+
+        agents = load_agents(agents_dir=tmp_path)
+        assert "custom-id" in agents
+        agent = agents["custom-id"]
+        assert agent.name == "Test Agent"
+        assert agent.model == "sonnet"
+        assert agent.agent_file == "test.md"
+        assert agent.broker is not None
+        assert agent.broker.host == "broker.example.com"
+        assert agent.broker.port == 8883
+        assert agent.capabilities == {"streaming": True}
+        assert agent.input_modes == ["text/plain", "application/json"]
+
+    def test_load_agents_defaults(self, tmp_path):
+        (tmp_path / "simple.yaml").write_text(
+            "name: Simple\ndescription: A simple agent\n"
+        )
+        from skitter.config import load_agents
+
+        agents = load_agents(agents_dir=tmp_path)
+        assert "simple" in agents
+        agent = agents["simple"]
+        assert agent.model == ""
+        assert agent.agent_file == ""
+        assert agent.broker is None
+        assert agent.input_modes == ["text/plain"]
 
 
 # --- Respawn module ---

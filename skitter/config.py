@@ -16,11 +16,23 @@ WORKFLOWS_DIR = SKITTER_DIR / "workflows"
 
 
 @dataclass
+class BrokerConfig:
+    host: str = ""
+    port: int = 0
+
+
+@dataclass
 class AgentDef:
     id: str
     name: str
     description: str = ""
     runtime: str = ""  # "claude" or "codex"; empty = use default_runtime
+    model: str = ""  # optional model override
+    agent_file: str = ""  # runtime-specific prompt file (e.g. researcher.md)
+    broker: BrokerConfig | None = None
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    input_modes: list[str] = field(default_factory=lambda: ["text/plain"])
+    output_modes: list[str] = field(default_factory=lambda: ["text/plain"])
     workspace: str = ""  # custom cwd for worker
 
 
@@ -142,12 +154,27 @@ def load_agents(
             data = yaml.safe_load(path.read_text())
             if not isinstance(data, dict):
                 continue
-            agent_id = path.stem
+            agent_id = data.get("agent_id", path.stem)
+            broker_data = data.get("broker")
+            broker = (
+                BrokerConfig(
+                    host=broker_data.get("host", ""),
+                    port=int(broker_data.get("port", 0)),
+                )
+                if isinstance(broker_data, dict)
+                else None
+            )
             agents[agent_id] = AgentDef(
                 id=agent_id,
                 name=data.get("name", agent_id),
                 description=data.get("description", ""),
                 runtime=data.get("runtime", "") or default_runtime,
+                model=data.get("model", ""),
+                agent_file=data.get("agent_file", ""),
+                broker=broker,
+                capabilities=data.get("capabilities", {}),
+                input_modes=data.get("input_modes", ["text/plain"]),
+                output_modes=data.get("output_modes", ["text/plain"]),
                 workspace=data.get("workspace", ""),
             )
         except Exception as e:

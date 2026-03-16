@@ -227,7 +227,14 @@ async def handle_request(
         return
     except Exception:
         log.exception("Request %s failed", req.request_id)
-        result = "(internal error)"
+        failed = make_status_event(
+            request_id=correlation,
+            task_id=req.request_id,
+            state="failed",
+            message="Internal error",
+        )
+        await client.publish(reply_topic, failed, qos=1, properties=props)
+        return
 
     # Send terminal result
     terminal = make_status_event(
@@ -309,9 +316,13 @@ def _load_codex_agent(path) -> AgentDef:
 
 
 async def run(agent_name: str) -> None:
-    """Main loop: publish card, listen for requests, handle them."""
+    """Main loop: load agent from file and start."""
     agent = load_agent(agent_name)
+    await run_with_def(agent)
 
+
+async def run_with_def(agent: AgentDef) -> None:
+    """Main loop from an AgentDef (no file loading)."""
     log.info("Starting agent runner: %s (runtime=%s)", agent.id, agent.runtime)
 
     # Compute env once at startup

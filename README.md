@@ -136,21 +136,12 @@ Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt
 # Unit tests (no broker needed)
 uv run python -m pytest tests/test_unit.py -q
 
-# Live tests (requires Docker + MQTT broker + LLM API key + runtime credentials)
-docker compose up -d                          # start EMQX broker
-docker build -f Dockerfile.agent -t skitter-agent:latest .  # build agent image
-export ANTHROPIC_API_KEY='your-key'           # LLM API key for coordinator
-export SKITTER_LLM_MODEL=anthropic/claude-haiku-4-5
-
-# Claude (requires OAuth token)
-export CLAUDE_CODE_OAUTH_TOKEN='your-token'
-uv run python -m pytest tests/test_live.py -v -s --runtime claude
-
-# Codex (requires ~/.codex/auth.json)
-uv run python -m pytest tests/test_live.py -v -s --runtime codex
+# E2E tests (needs EMQX on localhost, no Docker/LLM API required)
+docker compose up -d   # start local EMQX
+uv run python -m pytest tests/test_e2e.py -v -s
 ```
 
-Live tests run both agent-runners and the coordinator in Docker containers for full isolation. They never touch your local agent files or config. Credentials are loaded from `.env.test`.
+E2E tests run the coordinator and agent-runners in-process with mocked CLI and graph generation. Real MQTT messages flow through the local broker.
 
 ## Limitations
 

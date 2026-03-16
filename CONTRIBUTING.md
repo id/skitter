@@ -112,21 +112,12 @@ $a2a/v1/
 # Unit tests (no broker needed)
 uv run python -m pytest tests/test_unit.py -q
 
-# Live tests (Docker + broker + LLM API key + runtime credentials)
-docker compose up -d
-docker build -f Dockerfile.agent -t skitter-agent:latest .
-export ANTHROPIC_API_KEY='your-key'
-export SKITTER_LLM_MODEL=anthropic/claude-haiku-4-5
-
-# Claude
-export CLAUDE_CODE_OAUTH_TOKEN='your-token'
-uv run python -m pytest tests/test_live.py -v -s --runtime claude
-
-# Codex (requires ~/.codex/auth.json)
-uv run python -m pytest tests/test_live.py -v -s --runtime codex
+# E2E tests (needs EMQX on localhost, no Docker/LLM API required)
+docker compose up -d   # start local EMQX
+uv run python -m pytest tests/test_e2e.py -v -s
 ```
 
-Live tests run both agent-runners and the coordinator in Docker containers. They never touch local agent files or config. Credentials are loaded from `.env.test`.
+E2E tests run the coordinator and agent-runners in-process with mocked `_run_cli` (no real CLI subprocess) and mocked `generate_graph` (no LLM API). Real MQTT messages flow through EMQX on localhost. Tests cover: agent discovery, direct queries, streaming, composed app pipelines (linear + fan-out/fan-in), session cancellation, and failure propagation/cascading.
 
 ## Lint and Format
 

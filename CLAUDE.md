@@ -64,7 +64,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 2. **Staff-engineer review**: run the `staff-engineer` agent. Fix all findings.
 3. **Lint and format**: `uvx ruff format` and `uvx ruff check` on changed files.
 4. **Unit tests**: `uv run python -m pytest tests/test_unit.py -q`.
-5. **Live tests**: `tests/test_live.py` (`--runtime claude` / `--runtime codex`). Confirm with user first.
+5. **E2E tests**: `uv run python -m pytest tests/test_e2e.py -v -s` (needs EMQX on localhost).
 6. **Dashboard**: verify `dashboard.html` still works if session state or topics changed.
 7. **Docs and env files**: update `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `.env.example`, and `.env.cloud.example` if behavior, config, env vars, or CLI usage changed.
 

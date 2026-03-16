@@ -31,7 +31,7 @@ from skitter.types import (
 async def run_chat(session_id: str) -> None:
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
-    default_request = topic_request("skitter")
+    default_request = topic_request("coordinator")
 
     print(f"Connecting to {MQTT_HOST}:{MQTT_PORT}")
     print(f"Session ID: {session_id}")

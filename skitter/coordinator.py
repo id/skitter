@@ -732,7 +732,7 @@ class Coordinator:
     def handle_discovery(self, topic: str, payload: bytes) -> None:
         """Process a discovery card update from the broker."""
         agent_id = topic.split("/")[-1]
-        if agent_id in ("coordinator", RUNTIME_AGENT_ID):
+        if agent_id == RUNTIME_AGENT_ID:
             return
         if not payload:
             self._registry.remove(agent_id)

@@ -351,7 +351,7 @@ async def run_with_def(agent: AgentDef) -> None:
         async with aiomqtt.Client(
             **_mqtt_kwargs_for_agent(
                 agent,
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent.id}-runner",
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent.id}",
                 will=will,
             ),
         ) as client:

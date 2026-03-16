@@ -82,14 +82,14 @@ def dispatch() -> None:
         if not prompt:
             print("Usage: skitter run '<prompt>'", file=sys.stderr)
             sys.exit(1)
-        _run_prompt("skitter", prompt)
+        _run_prompt("coordinator", prompt)
     elif subcmd in ("coordinator", "supervisor"):
         from skitter.coordinator import main
 
         main()
     elif subcmd and not subcmd.startswith("-"):
         prompt = " ".join(sys.argv[1:])
-        _run_prompt("skitter", prompt)
+        _run_prompt("coordinator", prompt)
     else:
         from skitter.coordinator import main
 

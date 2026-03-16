@@ -39,7 +39,6 @@ from skitter.mqtt import (
     topic_discovery_wildcard,
     topic_request,
     topic_reply,
-    topic_result,
 )
 from skitter.types import (
     A2ARequest,
@@ -420,22 +419,6 @@ class Coordinator:
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        # Publish retained result for observability
-        task = state.graph.get(task_id)
-        if task and self._client:
-            await self._client.publish(
-                topic_result(state.app_version_id, task_id, state.session_id),
-                json.dumps(
-                    {
-                        "task": task_id,
-                        "session_id": state.session_id,
-                        "result": result,
-                    }
-                ),
-                qos=1,
-                retain=True,
-            )
-
         log.info("Task %s/%s completed", state.session_id, task_id)
         await self._publish_event("task_completed", state.session_id, task_id=task_id)
 
@@ -459,22 +442,6 @@ class Coordinator:
             error=error,
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
-
-        # Publish retained failed result for observability
-        if self._client:
-            await self._client.publish(
-                topic_result(state.app_version_id, task_id, state.session_id),
-                json.dumps(
-                    {
-                        "task": task_id,
-                        "session_id": state.session_id,
-                        "result": error,
-                        "failed": True,
-                    }
-                ),
-                qos=1,
-                retain=True,
-            )
 
         # Propagate failure to downstream tasks
         newly_failed = _propagate_failure(state, task_id)

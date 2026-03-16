@@ -10,9 +10,7 @@ from skitter.coordinator import _parse_agent_id_from_topic
 from skitter.mqtt import (
     topic_a2a_event,
     topic_discovery_wildcard,
-    topic_event,
     topic_request,
-    topic_result,
 )
 from skitter.types import (
     A2ARequest,
@@ -145,14 +143,6 @@ class TestErrorCodes:
 
 
 class TestTopics:
-    def test_event_topics(self):
-        t = topic_event("researcher", "alive")
-        assert t == "skitter/event/researcher/alive"
-
-    def test_result(self):
-        t = topic_result("my-wf", "research", "session1")
-        assert t == "skitter/result/my-wf/research/session1"
-
     def test_request_per_agent(self):
         t = topic_request("researcher")
         assert "/request/" in t

@@ -12,33 +12,25 @@
 
 5. **Write-ahead dispatch.** The coordinator persists `request_id`, `reply_topic`, `dispatched_at` before sending A2A requests. On crash recovery, it rebuilds session state from task rows.
 
-6. **MQTT v5 as the backbone.** The broker handles routing, fan-out, and liveness tracking. Retained messages for discovery cards and task results. LWT for crash detection.
+6. **MQTT v5 as the backbone.** The broker handles routing, fan-out, and liveness tracking. Retained messages for discovery cards. LWT for crash detection.
 
 7. **A2A-over-MQTT.** Topics follow the A2A draft scheme. Requests are JSON-RPC 2.0 (`tasks/send`). Replies are `TaskStatusUpdateEvent`. MQTT v5 Response Topic + Correlation Data for reply routing.
 
 ## Topic Scheme
 
-Two namespaces: `$a2a` for the A2A protocol (client-facing) and `skitter` for internal coordination.
+All topics use the `$a2a` namespace following the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
 
-### A2A topics (client-facing)
+### A2A topics
 
 ```
 $a2a/v1/
   discovery/{org}/{unit}/{agent_id}          # Retained Agent/App Cards
   request/{org}/{unit}/{agent_id}            # Requests
   reply/{org}/{unit}/{agent_id}/{suffix}     # Replies (Response Topic)
-  event/{org}/{unit}/{agent_id}              # Session lifecycle events
+  event/{org}/{unit}/{agent_id}              # Session lifecycle + agent LWT (alive/dead)
 ```
 
 Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A_ORG` / `SKITTER_A2A_UNIT`).
-
-### Skitter internal topics
-
-```
-skitter/
-  result/{app_version}/{task}/{session_id}   # Retained task results (observability)
-  event/{agent}/{type}                       # alive/dead (LWT)
-```
 
 ### Coordinator subscriptions
 
@@ -214,7 +206,7 @@ Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
 **Agent crash:** The broker clears the agent's discovery card (LWT). Inflight tasks dispatched to the agent will time out and fail. The coordinator propagates the failure to dependent tasks.
 
-**Broker restart:** Discovery cards and retained results are lost. Agents republish cards on reconnect. DB-backed session state survives broker restarts.
+**Broker restart:** Discovery cards are lost. Agents republish cards on reconnect. DB-backed session state survives broker restarts.
 
 ## Configuration
 

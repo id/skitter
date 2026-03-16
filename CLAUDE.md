@@ -39,8 +39,7 @@ Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. 
 ## Key Concepts
 
 - **Immutable sessions** — persisted once by coordinator in DB, never mutated. Per-task status tracked separately.
-- **Result routing** — task results published as retained on `skitter/result/{app_version}/{task}/{sid}` for observability.
-- **Namespace separation** — `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery); `skitter/...` for internal coordination.
+- **Namespace separation** — `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery, events).
 - **Native sub-agents** — agent identity owned by `~/.claude/agents/*.md` / `~/.codex/agents/*.toml`, not skitter. Skitter YAML stubs (`~/.skitter/agents/*.yaml`) contain only orchestration metadata.
 - **Independent agents** — agent-runners are standalone processes. The coordinator doesn't spawn or manage them.
 

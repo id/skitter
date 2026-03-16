@@ -32,7 +32,6 @@ from skitter.mqtt import (
     mqtt_client_kwargs,
     topic_discovery,
     topic_reply,
-    topic_result_wildcard,
 )
 from skitter.types import (
     A2ARequest,
@@ -295,23 +294,6 @@ async def wait_for_discovery(agent_id: str, timeout: float = 30.0) -> dict:
                 f"Discovery card for '{agent_id}' did not appear within {timeout}s"
             )
     return {}
-
-
-async def clean_retained():
-    """Clear leftover retained messages from previous test runs."""
-    async with aiomqtt.Client(
-        **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/test-cleaner-{uuid.uuid4().hex[:6]}",
-        ),
-    ) as client:
-        await client.subscribe(topic_result_wildcard(), qos=1)
-        try:
-            async with asyncio.timeout(0.5):
-                async for msg in client.messages:
-                    if msg.retain and msg.payload:
-                        await client.publish(str(msg.topic), b"", qos=1, retain=True)
-        except TimeoutError:
-            pass
 
 
 async def send_and_collect(

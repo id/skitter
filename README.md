@@ -131,7 +131,7 @@ Instead of a monolithic orchestrator, skitter pushes routing and fan-out into th
 
 - **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge script that publishes requests and subscribes to replies.
 - **Run agents anywhere.** Local processes, Docker containers, or cloud machines. As long as they can reach the broker, they work.
-- **Free monitoring.** Subscribe to `$a2a/v1/#` and `skitter/#` with any MQTT client and watch every request, result, and event in real time.
+- **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client and watch every request, result, and event in real time.
 - **Cheap cloud deploy.** Always-on coordinator (~$2/mo) on Fly.io, agents billed per-second.
 
 Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.

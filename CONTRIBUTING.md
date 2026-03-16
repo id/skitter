@@ -103,15 +103,7 @@ $a2a/v1/
   discovery/{org}/{unit}/{agent_id}          # Retained Agent/App Cards
   request/{org}/{unit}/{agent_id}            # Requests
   reply/{org}/{unit}/{agent_id}/{suffix}     # Replies
-  event/{org}/{unit}/{agent_id}              # Session lifecycle events
-```
-
-### Skitter internal topics
-
-```
-skitter/
-  result/{app_version}/{task}/{session_id}   # Retained task results
-  event/{agent}/{type}                       # alive/dead (LWT)
+  event/{org}/{unit}/{agent_id}              # Session lifecycle + agent LWT (alive/dead)
 ```
 
 ## Testing

@@ -17,7 +17,11 @@ ARG TARGETARCH
 RUN mkdir -p /home/skitter/.local/bin && \
     ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") && \
     curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${ARCH}-unknown-linux-gnu.tar.gz" \
-    | tar xz -C /home/skitter/.local/bin/
+    | tar xz -C /home/skitter/.local/bin/ && \
+    ln -s "codex-${ARCH}-unknown-linux-gnu" /home/skitter/.local/bin/codex
+
+# Pre-create dirs so bind-mounts don't create root-owned parents
+RUN mkdir -p /home/skitter/.codex
 
 ENV PATH="/home/skitter/.local/bin:$PATH"
 

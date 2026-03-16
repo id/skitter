@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 
 import aiomqtt
 
@@ -26,7 +27,7 @@ from skitter.mqtt import (
     get_response_topic,
     make_properties,
     mqtt_client_kwargs,
-    topic_event,
+    topic_a2a_event,
     topic_request,
 )
 from skitter.types import (
@@ -310,8 +311,12 @@ async def run(agent_name: str) -> None:
     await publisher.start()
 
     # LWT for crash detection
-    lwt_topic = topic_event(agent.id, "dead")
-    lwt_payload = json.dumps({"status": "dead", "agent": agent.id})
+    lwt_topic = topic_a2a_event(agent.id)
+    lwt_payload = json.dumps({
+        "event": "dead",
+        "agent": agent.id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
     will = aiomqtt.Will(topic=lwt_topic, payload=lwt_payload, qos=1)
 
     request_topic = topic_request(agent.id)

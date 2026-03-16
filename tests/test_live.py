@@ -29,7 +29,6 @@ from skitter.mqtt import topic_request
 from skitter.types import A2ARequest
 
 from .conftest import (
-    clean_retained,
     docker_available,
     needs_mqtt,
     runtime_available,
@@ -47,8 +46,11 @@ MODELS = {
     "codex": os.environ.get("SKITTER_TEST_CODEX_MODEL", ""),
 }
 
-# Set LLM model for graph generation (coordinator subprocess inherits env)
-os.environ.setdefault("SKITTER_LLM_MODEL", "claude-haiku-4-5-20251001")
+# Default LLM model for graph generation, per runtime
+LLM_MODELS = {
+    "claude": "claude-haiku-4-6-20260514",
+    "codex": "gpt-5-mini",
+}
 
 needs_docker = pytest.mark.skipif(not docker_available(), reason="Docker not available")
 
@@ -69,7 +71,10 @@ def _pick_runtime(config) -> str:
 
 @pytest.fixture(scope="module")
 def runtime(request):
-    return _pick_runtime(request.config)
+    rt = _pick_runtime(request.config)
+    # Set LLM model for coordinator graph generation (inherits env)
+    os.environ.setdefault("SKITTER_LLM_MODEL", LLM_MODELS.get(rt, "claude-haiku-4-6-20260514"))
+    return rt
 
 
 @pytest.fixture(scope="module")
@@ -121,7 +126,7 @@ class TestLive:
     @pytest.mark.asyncio
     async def test_agent_query(self, agent):
         """Send a query to the agent, get a response."""
-        await clean_retained()
+
         req = A2ARequest(
             text="What is 2+2? Reply with just the number.",
             request_id=f"query-{uuid.uuid4().hex[:8]}",
@@ -182,7 +187,7 @@ class TestComposedApp:
         await asyncio.sleep(1)
 
         # Step 2: Send a request to the composed app
-        await clean_retained()
+
         app_req = A2ARequest(
             text="Please greet me warmly.",
             request_id=f"app-{uuid.uuid4().hex[:8]}",

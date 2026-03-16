@@ -1,7 +1,6 @@
 """MQTT topic scheme and v5 helpers.
 
 A2A namespace: $a2a/v1/{method}/{org}/{unit}/{agent_id} — public protocol.
-Skitter namespace: skitter/{type}/... — internal coordination (retained).
 """
 
 import asyncio
@@ -75,26 +74,6 @@ def topic_reply(agent_id: str, suffix: str) -> str:
 def topic_a2a_event(agent_id: str) -> str:
     """A2A event topic: $a2a/v1/event/{org}/{unit}/{agent_id}"""
     return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
-
-
-# --- Skitter internal topics (retained coordination state) ---
-
-_SK = "skitter"
-
-
-def topic_result(workflow_id: str, task: str, session_id: str) -> str:
-    """Retained task result: skitter/result/{wf}/{task}/{sid}"""
-    return f"{_SK}/result/{workflow_id}/{task}/{session_id}"
-
-
-def topic_result_wildcard() -> str:
-    """Wildcard for results: skitter/result/+/+/+"""
-    return f"{_SK}/result/+/+/+"
-
-
-def topic_event(agent_id: str, event_type: str) -> str:
-    """Agent lifecycle: skitter/event/{agent}/{type}"""
-    return f"{_SK}/event/{agent_id}/{event_type}"
 
 
 # --- MQTT v5 property helpers ---

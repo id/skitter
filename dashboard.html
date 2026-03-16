@@ -138,9 +138,6 @@
     .main-hdr .badge { font-size: 10px; font-family: var(--mono); padding: 2px 8px; border-radius: 4px; }
     .badge-workflow { background: #eff6ff; color: var(--blue); }
     .badge-agent { background: #f0fdf4; color: var(--green); }
-    .usage-bar { margin-left: auto; display: flex; gap: 14px; font-size: 11px; color: var(--text-dim); }
-    .usage-bar .val { font-weight: 600; color: var(--text-sec); }
-    .usage-bar .cost { color: var(--amber); font-weight: 600; }
 
     /* Task grid */
     #task-area { flex: 1; overflow: auto; padding: 16px 20px; }
@@ -174,9 +171,6 @@
     .stop-btn:hover { background: #fee2e2; }
 
     .stream-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); display: inline-block; animation: pulse 1s ease-in-out infinite; }
-    .worker-dot { width: 5px; height: 5px; border-radius: 50%; }
-    .worker-dot.alive { background: var(--green); animation: pulse 1.5s ease-in-out infinite; }
-    .worker-dot.dead { background: var(--red); }
 
     /* Empty state */
     .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); gap: 6px; }
@@ -220,11 +214,6 @@
     .det-deps { display: flex; flex-wrap: wrap; gap: 4px; }
     .dep-tag { font-size: 11px; padding: 2px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text-sec); cursor: pointer; }
     .dep-tag:hover { border-color: var(--blue); color: var(--blue); }
-    .det-usage { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
-    .ustat { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
-    .ustat-label { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
-    .ustat-val { font-size: 14px; font-weight: 600; color: var(--text); margin-top: 2px; }
-    .ustat-val.cost { color: var(--amber); }
     .det-meta { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
 
     .badge-status { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 4px; }
@@ -323,10 +312,7 @@
       sessions: new Map(),
       taskStatus: new Map(),
       taskResults: new Map(),
-      workerStatus: new Map(),
-      taskUsage: new Map(),
       streamChunks: new Map(),
-      lastActive: new Map(),
       activityLog: [],  // global stream log [{ts, sid, task, type, content}]
       showActivity: false,
       agentCards: new Map(),
@@ -342,7 +328,6 @@
     // --- Utilities ---
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '\u2026' : s; }
-    function fmtTok(n) { return n == null ? '?' : n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
     function fmtAgo(sec) {
       if (sec < 0 || isNaN(sec)) return '';
       if (sec < 10) return 'just now';
@@ -357,26 +342,11 @@
       const ago = Math.floor((Date.now() - d.getTime()) / 1000);
       return fmtAgo(ago) || d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     }
-    function fmtTimeAgo(isoStr) {
-      const ago = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
-      return fmtAgo(ago) || '';
-    }
     function isActive(s) {
       return Object.values(s.tasks).some(t => {
         const ts = state.taskStatus.get(`${s.session_id}/${t.id}`);
         return (ts || t.status) !== 'done';
       });
-    }
-
-    function sessionUsage(sid) {
-      const s = state.sessions.get(sid);
-      if (!s) return null;
-      let ti = 0, to = 0, tc = 0, n = 0;
-      for (const t of Object.values(s.tasks)) {
-        const u = state.taskUsage.get(`${sid}/${t.id}`);
-        if (u && u.usage) { ti += u.usage.input_tokens || 0; to += u.usage.output_tokens || 0; if (u.cost_usd != null) tc += u.cost_usd; n++; }
-      }
-      return n ? { input: ti, output: to, cost: tc } : null;
     }
 
     function latestStream(sid, task) {
@@ -442,7 +412,7 @@
       const opts = { protocolVersion: 5, reconnectPeriod: 3000, connectTimeout: 10000, clean: true, clientId };
       if (cfg.username) { opts.username = cfg.username; opts.password = cfg.password; }
       mqttClient = mqtt.connect(cfg.url, opts);
-      mqttClient.on('connect', () => { state.connected = true; renderConn(); mqttClient.subscribe('$a2a/v1/#', { qos: 1 }); mqttClient.subscribe('skitter/session/+', { qos: 1 }); mqttClient.subscribe('skitter/status/+/+/+', { qos: 1 }); mqttClient.subscribe('skitter/result/+/+/+', { qos: 1 }); mqttClient.subscribe('skitter/event/+/+', { qos: 1 }); mqttClient.subscribe('skitter/usage/+/+/+', { qos: 1 }); });
+      mqttClient.on('connect', () => { state.connected = true; renderConn(); mqttClient.subscribe('$a2a/v1/#', { qos: 1 }); });
       mqttClient.on('close', () => { state.connected = false; renderConn(); });
       mqttClient.on('error', e => console.error('MQTT:', e));
       mqttClient.on('message', onMessage);
@@ -451,63 +421,6 @@
     function onMessage(topic, payload) {
       const raw = payload.toString();
       const p = topic.split('/');
-
-      // --- Skitter internal topics (skitter/...) ---
-      if (p[0] === 'skitter') {
-        // Session: skitter/session/{sid}
-        if (p[1] === 'session' && p.length === 3) {
-          const sid = p[2];
-          if (!raw) { state.sessions.delete(sid); if (state.selectedSessionId === sid) state.selectedTaskId = null; }
-          else { try { state.sessions.set(sid, JSON.parse(raw)); } catch(e) { return; } if (!state.selectedSessionId || state.pendingSelect) { state.selectedSessionId = sid; state.pendingSelect = false; } }
-          renderAll();
-          return;
-        }
-
-        // Task status: skitter/status/{wf}/{task}/{sid}
-        if (p[1] === 'status' && p.length === 5 && raw) {
-          try {
-            const m = JSON.parse(raw);
-            const task = p[3], sid = p[4];
-            state.taskStatus.set(`${sid}/${task}`, m.status);
-            if (m.last_active) state.lastActive.set(`${sid}/${task}`, m.last_active);
-          } catch(e) {}
-          renderSessions(); renderTasks(); renderDetail();
-          return;
-        }
-
-        // Task result: skitter/result/{wf}/{task}/{sid} — marks task done
-        if (p[1] === 'result' && p.length === 5 && raw) {
-          try {
-            const m = JSON.parse(raw);
-            const task = p[3], sid = p[4];
-            state.taskStatus.set(`${sid}/${task}`, 'done');
-            if (m.result) state.taskResults.set(`${sid}/${task}`, m.result);
-          } catch(e) {}
-          renderSessions(); renderTasks(); renderDetail();
-          return;
-        }
-
-        // Worker events: skitter/event/{agent}/{type}
-        if (p[1] === 'event' && p.length === 4 && raw) {
-          try {
-            const ev = JSON.parse(raw);
-            if (ev.task && ev.status) {
-              const sid = findSessionForTask(ev.task, ev.session_id);
-              if (sid) state.workerStatus.set(`${sid}/${ev.task}`, ev.status);
-            }
-          } catch(e) {}
-          renderTasks();
-          return;
-        }
-
-        // Usage: skitter/usage/{wf}/{task}/{sid}
-        if (p[1] === 'usage' && p.length === 5 && raw) {
-          try { const m = JSON.parse(raw); state.taskUsage.set(`${p[4]}/${p[3]}`, { usage: m.usage, cost_usd: m.cost_usd }); } catch(e) {}
-          renderTasks(); renderDetail();
-          return;
-        }
-        return;
-      }
 
       // --- A2A protocol topics ($a2a/v1/...) ---
 
@@ -591,27 +504,13 @@
     function deleteSession(sid) {
       if (!mqttClient || !state.connected) return;
       const s = state.sessions.get(sid);
-      // Clear session retained message
-      mqttClient.publish(`skitter/session/${sid}`, '', { qos: 1, retain: true });
-      // Clear per-task retained messages
-      if (s) {
-        const wf = s.workflow_id || s.agent_id || sid;
-        for (const task of Object.keys(s.tasks)) {
-          mqttClient.publish(`skitter/status/${wf}/${task}/${sid}`, '', { qos: 1, retain: true });
-          mqttClient.publish(`skitter/result/${wf}/${task}/${sid}`, '', { qos: 1, retain: true });
-          mqttClient.publish(`skitter/usage/${wf}/${task}/${sid}`, '', { qos: 1, retain: true });
-        }
-      }
       // Clean up in-memory state for this session
       if (s) {
         for (const task of Object.keys(s.tasks)) {
           const k = `${sid}/${task}`;
           state.taskStatus.delete(k);
           state.taskResults.delete(k);
-          state.workerStatus.delete(k);
-          state.taskUsage.delete(k);
           state.streamChunks.delete(k);
-          state.lastActive.delete(k);
         }
       }
       state.sessions.delete(sid);
@@ -718,18 +617,8 @@
 
       const type = s.workflow_id ? 'workflow' : 'agent';
       const typeLabel = s.workflow_id || s.agent_id || '';
-      const usage = sessionUsage(state.selectedSessionId);
       const running = Object.values(s.tasks).filter(t => t.status === 'running');
       const stopAll = running.length > 0 ? `<button class="stop-btn" onclick="cancelAll('${esc(state.selectedSessionId)}')">Stop all</button>` : '';
-
-      let usageHtml = '';
-      if (usage) {
-        usageHtml = `<div class="usage-bar">
-          <span>In <span class="val">${fmtTok(usage.input)}</span></span>
-          <span>Out <span class="val">${fmtTok(usage.output)}</span></span>
-          <span class="cost">$${usage.cost.toFixed(4)}</span>
-        </div>`;
-      }
 
       const actStyle = state.showActivity
         ? 'background:var(--blue);color:white;border-color:var(--blue)'
@@ -738,7 +627,7 @@
 
       hdr.innerHTML = `<h2>${esc(state.selectedSessionId)}</h2>
         <span class="badge badge-${type}">${esc(typeLabel)}</span>
-        ${stopAll}${usageHtml}${actBtn}`;
+        ${stopAll}${actBtn}`;
     }
 
     function renderComposeView() {
@@ -870,11 +759,8 @@
 
       function card(t) {
         const sel = t.id === state.selectedTaskId;
-        let workerDot = '', streamInd = '', preview = '';
+        let streamInd = '', preview = '';
         if (t.status === 'running') {
-          const ws = state.workerStatus.get(`${sid}/${t.id}`);
-          if (ws === 'alive') workerDot = '<span class="worker-dot alive"></span>';
-          else if (ws === 'dead') workerDot = '<span class="worker-dot dead"></span>';
           const hasChunks = state.streamChunks.has(`${sid}/${t.id}`);
           if (hasChunks) {
             streamInd = '<span class="stream-dot"></span> ';
@@ -886,20 +772,15 @@
           const tr = state.taskResults.get(`${sid}/${t.id}`);
           if (tr) preview = `<div class="card-preview">${esc(trunc(tr, 60))}</div>`;
         }
-        const usage = state.taskUsage.get(`${sid}/${t.id}`);
         let foot = '<div class="card-foot">';
-        if (usage && usage.usage) foot += `<span class="card-tokens">${fmtTok((usage.usage.input_tokens||0)+(usage.usage.output_tokens||0))} tok</span>`;
-        if (usage && usage.cost_usd != null) foot += `<span class="card-cost">$${usage.cost_usd.toFixed(4)}</span>`;
         if (t.status === 'running') {
-          const la = state.lastActive.get(`${sid}/${t.id}`);
-          if (la) foot += `<span class="card-tokens">${fmtTimeAgo(la)}</span>`;
           foot += `<button class="stop-btn" onclick="event.stopPropagation();cancelTask('${esc(sid)}','${esc(t.id)}')">Stop</button>`;
         }
         foot += '</div>';
 
         return `<div class="card ${t.status}${sel ? ' selected' : ''}" data-tid="${esc(t.id)}">
           <div class="card-top"><span class="card-id">${streamInd}${esc(t.id)}</span>${t.model ? `<span class="card-model">${esc(t.model)}</span>` : ''}</div>
-          <div class="card-agent">${workerDot}${esc(t.agent)}</div>
+          <div class="card-agent">${esc(t.agent)}</div>
           <div class="card-desc">${esc(trunc(t.description, 100))}</div>
           ${preview}${foot}
         </div>`;
@@ -973,18 +854,6 @@
 
       if (t.needs && t.needs.length) {
         h += `<div class="det-section"><div class="det-label">Dependencies</div><div class="det-deps">${t.needs.map(d => `<span class="dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`).join('')}</div></div>`;
-      }
-
-      const usage = state.taskUsage.get(`${sid}/${t.id}`);
-      if (usage && usage.usage) {
-        const u = usage.usage;
-        h += `<div class="det-section"><div class="det-label">Usage</div><div class="det-usage">
-          <div class="ustat"><div class="ustat-label">Input</div><div class="ustat-val">${fmtTok(u.input_tokens)}</div></div>
-          <div class="ustat"><div class="ustat-label">Output</div><div class="ustat-val">${fmtTok(u.output_tokens)}</div></div>
-          <div class="ustat"><div class="ustat-label">Cache Read</div><div class="ustat-val">${fmtTok(u.cache_read_input_tokens)}</div></div>
-          <div class="ustat"><div class="ustat-label">Cache Write</div><div class="ustat-val">${fmtTok(u.cache_creation_input_tokens)}</div></div>
-          ${usage.cost_usd != null ? `<div class="ustat"><div class="ustat-label">Cost</div><div class="ustat-val cost">$${usage.cost_usd.toFixed(4)}</div></div>` : ''}
-        </div></div>`;
       }
 
       h += `<div class="det-section"><div class="det-meta">task: ${esc(t.id)}</div></div>`;

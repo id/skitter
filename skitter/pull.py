@@ -62,7 +62,7 @@ def _write_agent_file(target_dir: Path, agent_id: str, card: dict) -> str | None
     return str(md_path)
 
 
-def generate_stubs(cards: list[dict], target_dir: Path) -> list[str]:
+def generate_agent_files(cards: list[dict], target_dir: Path) -> list[str]:
     """Generate Claude agent .md files from discovered cards."""
     target_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
@@ -83,7 +83,7 @@ async def run(target_dir: Path) -> None:
     cards = await pull_cards()
     print(f"Found {len(cards)} cards")
 
-    written = generate_stubs(cards, target_dir)
+    written = generate_agent_files(cards, target_dir)
     if written:
         print(f"Created {len(written)} agent files:")
         for f in written:

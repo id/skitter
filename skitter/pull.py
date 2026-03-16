@@ -68,7 +68,7 @@ def generate_agent_files(cards: list[dict], target_dir: Path) -> list[str]:
     written: list[str] = []
     for card in cards:
         agent_id = card.get("_agent_id", "")
-        if not agent_id or agent_id == "coordinator":
+        if not agent_id or agent_id == "skitter":
             continue
         if is_workflow_card(card):
             continue

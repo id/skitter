@@ -1,6 +1,6 @@
 """Runtime state query handler.
 
-Registered as ``coordinator`` — handles structured queries and
+Registered as ``skitter`` — handles structured queries and
 returns JSON results in standard A2A TaskStatusUpdateEvent replies.
 
 Queries:
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("skitter.runtime_api")
 
-AGENT_ID = "coordinator"
+AGENT_ID = "skitter"
 CANCEL_KEY = "cancelled"
 CREATE_APP_KEY = "created_app"
 

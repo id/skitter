@@ -338,7 +338,7 @@ class Coordinator:
         a2a_req = A2ARequest(
             text=prompt,
             request_id=request_id,
-            sender="coordinator",
+            sender="skitter",
         )
         request_topic = topic_request(target.agent)
         props = make_properties(
@@ -847,7 +847,7 @@ class Coordinator:
         """Fail fast if another coordinator is already running on this broker."""
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator-lock-check",
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}-lock-check",
             ),
         ) as client:
             await client.subscribe(topic_coordinator_lock(), qos=1)
@@ -877,7 +877,7 @@ class Coordinator:
         try:
             async with aiomqtt.Client(
                 **mqtt_client_kwargs(
-                    identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator",
+                    identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}",
                     will=lwt,
                 ),
             ) as client:
@@ -951,7 +951,7 @@ class Coordinator:
             try:
                 async with aiomqtt.Client(
                     **mqtt_client_kwargs(
-                        identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator-cleanup",
+                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}-cleanup",
                     ),
                 ) as client:
                     await client.publish(

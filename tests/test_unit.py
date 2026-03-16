@@ -184,8 +184,8 @@ class TestTopics:
         assert "/researcher" in t
 
     def test_a2a_event_topic(self):
-        t = topic_a2a_event("coordinator")
-        assert t == "$a2a/v1/event/skitter/default/coordinator"
+        t = topic_a2a_event("skitter")
+        assert t == "$a2a/v1/event/skitter/default/skitter"
 
 
 # --- Topic parsing ---

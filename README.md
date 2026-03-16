@@ -6,7 +6,20 @@ MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT b
 
 ## Quickstart (Local)
 
-You need Docker, Python 3.10+, [uv](https://docs.astral.sh/uv/), and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) logged in.
+You need Docker, Python 3.10+, and [uv](https://docs.astral.sh/uv/).
+
+The coordinator uses [litellm](https://docs.litellm.ai/) for LLM calls (graph generation for composed apps). Set the API key for your provider and the model to use:
+
+```bash
+# Pick your provider (see https://docs.litellm.ai/docs/providers)
+export ANTHROPIC_API_KEY=sk-ant-...    # for Claude models
+# or: export OPENAI_API_KEY=sk-...    # for OpenAI models
+# or: export GEMINI_API_KEY=...       # for Gemini models
+
+export SKITTER_LLM_MODEL=claude-haiku-4-5-20251001  # any litellm model string
+```
+
+Agent runners need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) logged in (depending on which runtime the agent uses).
 
 ```bash
 # Start MQTT broker
@@ -129,13 +142,14 @@ Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt
 # Unit tests (no broker needed)
 uv run python -m pytest tests/test_unit.py -q
 
-# Live tests (requires Docker + MQTT broker + runtime credentials)
+# Live tests (requires Docker + MQTT broker + LLM API key + runtime credentials)
 docker compose up -d                          # start EMQX broker
 docker build -f Dockerfile.agent -t skitter-agent:latest .  # build agent image
+export ANTHROPIC_API_KEY='your-key'           # LLM API key for coordinator
+export SKITTER_LLM_MODEL=claude-haiku-4-5-20251001
 
 # Claude (requires OAuth token)
 export CLAUDE_CODE_OAUTH_TOKEN='your-token'
-unset CLAUDECODE
 uv run python -m pytest tests/test_live.py -v -s --runtime claude
 
 # Codex (requires ~/.codex/auth.json)

@@ -85,7 +85,9 @@ llm:
 | `MQTT_USER` / `MQTT_PASS` | (empty) | Broker auth |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
-| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation |
+| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation ([litellm format](https://docs.litellm.ai/docs/providers)) |
+| `ANTHROPIC_API_KEY` | (empty) | Anthropic API key (for Claude models) |
+| `OPENAI_API_KEY` | (empty) | OpenAI API key (for OpenAI models) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | Claude auth for agent-runners |
 
 For cloud deployment, see `.env.cloud.example` and `docs/fly-deployment.md`.
@@ -118,13 +120,14 @@ skitter/
 # Unit tests (no broker needed)
 uv run python -m pytest tests/test_unit.py -q
 
-# Live tests (Docker + broker + runtime credentials)
+# Live tests (Docker + broker + LLM API key + runtime credentials)
 docker compose up -d
 docker build -f Dockerfile.agent -t skitter-agent:latest .
+export ANTHROPIC_API_KEY='your-key'
+export SKITTER_LLM_MODEL=claude-haiku-4-5-20251001
 
 # Claude
 export CLAUDE_CODE_OAUTH_TOKEN='your-token'
-unset CLAUDECODE
 uv run python -m pytest tests/test_live.py -v -s --runtime claude
 
 # Codex (requires ~/.codex/auth.json)

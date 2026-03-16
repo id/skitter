@@ -11,6 +11,7 @@ def _run_prompt(agent_id: str, prompt: str) -> None:
     from skitter.types import (
         A2ARequest,
         REPLY_ERROR,
+        REPLY_FAILED,
         REPLY_SUBMITTED,
         REPLY_TERMINAL,
         REPLY_TEXT,
@@ -28,6 +29,9 @@ def _run_prompt(agent_id: str, prompt: str) -> None:
             console.print(f"  [dim][tool] {content}[/dim]")
         elif kind == REPLY_TERMINAL:
             console.print(f"\n\n{content}")
+            return True
+        elif kind == REPLY_FAILED:
+            console.print(f"[red]Failed: {content}[/red]")
             return True
         elif kind == REPLY_ERROR:
             console.print(f"[red]Error: {content}[/red]")

@@ -6,7 +6,7 @@ MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT b
 
 ## Quickstart (Local)
 
-You need Docker, Python 3.10+, and [uv](https://docs.astral.sh/uv/).
+You need Docker, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 
 The coordinator uses [litellm](https://docs.litellm.ai/) for LLM calls (graph generation for composed apps). Set the API key for your provider and the model to use:
 
@@ -34,8 +34,14 @@ uv run python -m skitter
 # Start an agent (terminal 2, see "Agents" section for setup)
 uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
 
-# Send a request (terminal 3)
-uv run python -m skitter run "What are the key features of MQTT v5?"
+# Query the coordinator's runtime API (terminal 3)
+uv run python -m skitter run "list apps"
+```
+
+The `run` command sends structured queries to the coordinator's runtime API (`list apps`, `create app`, `cancel session`, etc.). Use `chat` for interactive conversations with agents:
+
+```bash
+uv run python -m skitter chat
 ```
 
 Open `dashboard.html` in a browser to watch jobs execute in real time (connects directly to the broker via WebSocket).
@@ -111,19 +117,7 @@ The coordinator generates and validates an orchestration graph via LLM, persists
 
 ## Deploy to Fly.io
 
-Always-on coordinator (~$2/mo) with EMQX Serverless as the broker.
-
-```bash
-fly apps create skitter
-
-cp .env.cloud.example .env.cloud
-# Fill in EMQX Serverless + Fly + API credentials
-
-set -a && source .env.cloud && set +a
-uv run python -m skitter deploy --target fly
-```
-
-See [docs/fly-deployment.md](docs/fly-deployment.md) for the full setup guide.
+Always-on coordinator (~$2/mo) with EMQX Serverless as the broker. See [docs/fly-deployment.md](docs/fly-deployment.md) for the full setup guide.
 
 ## Why MQTT?
 
@@ -160,9 +154,10 @@ Live tests run both agent-runners and the coordinator in Docker containers for f
 
 ## Limitations
 
-- The built-in agent-runner uses `dangerouslySkipPermissions`, only run in trusted environments
-- Agent errors are passed as normal results to downstream tasks
+- The built-in agent-runner uses `dangerouslySkipPermissions`; only run in trusted environments
 - No built-in authentication (rely on MQTT broker auth)
+- Single coordinator instance per broker (enforced via retained MQTT lock)
+- Codex `.toml` agent definitions: only `model` is applied at runtime (`sandbox_mode` and other fields are ignored)
 
 ## Contributing
 

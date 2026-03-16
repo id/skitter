@@ -36,6 +36,7 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_a2a_event,
+    topic_coordinator_lock,
     topic_discovery,
     topic_discovery_wildcard,
     topic_request,
@@ -46,6 +47,8 @@ from skitter.types import (
     A2AResponse,
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
+    REPLY_ERROR,
+    REPLY_FAILED,
     TaskTarget,
     classify_reply,
     make_status_event,
@@ -70,6 +73,7 @@ class SessionTask:
     needs: list[str] = field(default_factory=list)
     next: str = ""
     target: TaskTarget | None = None
+    request_id: str = ""  # set on dispatch; used for tasks/cancel
 
 
 @dataclass
@@ -321,6 +325,7 @@ class Coordinator:
             state="running",
         )
 
+        task.request_id = request_id
         state.pending.discard(task_id)
         state.inflight.add(task_id)
 
@@ -378,7 +383,7 @@ class Coordinator:
 
         if kind == "terminal":
             await self._complete_task(state, task_id, content)
-        elif kind == "error":
+        elif kind in (REPLY_FAILED, REPLY_ERROR):
             await self._fail_task(state, task_id, content)
         elif kind in ("text", "tool_use"):
             # Forward streaming updates to caller
@@ -568,11 +573,42 @@ class Coordinator:
             await self._client.publish(reply_topic, event, qos=1, properties=props)
 
     async def _cancel_session_cleanup(self, session_id: str) -> None:
-        """Clean up in-memory state after a session is cancelled in the DB."""
+        """Clean up in-memory state after a session is cancelled in the DB.
+
+        Sends A2A tasks/cancel to agents with inflight tasks (best-effort).
+        """
         state = self._sessions.pop(session_id, None)
         if not state:
             return
         now = datetime.now(timezone.utc).isoformat()
+
+        # Send tasks/cancel to agents with inflight tasks
+        for tid in list(state.inflight):
+            task_def = state.graph.get(tid)
+            if task_def and task_def.request_id and self._client:
+                cancel_msg = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"cancel-{task_def.request_id}",
+                        "method": "tasks/cancel",
+                        "params": {"id": task_def.request_id},
+                    }
+                )
+                try:
+                    await self._client.publish(
+                        topic_request(task_def.agent), cancel_msg, qos=1
+                    )
+                    log.info(
+                        "Sent tasks/cancel for %s/%s → %s",
+                        session_id,
+                        tid,
+                        task_def.agent,
+                    )
+                except Exception:
+                    log.warning(
+                        "Failed to send tasks/cancel for %s/%s", session_id, tid
+                    )
+
         for tid in state.pending | state.inflight:
             self._db.update_task(
                 f"{session_id}/{tid}", state="cancelled", completed_at=now
@@ -749,6 +785,7 @@ class Coordinator:
                     needs=needs,
                     next=t.next,
                     target=TaskTarget(agent=t.agent),
+                    request_id=t.request_id,
                 )
 
                 if t.state == "completed":
@@ -804,15 +841,52 @@ class Coordinator:
                 f"Task timed out during recovery (no reply within {timeout:.0f}s)",
             )
 
+    # --- Coordinator lock ---
+
+    async def _check_coordinator_lock(self) -> None:
+        """Fail fast if another coordinator is already running on this broker."""
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator-lock-check",
+            ),
+        ) as client:
+            await client.subscribe(topic_coordinator_lock(), qos=1)
+            try:
+                async with asyncio.timeout(2.0):
+                    async for msg in client.messages:
+                        if msg.payload:
+                            raise SystemExit(
+                                "Another coordinator is already running on this broker. "
+                                "Only one coordinator per org/unit is supported."
+                            )
+                        break
+            except TimeoutError:
+                pass  # No retained lock message; safe to proceed
+
     # --- Main loop ---
 
     async def run(self) -> None:
         """Main coordinator loop."""
+        await self._check_coordinator_lock()
+
+        instance_id = uuid.uuid4().hex[:8]
+        lwt = aiomqtt.Will(
+            topic=topic_coordinator_lock(), payload=b"", qos=1, retain=True
+        )
+
         try:
             async with aiomqtt.Client(
-                **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator"),
+                **mqtt_client_kwargs(
+                    identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator",
+                    will=lwt,
+                ),
             ) as client:
                 self._client = client
+
+                # Publish coordinator lock (retained; LWT clears it on crash)
+                await client.publish(
+                    topic_coordinator_lock(), instance_id, qos=1, retain=True
+                )
 
                 # Subscribe to discovery + runtime API
                 await client.subscribe(topic_discovery_wildcard(), qos=1)
@@ -829,7 +903,7 @@ class Coordinator:
 
                 # Recover apps (subscribe + republish cards) and inflight sessions
                 await self.recover()
-                log.info("Coordinator ready")
+                log.info("Coordinator ready (lock=%s)", instance_id)
 
                 async for mqtt_msg in client.messages:
                     topic = str(mqtt_msg.topic)
@@ -873,6 +947,18 @@ class Coordinator:
                         if payload:
                             await self.handle_reply(topic, payload)
         finally:
+            # Clear coordinator lock on clean shutdown
+            try:
+                async with aiomqtt.Client(
+                    **mqtt_client_kwargs(
+                        identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator-cleanup",
+                    ),
+                ) as client:
+                    await client.publish(
+                        topic_coordinator_lock(), b"", qos=1, retain=True
+                    )
+            except Exception:
+                pass  # Best-effort; LWT handles crash case
             self._client = None
 
     async def stop(self) -> None:

@@ -1,8 +1,8 @@
-# Deploying Skitter Supervisor on Fly.io
+# Deploying Skitter Coordinator on Fly.io
 
-The supervisor is a pure A2A orchestrator. It listens for requests on
+The coordinator is a pure A2A orchestrator. It listens for requests on
 MQTT, manages sessions in a local SQLite DB, and dispatches tasks to
-agents. It doesn't run CLI tools or manage agent processes.
+agents. It does not run CLI tools or manage agent processes.
 
 Agent runners are deployed separately (on Fly, bare metal, or wherever
 the user's CLI tools live).
@@ -36,7 +36,7 @@ fly deploy -a skitter --ha=false
 ```
 
 This builds the Docker image and creates a single always-on machine
-running `python -m skitter.supervisor`.
+running `python -m skitter coordinator`.
 
 To redeploy after code changes, run `fly deploy` again.
 
@@ -48,7 +48,7 @@ Check logs:
 fly logs -a skitter
 ```
 
-You should see `Supervisor ready, listening on discovery and requests`.
+You should see `Coordinator ready`.
 
 Send a test request (requires an agent running on the same broker):
 
@@ -64,5 +64,5 @@ mosquitto_pub \
 
 ## Cost
 
-- **Supervisor**: `shared-cpu-1x` / 256MB ~ $2/mo
+- **Coordinator**: `shared-cpu-1x` / 256MB ~ $2/mo
 - EMQX Serverless free tier: 1M session minutes/month

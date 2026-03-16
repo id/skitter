@@ -17,6 +17,7 @@ from skitter.types import (
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
     REPLY_ERROR,
+    REPLY_FAILED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     REPLY_TOOL,
@@ -123,6 +124,40 @@ class TestStatusEvent:
         )
         assert kind == REPLY_ERROR
         assert content == "Unknown agent"
+
+    def test_failed_reply(self):
+        event = make_status_event(
+            "req-3", "sess-xyz", "failed", message="Agent crashed"
+        )
+        d = json.loads(event)
+        kind, content = classify_reply(d)
+        assert kind == REPLY_FAILED
+        assert content == "Agent crashed"
+
+    def test_failed_reply_with_artifact_fallback(self):
+        """When a failed reply has no message, fall back to artifact text."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "req-4",
+            "result": {
+                "type": "TaskStatusUpdateEvent",
+                "taskId": "sess-xyz",
+                "status": {"state": "failed"},
+                "artifact": {"parts": [{"type": "text", "text": "error details"}]},
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_FAILED
+        assert content == "error details"
+
+    def test_cancelled_reply(self):
+        event = make_status_event(
+            "req-5", "sess-xyz", "cancelled", message="User cancelled"
+        )
+        d = json.loads(event)
+        kind, content = classify_reply(d)
+        assert kind == REPLY_FAILED
+        assert content == "User cancelled"
 
     def test_unknown_message(self):
         kind, content = classify_reply({"something": "else"})
@@ -762,7 +797,6 @@ class TestTaskTarget:
         t = TaskTarget(agent="researcher")
         assert t.mqtt_host == ""
         assert t.mqtt_port == 8883
-        assert t.http_url == ""
 
 
 class TestDBConfig:

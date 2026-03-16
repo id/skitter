@@ -76,6 +76,11 @@ def topic_a2a_event(agent_id: str) -> str:
     return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
 
 
+def topic_coordinator_lock() -> str:
+    """Coordinator lock topic: $a2a/v1/lock/{org}/{unit}/coordinator"""
+    return f"{_PREFIX}/lock/{A2A_ORG}/{A2A_UNIT}/coordinator"
+
+
 # --- MQTT v5 property helpers ---
 
 

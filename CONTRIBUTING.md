@@ -11,8 +11,7 @@ skitter/
   llm.py           LLM API wrapper (litellm)
   discovery.py     Build + parse A2A discovery cards
   db.py            Database interface (SQLite/PostgreSQL)
-  fly.py           Fly Machines API client
-  deploy_fly.py    Deploy to Fly (build image, set secrets)
+  pull.py          Pull agent cards from broker, generate local agent files
   mqtt.py          MQTT connection settings, A2A topic builders, v5 property helpers
   config.py        ~/.skitter/ management, YAML loading, dataclasses
   types.py         Message type definitions
@@ -49,9 +48,10 @@ You are a research specialist. Be thorough, cite sources.
 **Codex** (`~/.codex/agents/coder.toml`):
 ```toml
 model = "gpt-5.1-codex-mini"
-sandbox_mode = "workspace-write"
 developer_instructions = "You are a senior developer."
 ```
+
+Note: the agent-runner reads `model` and uses `developer_instructions` (first 100 chars) as the agent description for its discovery card. Other `.toml` fields (e.g. `sandbox_mode`) are not applied; the runner always uses `--full-auto`.
 
 Start an agent-runner by pointing it at the file:
 
@@ -94,7 +94,7 @@ For cloud deployment, see `.env.cloud.example` and `docs/fly-deployment.md`.
 
 ## Topic Scheme
 
-Two namespaces: `$a2a` follows [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) (client-facing), `skitter` is internal.
+All topics use the `$a2a` namespace following the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
 
 ### A2A topics
 

@@ -20,6 +20,7 @@ from skitter.mqtt import (
 from skitter.types import (
     A2ARequest,
     REPLY_ERROR,
+    REPLY_FAILED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     REPLY_TOOL,
@@ -58,6 +59,9 @@ async def run_chat(session_id: str) -> None:
                         print(f"\r\033[K  [tool] {content}")
                     elif kind == REPLY_TERMINAL:
                         print(f"\r\033[K\n{content}")
+                        print("> ", end="", flush=True)
+                    elif kind == REPLY_FAILED:
+                        print(f"\r\033[KFailed: {content}")
                         print("> ", end="", flush=True)
                     elif kind == REPLY_ERROR:
                         print(f"\r\033[KError: {content}")

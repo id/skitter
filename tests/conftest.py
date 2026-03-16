@@ -35,9 +35,11 @@ from skitter.mqtt import (
 from skitter.types import (
     A2ARequest,
     REPLY_ERROR,
+    REPLY_FAILED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     classify_reply,
+    make_status_event,
 )
 
 
@@ -360,9 +362,157 @@ async def send_and_collect(
                     elif kind == REPLY_TERMINAL:
                         print()
                         return content
+                    elif kind == REPLY_FAILED:
+                        return f"Failed: {content}"
                     elif kind == REPLY_ERROR:
                         return f"Error: {content}"
         except TimeoutError:
             pytest.fail(f"Timed out after {timeout}s waiting for result")
 
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Fake A2A agents (run in-process, no Docker needed)
+# ---------------------------------------------------------------------------
+
+
+class FakeAgent:
+    """Minimal A2A agent for testing. Publishes a card, handles requests.
+
+    Use as an async context manager::
+
+        async with FakeAgent("my-agent", reply_state="failed"):
+            await wait_for_discovery("my-agent")
+            ...
+    """
+
+    def __init__(
+        self,
+        agent_id: str,
+        *,
+        reply_state: str = "completed",
+        reply_delay: float = 0.0,
+        reply_fn: "callable | None" = None,
+        description: str = "",
+    ):
+        self.agent_id = agent_id
+        self.reply_state = reply_state
+        self.reply_delay = reply_delay
+        self.reply_fn = reply_fn
+        self.description = description or f"Test agent {agent_id}"
+        self._client: aiomqtt.Client | None = None
+        self._handler: asyncio.Task | None = None
+
+    async def __aenter__(self):
+        from skitter.config import AgentDef
+        from skitter.discovery import build_card
+        from skitter.mqtt import (
+            get_correlation_data,
+            get_response_topic,
+            topic_request,
+        )
+
+        agent_def = AgentDef(
+            id=self.agent_id, name=self.agent_id, description=self.description
+        )
+        card = build_card(agent_def)
+
+        self._client = aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/fake-{self.agent_id}-{uuid.uuid4().hex[:4]}",
+            ),
+        )
+        client = await self._client.__aenter__()
+
+        await client.publish(
+            topic_discovery(self.agent_id),
+            json.dumps(card),
+            qos=1,
+            retain=True,
+        )
+        await client.subscribe(topic_request(self.agent_id), qos=1)
+
+        reply_state = self.reply_state
+        reply_delay = self.reply_delay
+        reply_fn = self.reply_fn
+        agent_id = self.agent_id
+
+        def _extract_text(data: dict) -> str:
+            parts = data.get("params", {}).get("message", {}).get("parts", [])
+            return parts[0].get("text", "") if parts else ""
+
+        async def _handle():
+            async for msg in client.messages:
+                payload = msg.payload.decode() if msg.payload else ""
+                if not payload:
+                    continue
+                try:
+                    data = json.loads(payload)
+                except Exception:
+                    continue
+                if data.get("method") == "tasks/cancel":
+                    continue
+                reply_t = get_response_topic(msg)
+                corr = get_correlation_data(msg)
+                if not reply_t or not corr:
+                    continue
+                task_id = data.get("id", "")
+                props = make_properties(correlation_data=corr)
+
+                if reply_delay > 0:
+                    try:
+                        await asyncio.sleep(reply_delay)
+                    except asyncio.CancelledError:
+                        event = make_status_event(
+                            request_id=corr,
+                            task_id=task_id,
+                            state="cancelled",
+                            message="Cancelled",
+                        )
+                        try:
+                            await client.publish(
+                                reply_t, event, qos=1, properties=props
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                if reply_state == "failed":
+                    event = make_status_event(
+                        request_id=corr,
+                        task_id=task_id,
+                        state="failed",
+                        message=f"Agent {agent_id} failed intentionally",
+                    )
+                else:
+                    text = _extract_text(data)
+                    artifact = (
+                        reply_fn(text) if reply_fn else f"Response from {agent_id}"
+                    )
+                    event = make_status_event(
+                        request_id=corr,
+                        task_id=task_id,
+                        state="completed",
+                        artifact_text=artifact,
+                    )
+                await client.publish(reply_t, event, qos=1, properties=props)
+
+        self._handler = asyncio.create_task(_handle())
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._handler:
+            self._handler.cancel()
+            try:
+                await self._handler
+            except asyncio.CancelledError:
+                pass
+        if self._client:
+            try:
+                await self._client.publish(
+                    topic_discovery(self.agent_id), b"", qos=1, retain=True
+                )
+            except Exception:
+                pass
+            await self._client.__aexit__(*exc)

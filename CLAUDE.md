@@ -12,8 +12,7 @@
 | LLM client (litellm wrapper) | `skitter/llm.py` |
 | Graph generation + validation | `skitter/graph_gen.py` |
 | Runtime API + app creation | `skitter/runtime_api.py` |
-| Fly Machines API client | `skitter/fly.py` |
-| Deploy to Fly | `skitter/deploy_fly.py` |
+| Pull agent cards from broker | `skitter/pull.py` |
 | MQTT settings, A2A topic builders, v5 helpers | `skitter/mqtt.py` |
 | Config loading (~/.skitter/), dataclasses | `skitter/config.py` |
 | DB interface (SQLite/PostgreSQL) | `skitter/db.py` |
@@ -72,11 +71,13 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 ## Limitations
 
 - Agent runners use `dangerouslySkipPermissions`
-- Agent errors passed as normal results
 - No built-in authentication (rely on broker auth)
+- Single coordinator per broker (enforced via retained MQTT lock)
+- No timeout for normal dispatched tasks (only recovery tasks get 120s timeout)
+- Codex `.toml` agent definitions: only `model` is applied at runtime; `sandbox_mode` and other fields are not passed to `codex exec` (always uses `--full-auto`)
 
 ## Roadmap
 
 - Telegram bridge
 - Per-chat conversation history
-- Task timeouts and exponential backoff
+- Task dispatch timeouts and exponential backoff

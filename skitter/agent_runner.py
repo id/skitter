@@ -117,38 +117,45 @@ async def _run_cli(
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
-    assert proc.stdout is not None
-    async for line in proc.stdout:
-        line_str = line.decode().strip()
-        if not line_str:
-            continue
-        try:
-            event = json.loads(line_str)
-        except json.JSONDecodeError:
-            continue
+    try:
+        assert proc.stdout is not None
+        async for line in proc.stdout:
+            line_str = line.decode().strip()
+            if not line_str:
+                continue
+            try:
+                event = json.loads(line_str)
+            except json.JSONDecodeError:
+                continue
 
-        event_type = event.get("type", "")
+            event_type = event.get("type", "")
 
-        if event_type == "assistant":
-            for block in event.get("message", {}).get("content", []):
-                if block.get("type") == "text":
-                    text = block.get("text", "")
-                    texts.append(text)
-                    await publish_stream("text", text)
-                elif block.get("type") == "tool_use":
-                    await publish_stream(
-                        "tool_use",
-                        f"{block.get('name', '?')}: {str(block.get('input', ''))[:100]}",
-                    )
-        elif event_type == "item.completed":
-            item = event.get("item", {})
-            if item.get("type") == "agent_message":
-                text = item.get("text", "")
-                if text:
-                    texts.append(text)
-                    await publish_stream("text", text)
+            if event_type == "assistant":
+                for block in event.get("message", {}).get("content", []):
+                    if block.get("type") == "text":
+                        text = block.get("text", "")
+                        texts.append(text)
+                        await publish_stream("text", text)
+                    elif block.get("type") == "tool_use":
+                        await publish_stream(
+                            "tool_use",
+                            f"{block.get('name', '?')}: {str(block.get('input', ''))[:100]}",
+                        )
+            elif event_type == "item.completed":
+                item = event.get("item", {})
+                if item.get("type") == "agent_message":
+                    text = item.get("text", "")
+                    if text:
+                        texts.append(text)
+                        await publish_stream("text", text)
 
-    await proc.wait()
+        await proc.wait()
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        stderr_task.cancel()
+        raise
+
     stderr = await stderr_task
     if stderr:
         log.warning("stderr: %s", stderr[:500])
@@ -173,19 +180,13 @@ def _mqtt_kwargs_for_agent(agent: AgentDef, **overrides) -> dict:
 async def handle_request(
     client: aiomqtt.Client,
     agent: AgentDef,
-    payload: str,
+    req: A2ARequest,
     reply_topic: str,
     correlation: str,
     env: dict[str, str],
     semaphore: asyncio.Semaphore,
 ) -> None:
     """Handle a single A2A request: run CLI, stream results, send reply."""
-    try:
-        req = A2ARequest.from_json(payload)
-    except Exception as e:
-        log.error("Bad request JSON: %s", e)
-        return
-
     log.info("Request %s: %.80s", req.request_id, req.text)
 
     # Send submitted ack
@@ -211,6 +212,19 @@ async def handle_request(
     try:
         async with semaphore:
             result = await _run_cli(agent, req.text, publish_stream, env)
+    except asyncio.CancelledError:
+        cancelled = make_status_event(
+            request_id=correlation,
+            task_id=req.request_id,
+            state="cancelled",
+            message="Task cancelled",
+        )
+        try:
+            await client.publish(reply_topic, cancelled, qos=1, properties=props)
+        except Exception:
+            pass
+        log.info("Request %s cancelled", req.request_id)
+        return
     except Exception:
         log.exception("Request %s failed", req.request_id)
         result = "(internal error)"
@@ -320,7 +334,7 @@ async def run(agent_name: str) -> None:
 
     request_topic = topic_request(agent.id)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
-    inflight: set[asyncio.Task] = set()
+    task_registry: dict[str, asyncio.Task] = {}  # task_id → asyncio.Task
 
     try:
         async with aiomqtt.Client(
@@ -344,6 +358,21 @@ async def run(agent_name: str) -> None:
                 if not payload:
                     continue
 
+                # Parse JSON-RPC method to handle tasks/cancel
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                method = data.get("method", "")
+
+                if method == "tasks/cancel":
+                    cancel_id = data.get("params", {}).get("id", "")
+                    if cancel_id and cancel_id in task_registry:
+                        task_registry[cancel_id].cancel()
+                        log.info("Cancelling task %s", cancel_id)
+                    continue
+
+                # tasks/send (or unspecified method): validate MQTT v5 properties
                 reply_topic = get_response_topic(mqtt_msg) or ""
                 correlation = get_correlation_data(mqtt_msg) or ""
                 if not reply_topic or not correlation:
@@ -359,24 +388,34 @@ async def run(agent_name: str) -> None:
                         await client.publish(reply_topic, resp.to_json(), qos=1)
                     continue
 
-                def _on_done(t: asyncio.Task) -> None:
-                    inflight.discard(t)
+                task_id = data.get("id", "")
+
+                try:
+                    req = A2ARequest.from_json(payload)
+                except Exception as e:
+                    log.error("Bad request JSON: %s", e)
+                    continue
+
+                def _on_done(t: asyncio.Task, tid: str = task_id) -> None:
+                    task_registry.pop(tid, None)
                     if not t.cancelled() and t.exception():
                         log.error("Request handler failed: %s", t.exception())
 
                 task = asyncio.create_task(
                     handle_request(
-                        client, agent, payload, reply_topic, correlation, env, semaphore
+                        client, agent, req, reply_topic, correlation, env, semaphore
                     )
                 )
-                inflight.add(task)
+                if task_id:
+                    task_registry[task_id] = task
                 task.add_done_callback(_on_done)
     finally:
         # Cancel inflight tasks on shutdown
-        for task in inflight:
+        tasks = list(task_registry.values())
+        for task in tasks:
             task.cancel()
-        if inflight:
-            await asyncio.gather(*inflight, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def main() -> None:

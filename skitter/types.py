@@ -71,14 +71,18 @@ REPLY_SUBMITTED = "submitted"
 REPLY_TEXT = "text"
 REPLY_TOOL = "tool_use"
 REPLY_TERMINAL = "terminal"
+REPLY_FAILED = "failed"
 REPLY_ERROR = "error"
 
 
 def classify_reply(data: dict) -> tuple[str, str]:
     """Classify an A2A reply message. Returns (kind, content).
 
-    kind is one of: REPLY_TEXT, REPLY_TOOL, REPLY_TERMINAL, REPLY_ERROR,
-    or "" for unrecognized messages.
+    kind is one of: REPLY_TEXT, REPLY_TOOL, REPLY_TERMINAL, REPLY_FAILED,
+    REPLY_ERROR, or "" for unrecognized messages.
+
+    REPLY_TERMINAL is returned for completed tasks (content = artifact text).
+    REPLY_FAILED is returned for failed/cancelled tasks (content = error message).
     """
     if "error" in data:
         err = data["error"]
@@ -103,11 +107,16 @@ def classify_reply(data: dict) -> tuple[str, str]:
             return REPLY_TOOL, message
         return REPLY_TEXT, message
 
-    if state in ("completed", "failed", "cancelled"):
-        artifact = result.get("artifact", {})
-        parts = artifact.get("parts", [])
-        artifact_text = parts[0].get("text", "") if parts else ""
-        return REPLY_TERMINAL, artifact_text
+    def _artifact_text() -> str:
+        parts = result.get("artifact", {}).get("parts", [])
+        return parts[0].get("text", "") if parts else ""
+
+    if state == "completed":
+        return REPLY_TERMINAL, _artifact_text()
+
+    if state in ("failed", "cancelled"):
+        message = status.get("message", "") or _artifact_text()
+        return REPLY_FAILED, message or f"Task {state}"
 
     return "", ""
 
@@ -170,4 +179,3 @@ class TaskTarget:
     agent: str  # A2A agent address: {org}/{unit}/{agent_id}
     mqtt_host: str = ""  # broker host (empty = same broker as coordinator)
     mqtt_port: int = 8883
-    http_url: str = ""  # for HTTP A2A targets (Phase 4)

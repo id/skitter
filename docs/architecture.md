@@ -165,7 +165,7 @@ What it does:
 2. Connects to MQTT, subscribes to its request topic
 3. Publishes retained discovery card
 4. On request: runs the CLI tool as a subprocess, streams events back to caller
-5. Handles cancellation via `/cancel` topic
+5. Handles `tasks/cancel`: kills the subprocess, replies with `cancelled` state
 
 The agent-runner reads native agent definitions directly: Claude `.md` files (YAML frontmatter) or Codex `.toml` files. No separate skitter config needed. Runtime is inferred from the file extension.
 
@@ -189,7 +189,7 @@ Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` f
 `DB` protocol in `skitter/db.py` with two backends:
 
 - **SQLite**: default, zero config, WAL mode. Good for local/single-instance.
-- **PostgreSQL**: for concurrent coordinators or high query volume.
+- **PostgreSQL**: for high query volume. Note: only one coordinator instance per broker is supported (enforced via a retained MQTT lock message on startup).
 
 Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 

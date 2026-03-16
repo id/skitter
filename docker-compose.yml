@@ -7,8 +7,6 @@ services:
       - "18083:18083" # Dashboard
     environment:
       EMQX_ALLOW_ANONYMOUS: "true"
-    volumes:
-      - ./data:/opt/emqx/data
     healthcheck:
       test: ["CMD", "emqx", "ctl", "status"]
       interval: 10s

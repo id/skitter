@@ -2,9 +2,9 @@
 
 ## Design Principles
 
-1. **Agents are independent processes.** Each agent-runner wraps a CLI tool (claude, codex) as an A2A-over-MQTT agent. Started out of band — manually, via systemd, Docker, Fly. Each owns its discovery card and liveness connection. The coordinator just sees A2A agents on the broker.
+1. **Agents are independent A2A-over-MQTT services.** Any process that speaks A2A-over-MQTT can participate as an agent: publish a discovery card, subscribe to its request topic, reply with `TaskStatusUpdateEvent`. Started out of band (manually, via systemd, Docker, Fly). The coordinator just sees A2A agents on the broker. Skitter ships an agent-runner as a convenience for wrapping CLI tools (Claude, Codex), but it's not required.
 
-2. **Coordinator is a pure A2A orchestrator.** It publishes A2A requests and collects A2A replies. It doesn't know how agents are implemented, doesn't spawn processes, and doesn't import agent-runner code. Running a local Claude/Codex agent is an operational concern.
+2. **Coordinator is a pure A2A orchestrator.** It publishes A2A requests and collects A2A replies. It doesn't know how agents are implemented, doesn't spawn processes, and doesn't import agent-runner code. Whether an agent is a CLI wrapper, a custom Python service, or a third-party A2A implementation is an operational concern.
 
 3. **Card ownership follows service ownership.** Individual agents publish their own retained discovery cards via their main MQTT connection. Composed app cards are published by the coordinator. Liveness is tracked separately via LWT.
 
@@ -34,7 +34,7 @@ Default `{org}` = `skitter`, `{unit}` = `default` (configurable via `SKITTER_A2A
 
 ### Coordinator subscriptions
 
-The coordinator subscribes only to topics it owns — no wildcard on requests:
+The coordinator subscribes only to topics it owns, never using wildcard on requests:
 
 | Topic | Purpose |
 |-------|---------|
@@ -43,7 +43,7 @@ The coordinator subscribes only to topics it owns — no wildcard on requests:
 | `$a2a/v1/request/{org}/{unit}/{app_id}` | Per-app request topics (one per DB app) |
 | `$a2a/v1/reply/{org}/{unit}/skitter/#` | Replies to dispatched tasks |
 
-When a new app is created, the coordinator subscribes to its request topic dynamically. Clients talk to standalone agents directly — no coordinator involvement.
+When a new app is created, the coordinator subscribes to its request topic dynamically. Clients talk to standalone agents directly, with no coordinator involvement.
 
 ## Execution Flows
 
@@ -53,16 +53,16 @@ When a new app is created, the coordinator subscribes to its request topic dynam
 sequenceDiagram
     participant C as Client
     participant B as MQTT Broker
-    participant A as Agent Runner
+    participant A as Agent
 
     C->>B: Request to agent's topic
     B->>A: Deliver (agent subscribed)
-    A->>A: Run CLI tool (claude/codex)
+    A->>A: Process request
     A->>C: TaskStatusUpdateEvent (working, QoS 0)
     A->>C: TaskStatusUpdateEvent (completed, QoS 1)
 ```
 
-No coordinator. The agent-runner handles the full request lifecycle.
+No coordinator. The agent handles the full request lifecycle.
 
 ### Composed App Request (Linear: A → B)
 
@@ -80,12 +80,12 @@ sequenceDiagram
     Co->>C: Ack (submitted)
     Co->>B: Dispatch task to Agent A
     B->>A1: Deliver request
-    A1->>A1: Run CLI tool
+    A1->>A1: Process request
     A1->>Co: Reply with result
     Co->>Co: Complete task A, dispatch task B (with A's result as context)
     Co->>B: Dispatch task to Agent B
     B->>A2: Deliver request
-    A2->>A2: Run CLI tool
+    A2->>A2: Process request
     A2->>Co: Reply with result
     Co->>Co: Complete task B, session done
     Co->>C: TaskStatusUpdateEvent (completed)
@@ -101,7 +101,7 @@ sequenceDiagram
     participant A2 as Agent B
     participant AJ as Agent Join
 
-    Co->>B: Dispatch A and B (parallel — no dependencies)
+    Co->>B: Dispatch A and B (parallel, no dependencies)
     B->>A1: Deliver request
     B->>A2: Deliver request
     A1->>Co: Reply with result
@@ -147,17 +147,19 @@ The coordinator (`skitter/coordinator.py`) is a long-lived process that:
 
 ### Session State
 
-In-memory `SessionState` tracks pending/inflight/completed/failed tasks. DB is the source of truth — on crash, sessions are rebuilt from task rows.
+In-memory `SessionState` tracks pending/inflight/completed/failed tasks. DB is the source of truth; on crash, sessions are rebuilt from task rows.
 
 ### Failure Handling
 
 - Task failure propagates to all transitively dependent tasks
 - If any inflight task remains after a failure, the session waits; otherwise it fails immediately
-- Recovered inflight tasks get a 120s timeout — if no reply arrives, the task is failed
+- Recovered inflight tasks get a 120s timeout. If no reply arrives, the task is failed
 
-## Agent Runner
+## Agent Runner (built-in convenience)
 
-The agent-runner (`skitter/agent_runner.py`) is a standalone process:
+The agent-runner (`skitter/agent_runner.py`) is a convenience wrapper that turns CLI tools into A2A-over-MQTT agents. It is not required; any process that speaks A2A-over-MQTT can participate as an agent.
+
+What it does:
 
 1. Reads agent definition from native CLI file (`.md` or `.toml`)
 2. Connects to MQTT, subscribes to its request topic
@@ -165,7 +167,7 @@ The agent-runner (`skitter/agent_runner.py`) is a standalone process:
 4. On request: runs the CLI tool as a subprocess, streams events back to caller
 5. Handles cancellation via `/cancel` topic
 
-The agent-runner reads native agent definitions directly — Claude `.md` files (YAML frontmatter) or Codex `.toml` files. No separate skitter config needed. Runtime is inferred from the file extension.
+The agent-runner reads native agent definitions directly: Claude `.md` files (YAML frontmatter) or Codex `.toml` files. No separate skitter config needed. Runtime is inferred from the file extension.
 
 ## Runtime API
 
@@ -186,8 +188,8 @@ Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` f
 
 `DB` protocol in `skitter/db.py` with two backends:
 
-- **SQLite** — default, zero config, WAL mode. Good for local/single-instance.
-- **PostgreSQL** — for concurrent coordinators or high query volume.
+- **SQLite**: default, zero config, WAL mode. Good for local/single-instance.
+- **PostgreSQL**: for concurrent coordinators or high query volume.
 
 Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
@@ -202,7 +204,7 @@ Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
 ## Recovery
 
-**Coordinator crash:** On restart, recovers from DB — resubscribes to app request topics, republishes discovery cards, rehydrates inflight sessions, dispatches ready tasks.
+**Coordinator crash:** On restart, recovers from DB: resubscribes to app request topics, republishes discovery cards, rehydrates inflight sessions, dispatches ready tasks.
 
 **Agent crash:** The agent's LWT publishes a `dead` event. The retained discovery card stays on the broker but the agent is no longer listening. Inflight tasks dispatched to the agent will time out and fail. The coordinator propagates the failure to dependent tasks.
 

@@ -2,7 +2,7 @@
 
 MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker. A coordinator handles composed multi-agent apps: creating orchestration graphs from natural language via LLM, dispatching A2A requests, and resolving dependencies.
 
-~3,500 lines of Python. Supports Claude Code and Codex CLI as agent runtimes.
+~3,500 lines of Python. Works with any A2A-over-MQTT agent. Ships with a convenience wrapper for Claude Code and Codex CLI.
 
 ## Quickstart (Local)
 
@@ -19,7 +19,7 @@ export ANTHROPIC_API_KEY=sk-ant-...    # for Claude models
 export SKITTER_LLM_MODEL=anthropic/claude-haiku-4-5  # any litellm model string
 ```
 
-Agent runners need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) logged in (depending on which runtime the agent uses).
+The built-in agent-runner needs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) logged in (depending on which runtime the agent uses). You can also run any A2A-over-MQTT compliant agent instead.
 
 ```bash
 # Start MQTT broker
@@ -43,8 +43,8 @@ Open `dashboard.html` in a browser to watch jobs execute in real time (connects 
 ## How It Works
 
 ```
-Any MQTT v5 Client          MQTT Broker           Agent Runners
-(CLI, dashboard,          (local or EMQX)      (claude / codex CLI)
+Any MQTT v5 Client          MQTT Broker           A2A Agents
+(CLI, dashboard,          (local or EMQX)      (any implementation)
  Telegram bot, etc.)
                       ┌────────────────────┐
                       │                    │
@@ -64,15 +64,15 @@ Any MQTT v5 Client          MQTT Broker           Agent Runners
                       └────────────────────┘
 ```
 
-**Standalone agents** handle requests directly, no coordinator involved. Clients publish to the agent's request topic, the agent-runner processes it and replies.
+**Standalone agents** handle requests directly, no coordinator involved. Clients publish to the agent's request topic, the agent processes it and replies. Any A2A-over-MQTT compliant process works; skitter's agent-runner is just a convenience for wrapping CLI tools.
 
 **Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests to individual agents following the dependency graph, and sends the final result back to the caller.
 
 **Creating composed apps:** send a `create app` request to the coordinator's `skitter` topic with agent IDs and natural language instructions. The coordinator looks up agent capabilities from their discovery cards, calls an LLM to generate an orchestration graph (validated for cycles, missing refs, and next/needs consistency), persists the app, and publishes its discovery card.
 
-## Agents
+## Agent Runner
 
-Agents use native CLI definitions directly, no extra config layer:
+Skitter's built-in agent-runner wraps CLI tools (Claude Code, Codex) as A2A-over-MQTT agents. Agents use native CLI definitions directly, no extra config layer:
 
 ```markdown
 # ~/.claude/agents/researcher.md
@@ -160,7 +160,7 @@ Live tests run both agent-runners and the coordinator in Docker containers for f
 
 ## Limitations
 
-- Agent runners use `dangerouslySkipPermissions`, only run in trusted environments
+- The built-in agent-runner uses `dangerouslySkipPermissions`, only run in trusted environments
 - Agent errors are passed as normal results to downstream tasks
 - No built-in authentication (rely on MQTT broker auth)
 

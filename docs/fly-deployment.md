@@ -1,6 +1,6 @@
 # Deploying Skitter Supervisor on Fly.io
 
-The supervisor is a pure A2A orchestrator — it listens for requests on
+The supervisor is a pure A2A orchestrator. It listens for requests on
 MQTT, manages sessions in a local SQLite DB, and dispatches tasks to
 agents. It doesn't run CLI tools or manage agent processes.
 

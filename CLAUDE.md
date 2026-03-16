@@ -1,13 +1,13 @@
 # Skitter
 
-~2,700 lines of Python. MQTT-based personal AI assistant. Coordinator + independent agent runners + MQTT broker as infrastructure backbone.
+~2,700 lines of Python. MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT broker as infrastructure backbone.
 
 ## Quick Orientation
 
 | What | Where |
 |---|---|
 | Coordinator (A2A orchestrator, session management, DAG dispatch) | `skitter/coordinator.py` |
-| Agent runner (standalone A2A agent process) | `skitter/agent_runner.py` |
+| Agent runner (CLI-to-A2A convenience wrapper) | `skitter/agent_runner.py` |
 | Discovery (build + parse A2A agent/workflow cards) | `skitter/discovery.py` |
 | LLM client (litellm wrapper) | `skitter/llm.py` |
 | Graph generation + validation | `skitter/graph_gen.py` |
@@ -28,43 +28,46 @@
 |---|---|
 | `docs/architecture.md` | Design principles, topic scheme, execution flows, recovery model |
 | `docs/fly-deployment.md` | EMQX Serverless + Fly.io setup guide (always-on coordinator, deploy, testing) |
-| `docs/landscape.md` | Competitive landscape research (OpenClaw, Nanobot, etc.) and library analysis (pi-mono, litellm) |
 | `CONTRIBUTING.md` | Project structure, config reference, env vars, testing, lint |
 | `README.md` | User-facing quickstart, deploy, how-it-works |
 
 ## Architecture in One Paragraph
 
-Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. For standalone agents, the agent-runner handles the request directly. For composed apps, the coordinator subscribes to the app's request topic, creates a DB-backed session, and dispatches A2A requests to individual agents. Agents are independent processes — the coordinator only sends A2A requests and collects replies. The `$a2a` namespace is purely client-facing; `skitter/` topics handle internal coordination. Locally: subprocess agent-runners + Docker EMQX. On Fly: always-on coordinator + EMQX Serverless + independent agent machines.
+Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. Any A2A-over-MQTT compliant agent can handle requests; skitter ships an agent-runner as a convenience for wrapping CLI tools, but it's not required. For composed apps, the coordinator subscribes to the app's request topic, creates a DB-backed session, and dispatches A2A requests to individual agents. The coordinator only sends A2A requests and collects replies and doesn't care how agents are implemented. Locally: agents + Docker EMQX. On Fly: always-on coordinator + EMQX Serverless + independent agent machines.
 
 ## Key Concepts
 
-- **Immutable sessions** — persisted once by coordinator in DB, never mutated. Per-task status tracked separately.
-- **Namespace separation** — `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery, events).
-- **Native sub-agents** — agent identity owned by `~/.claude/agents/*.md` / `~/.codex/agents/*.toml`, not skitter. Skitter YAML stubs (`~/.skitter/agents/*.yaml`) contain only orchestration metadata.
-- **Independent agents** — agent-runners are standalone processes. The coordinator doesn't spawn or manage them.
+- **Immutable sessions.** Persisted once by coordinator in DB, never mutated. Per-task status tracked separately.
+- **Namespace separation.** `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery, events).
+- **Native sub-agents.** Agent identity owned by `~/.claude/agents/*.md` / `~/.codex/agents/*.toml`, not skitter. Skitter YAML stubs (`~/.skitter/agents/*.yaml`) contain only orchestration metadata.
+- **Independent agents.** Agents are any A2A-over-MQTT compliant process. The coordinator doesn't spawn or manage them.
+
+## Writing Style
+
+- **Avoid em-dashes.** Use colons, semicolons, periods, commas, or parentheses instead. Only use em-dashes where no other punctuation works naturally (very rare). Never use double-dashes.
 
 ## Planning and Implementation Process
 
 For non-trivial requests (new features, architectural changes, multi-file refactors):
 
 ### 1. Planning Phase
-- **Use a team of agents** for planning — delegate research and analysis to subagents.
-- **Evaluate fit** — research whether the request aligns with skitter's goals (minimal MQTT-based coordinator, independent agents, small codebase). Push back if a request conflicts with core principles or adds unnecessary complexity.
-- **Persist the plan** — write a markdown file under `docs/` with timestamp: `docs/YYYY-mm-DD-HH-MM-SS-<slug>.md`.
+- **Use a team of agents** for planning. Delegate research and analysis to subagents.
+- **Evaluate fit.** Research whether the request aligns with skitter's goals (minimal MQTT-based coordinator, independent agents, small codebase). Push back if a request conflicts with core principles or adds unnecessary complexity.
+- **Persist the plan.** Write a markdown file under `docs/` with timestamp: `docs/YYYY-mm-DD-HH-MM-SS-<slug>.md`.
 
 ### 2. Implementation Phase
-- **Coding persona** — professional senior Python developer. Idiomatic, neat Python. No boilerplate or unnecessary abstractions.
-- **Tests** — cover new/changed functionality with focused tests. Test edge cases, not obvious behavior.
-- **No backward compatibility** — rewrite and drop old code freely. No shims, re-exports, or deprecation warnings.
+- **Coding persona.** Professional senior Python developer. Idiomatic, neat Python. No boilerplate or unnecessary abstractions.
+- **Tests.** Cover new/changed functionality with focused tests. Test edge cases, not obvious behavior.
+- **No backward compatibility.** Rewrite and drop old code freely. No shims, re-exports, or deprecation warnings.
 
 ### 3. Quality Phase
-1. **`/simplify`** — run the simplify skill. Fix all findings.
-2. **Staff-engineer review** — run the `staff-engineer` agent. Fix all findings.
-3. **Lint and format** — `uvx ruff format` and `uvx ruff check` on changed files.
-4. **Unit tests** — `uv run python -m pytest tests/test_unit.py -q`.
-5. **Live tests** — `tests/test_live.py` (`--runtime claude` / `--runtime codex`). Confirm with user first.
-6. **Dashboard** — verify `dashboard.html` still works if session state or topics changed.
-7. **Docs and env files** — update `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `.env.example`, and `.env.cloud.example` if behavior, config, env vars, or CLI usage changed.
+1. **`/simplify`**: run the simplify skill. Fix all findings.
+2. **Staff-engineer review**: run the `staff-engineer` agent. Fix all findings.
+3. **Lint and format**: `uvx ruff format` and `uvx ruff check` on changed files.
+4. **Unit tests**: `uv run python -m pytest tests/test_unit.py -q`.
+5. **Live tests**: `tests/test_live.py` (`--runtime claude` / `--runtime codex`). Confirm with user first.
+6. **Dashboard**: verify `dashboard.html` still works if session state or topics changed.
+7. **Docs and env files**: update `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `.env.example`, and `.env.cloud.example` if behavior, config, env vars, or CLI usage changed.
 
 ## Limitations
 

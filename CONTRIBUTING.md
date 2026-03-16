@@ -5,7 +5,7 @@
 ```
 skitter/
   coordinator.py   A2A orchestrator: session management, DAG dispatch, runtime API
-  agent_runner.py  Standalone A2A agent process (wraps claude/codex CLI)
+  agent_runner.py  CLI-to-A2A convenience wrapper (claude/codex)
   runtime_api.py   Runtime state queries + app creation
   graph_gen.py     LLM-based graph generation + validation
   llm.py           LLM API wrapper (litellm)
@@ -30,9 +30,9 @@ docker compose up -d   # local EMQX broker
 uv run python -m skitter   # start coordinator
 ```
 
-## Agents
+## Agent Runner
 
-The agent-runner reads native CLI agent definitions directly — no extra config layer.
+Skitter works with any A2A-over-MQTT compliant agent. The built-in agent-runner is a convenience that wraps CLI tools (Claude Code, Codex). It reads native CLI agent definitions directly, no extra config layer.
 
 **Claude** (`~/.claude/agents/researcher.md`):
 ```markdown
@@ -85,7 +85,7 @@ llm:
 | `MQTT_USER` / `MQTT_PASS` | (empty) | Broker auth |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
-| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation (`provider/model`, e.g. `anthropic/claude-haiku-4-5` — see [litellm providers](https://docs.litellm.ai/docs/providers)) |
+| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation (`provider/model`, e.g. `anthropic/claude-haiku-4-5`; see [litellm providers](https://docs.litellm.ai/docs/providers)) |
 | `ANTHROPIC_API_KEY` | (empty) | Anthropic API key (for Claude models) |
 | `OPENAI_API_KEY` | (empty) | OpenAI API key (for OpenAI models) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | Claude auth for agent-runners |
@@ -126,7 +126,7 @@ uv run python -m pytest tests/test_live.py -v -s --runtime claude
 uv run python -m pytest tests/test_live.py -v -s --runtime codex
 ```
 
-Live tests run both agent-runners and the coordinator in Docker containers — they never touch local agent files or config. Credentials are loaded from `.env.test`.
+Live tests run both agent-runners and the coordinator in Docker containers. They never touch local agent files or config. Credentials are loaded from `.env.test`.
 
 ## Lint and Format
 

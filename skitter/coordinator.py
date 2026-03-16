@@ -25,6 +25,7 @@ from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
     CANCEL_KEY,
     CREATE_APP_KEY,
+    DELETE_APP_KEY,
     handle_query as runtime_query,
     runtime_card,
 )
@@ -560,6 +561,8 @@ class Coordinator:
                 await self._cancel_session_cleanup(result[CANCEL_KEY])
             if CREATE_APP_KEY in result:
                 await self._register_new_app(result[CREATE_APP_KEY])
+            if DELETE_APP_KEY in result:
+                await self._delete_app_cleanup(result[DELETE_APP_KEY])
         except Exception:
             log.exception("Runtime query post-action failed")
 
@@ -634,6 +637,17 @@ class Coordinator:
         if not app_id or not card:
             return
         await self._start_app_connection(app_id, json.dumps(card))
+
+    async def _delete_app_cleanup(self, app_id: str) -> None:
+        """Clear retained discovery card and tear down the app's MQTT connection."""
+        client = self._app_clients.get(app_id)
+        if client:
+            try:
+                await client.publish(topic_discovery(app_id), b"", qos=1, retain=True)
+            except Exception:
+                log.warning("Failed to clear discovery card for %s", app_id)
+        await self._stop_app_connection(app_id)
+        self._registry.remove(app_id)
 
     async def _start_app_connection(self, app_id: str, card_json: str) -> None:
         """Open a dedicated MQTT connection for an app.

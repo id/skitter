@@ -1846,3 +1846,83 @@ class TestRuntimeApiIntegration:
         # Clean up the background task
         for task in sup._app_tasks.values():
             task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_delete_app(self):
+        """Verify delete app removes from DB and returns DELETE_APP_KEY."""
+        from skitter.runtime_api import DELETE_APP_KEY
+
+        sup, mock_client = self._make_coordinator()
+        self._create_test_app()
+        assert self.db.get_app("test-app") is not None
+
+        req = A2ARequest(text="delete app test-app", request_id="q1")
+        await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+
+        # App deleted from DB
+        assert self.db.get_app("test-app") is None
+
+        # Reply contains DELETE_APP_KEY
+        reply_calls = [
+            call
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/q"
+        ]
+        assert len(reply_calls) == 1
+        reply_data = json.loads(reply_calls[0].args[1])
+        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        result = json.loads(artifact)
+        assert result[DELETE_APP_KEY] == "test-app"
+
+    @pytest.mark.asyncio
+    async def test_delete_app_with_running_sessions(self):
+        """Verify delete app fails when sessions are running."""
+        sup, mock_client = self._make_coordinator()
+        self._create_test_app()
+
+        # Create a running session
+        req = A2ARequest(text="test", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+
+        mock_client.publish.reset_mock()
+        del_req = A2ARequest(text="delete app test-app", request_id="q1")
+        await sup._handle_runtime_query(del_req.to_json(), "reply/q", "corr-q1")
+
+        # App still exists
+        assert self.db.get_app("test-app") is not None
+
+        # Reply contains error
+        reply_calls = [
+            call
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/q"
+        ]
+        reply_data = json.loads(reply_calls[0].args[1])
+        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        result = json.loads(artifact)
+        assert "running session" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_app(self):
+        """Verify delete app returns error for unknown app."""
+        sup, mock_client = self._make_coordinator()
+
+        req = A2ARequest(text="delete app no-such-app", request_id="q1")
+        await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+
+        reply_calls = [
+            call
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/q"
+        ]
+        reply_data = json.loads(reply_calls[0].args[1])
+        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        result = json.loads(artifact)
+        assert "not found" in result["error"].lower()

@@ -10,6 +10,7 @@ Queries:
     get session {id}    → session with all task states
     cancel session {id} → cancel a running session
     create app {json}   → create a composed app from agent IDs + instructions
+    delete app {id}     → delete an app and all its versions/sessions/tasks
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ log = logging.getLogger("skitter.runtime_api")
 AGENT_ID = "skitter"
 CANCEL_KEY = "cancelled"
 CREATE_APP_KEY = "created_app"
+DELETE_APP_KEY = "deleted_app"
 
 
 def runtime_card() -> dict:
@@ -69,6 +71,8 @@ async def handle_query(
         return _cancel_session(db, arg)
     if verb == "create" and noun == "app" and arg:
         return await _handle_create_app(db, arg, registry)
+    if verb == "delete" and noun == "app" and arg:
+        return _delete_app(db, arg)
 
     return json.dumps({"error": f"Unknown query: {text.strip()}"})
 
@@ -162,6 +166,19 @@ def _cancel_session(db: DB, session_id: str) -> str:
         return json.dumps({"error": f"Session not running (state={session.state})"})
     db.update_session_state(session_id, "cancelled")
     return json.dumps({CANCEL_KEY: session_id})
+
+
+def _delete_app(db: DB, app_id: str) -> str:
+    app = db.get_app(app_id)
+    if not app:
+        return json.dumps({"error": f"App not found: {app_id}"})
+    running = [s for s in db.list_sessions(app_id=app_id) if s.state == "running"]
+    if running:
+        return json.dumps(
+            {"error": f"App has {len(running)} running session(s); cancel them first"}
+        )
+    db.delete_app(app_id)
+    return json.dumps({DELETE_APP_KEY: app_id})
 
 
 def create_app(

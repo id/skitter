@@ -1759,8 +1759,8 @@ class TestRuntimeApiIntegration:
 
     @pytest.mark.asyncio
     async def test_create_app_subscribes_and_publishes(self):
-        """Verify that creating an app subscribes to its request topic and publishes card."""
-        from unittest.mock import AsyncMock
+        """Verify that creating an app opens a dedicated connection, subscribes, and publishes card."""
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         sup, mock_client = self._make_coordinator()
 
@@ -1811,23 +1811,38 @@ class TestRuntimeApiIntegration:
         )
 
         req = A2ARequest(text=f"create app {spec}", request_id="q1")
-        with patch(
-            "skitter.runtime_api.generate_graph", new_callable=AsyncMock
-        ) as mock_gen:
+
+        # Mock aiomqtt.Client so _start_app_connection doesn't open a real connection
+        mock_app_client = MagicMock()
+        mock_app_client.publish = AsyncMock()
+        mock_app_client.subscribe = AsyncMock()
+        mock_app_client.__aenter__ = AsyncMock(return_value=mock_app_client)
+        mock_app_client.__aexit__ = AsyncMock(return_value=False)
+        mock_app_client.messages = AsyncMock()
+
+        with (
+            patch(
+                "skitter.runtime_api.generate_graph", new_callable=AsyncMock
+            ) as mock_gen,
+            patch("skitter.coordinator.aiomqtt.Client", return_value=mock_app_client),
+        ):
             mock_gen.return_value = graph
             await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
 
-        # Should have subscribed to the new app's request topic
+        # Dedicated client should have subscribed to the app's request topic
         subscribe_calls = [
-            str(call.args[0]) for call in mock_client.subscribe.call_args_list
+            str(call.args[0]) for call in mock_app_client.subscribe.call_args_list
         ]
         app_request_topics = [t for t in subscribe_calls if "/request/" in t]
         assert len(app_request_topics) == 1
-        assert "request/" in app_request_topics[0]
 
-        # Should have published the discovery card (retained)
-        publish_calls = mock_client.publish.call_args_list
+        # Dedicated client should have published the discovery card (retained)
+        publish_calls = mock_app_client.publish.call_args_list
         discovery_publishes = [
             c for c in publish_calls if "/discovery/" in str(c.args[0])
         ]
         assert len(discovery_publishes) >= 1
+
+        # Clean up the background task
+        for task in sup._app_tasks.values():
+            task.cancel()

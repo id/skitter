@@ -8,7 +8,7 @@
 |---|---|
 | Coordinator (A2A orchestrator, session management, DAG dispatch) | `skitter/coordinator.py` |
 | Agent runner (standalone A2A agent process) | `skitter/agent_runner.py` |
-| Discovery (build + publish agent/workflow cards) | `skitter/discovery.py` |
+| Discovery (build + parse A2A agent/workflow cards) | `skitter/discovery.py` |
 | LLM client (litellm wrapper) | `skitter/llm.py` |
 | Graph generation + validation | `skitter/graph_gen.py` |
 | Runtime API + app creation | `skitter/runtime_api.py` |
@@ -62,7 +62,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 2. **Staff-engineer review** — run the `staff-engineer` agent. Fix all findings.
 3. **Lint and format** — `uvx ruff format` and `uvx ruff check` on changed files.
 4. **Unit tests** — `uv run python -m pytest tests/test_unit.py -q`.
-5. **Live tests** — `tests/test_live_claude.py` and `tests/test_live_codex.py`. Confirm with user first.
+5. **Live tests** — `tests/test_live.py` (`--runtime claude` / `--runtime codex`). Confirm with user first.
 6. **Dashboard** — verify `dashboard.html` still works if session state or topics changed.
 
 ## Limitations

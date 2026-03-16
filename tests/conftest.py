@@ -10,7 +10,6 @@ import asyncio
 import json
 import os
 import shutil
-import signal
 import socket
 import subprocess
 import tempfile
@@ -43,6 +42,16 @@ from skitter.types import (
 
 
 AGENT_IMAGE = os.environ.get("SKITTER_AGENT_IMAGE", "skitter-agent:latest")
+COORDINATOR_IMAGE = os.environ.get("SKITTER_COORDINATOR_IMAGE", "skitter:latest")
+_ENV_TEST = Path(__file__).resolve().parent.parent / ".env.test"
+
+
+def _load_env_test() -> dict[str, str]:
+    """Load key=value pairs from .env.test into a dict."""
+    from dotenv import dotenv_values
+
+    return dict(dotenv_values(_ENV_TEST)) if _ENV_TEST.is_file() else {}
+
 
 # ---------------------------------------------------------------------------
 # Skip conditions
@@ -71,10 +80,14 @@ needs_mqtt = pytest.mark.skipif(not mqtt_available(), reason="No MQTT broker")
 
 
 def runtime_available(runtime: str) -> bool:
+    env = {**_load_env_test(), **os.environ}
     if runtime == "claude":
-        return bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+        return bool(env.get("CLAUDE_CODE_OAUTH_TOKEN"))
     if runtime == "codex":
-        return Path.home().joinpath(".codex/auth.json").is_file()
+        return (
+            bool(env.get("OPENAI_API_KEY"))
+            or Path.home().joinpath(".codex/auth.json").is_file()
+        )
     return False
 
 
@@ -121,46 +134,81 @@ def write_agent_file(agent_id: str, runtime: str, model: str = "") -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _start_process(
-    cmd: list[str],
+def _wait_for_container(
+    container_id: str,
+    *,
     marker: str,
-    label: str = "process",
-    timeout_s: float = 15.0,
-) -> tuple[subprocess.Popen, Path]:
-    """Start a subprocess, wait for `marker` in its output."""
-    log_path = Path(tempfile.mktemp(prefix=f"skitter-test-{label}-", suffix=".log"))
-    log_file = log_path.open("w")
-    env = os.environ.copy()
-    env.pop("CLAUDECODE", None)
-    proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
-    deadline = time.monotonic() + timeout_s
+    timeout: float,
+    label: str,
+) -> None:
+    """Poll docker logs until *marker* appears. Fails the test on timeout or early exit."""
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            log_file.close()
-            out = log_path.read_text()
-            pytest.fail(f"{label} exited early (rc={proc.returncode}): {out}")
-        if marker in log_path.read_text():
-            return proc, log_path
-        time.sleep(0.1)
-    proc.kill()
-    log_file.close()
-    out = log_path.read_text()
-    pytest.fail(f"{label} did not become ready within {timeout_s}s:\n{out}")
-    return proc, log_path  # unreachable
+        logs = subprocess.run(
+            ["docker", "logs", container_id],
+            capture_output=True,
+            text=True,
+        )
+        if marker in logs.stdout or marker in logs.stderr:
+            return
+        inspect = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
+            capture_output=True,
+            text=True,
+        )
+        if inspect.stdout.strip() != "true":
+            pytest.fail(f"{label} exited early:\n{logs.stdout}{logs.stderr}")
+        time.sleep(0.3)
 
-
-def start_coordinator() -> subprocess.Popen:
-    """Start the coordinator with a fresh DB, wait for it to be ready."""
-    db_path = Path.home() / ".skitter" / "skitter.db"
-    for suffix in ("", "-wal", "-shm"):
-        (db_path.parent / f"{db_path.name}{suffix}").unlink(missing_ok=True)
-
-    proc, _ = _start_process(
-        ["uv", "run", "python", "-m", "skitter"],
-        marker="ready",
-        label="coordinator",
+    all_logs = subprocess.run(
+        ["docker", "logs", container_id],
+        capture_output=True,
+        text=True,
     )
-    return proc
+    stop_container(container_id)
+    pytest.fail(
+        f"{label} not ready within {timeout:.0f}s:\n{all_logs.stdout}\n{all_logs.stderr}"
+    )
+
+
+_COORDINATOR_ENV_KEYS = {
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "SKITTER_LLM_MODEL",
+    "SKITTER_A2A_ORG",
+    "SKITTER_A2A_UNIT",
+}
+
+
+def start_coordinator(*, env_vars: dict[str, str] | None = None) -> str:
+    """Start the coordinator in Docker. Returns the container ID.
+
+    Uses an in-memory SQLite DB (no host state) and connects to the
+    broker via the skitter Docker network.  Only coordinator-relevant
+    env vars from .env.test are passed through.
+    """
+    all_env = {**_load_env_test(), **(env_vars or {})}
+    merged = {k: v for k, v in all_env.items() if k in _COORDINATOR_ENV_KEYS}
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--network=skitter",
+        "-e",
+        "MQTT_HOST=emqx",
+    ]
+    for key, val in merged.items():
+        cmd.extend(["-e", f"{key}={val}"])
+
+    cmd.append(COORDINATOR_IMAGE)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"Failed to start coordinator container: {result.stderr}")
+    container_id = result.stdout.strip()
+    _wait_for_container(container_id, marker="ready", timeout=15, label="Coordinator")
+    return container_id
 
 
 _image_checked = False
@@ -187,12 +235,13 @@ def _ensure_agent_image() -> None:
 def start_agent_runner(agent_path: str | Path, runtime: str) -> str:
     """Start an agent-runner in Docker. Returns the container ID.
 
-    Claude: pass CLAUDE_CODE_OAUTH_TOKEN as env var.
-    Codex: mount ~/.codex/auth.json into the container.
+    Credentials come from .env.test (CLAUDE_CODE_OAUTH_TOKEN or OPENAI_API_KEY).
+    For codex, also mounts ~/.codex/auth.json if present.
     """
     _ensure_agent_image()
     agent_path = Path(agent_path)
     container_agent_path = f"/tmp/agents/{agent_path.name}"
+    env = _load_env_test()
 
     cmd = [
         "docker",
@@ -208,14 +257,18 @@ def start_agent_runner(agent_path: str | Path, runtime: str) -> str:
     ]
 
     if runtime == "claude":
-        if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        token = env.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get(
+            "CLAUDE_CODE_OAUTH_TOKEN"
+        )
+        if not token:
             pytest.fail("CLAUDE_CODE_OAUTH_TOKEN required for claude runtime")
-        cmd.extend(["-e", "CLAUDE_CODE_OAUTH_TOKEN"])
+        cmd.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
     elif runtime == "codex":
         codex_auth = Path.home() / ".codex" / "auth.json"
-        if not codex_auth.is_file():
-            pytest.fail(f"Codex auth not found: {codex_auth}")
-        cmd.extend(["-v", f"{codex_auth}:/home/skitter/.codex/auth.json:ro"])
+        if codex_auth.is_file():
+            cmd.extend(["-v", f"{codex_auth}:/home/skitter/.codex/auth.json:ro"])
+        if env.get("OPENAI_API_KEY"):
+            cmd.extend(["-e", f"OPENAI_API_KEY={env['OPENAI_API_KEY']}"])
 
     cmd.extend([AGENT_IMAGE, container_agent_path])
 
@@ -223,46 +276,13 @@ def start_agent_runner(agent_path: str | Path, runtime: str) -> str:
     if result.returncode != 0:
         pytest.fail(f"Failed to start agent container: {result.stderr}")
     container_id = result.stdout.strip()
-
-    # Wait for agent to be ready (check logs for marker)
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline:
-        logs = subprocess.run(
-            ["docker", "logs", container_id], capture_output=True, text=True
-        )
-        if "Listening on" in logs.stdout or "Listening on" in logs.stderr:
-            return container_id
-        # Check if container died
-        inspect = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
-            capture_output=True,
-            text=True,
-        )
-        if inspect.stdout.strip() != "true":
-            all_logs = logs.stdout + logs.stderr
-            pytest.fail(f"Agent container exited early:\n{all_logs}")
-        time.sleep(0.5)
-
-    all_logs = subprocess.run(
-        ["docker", "logs", container_id], capture_output=True, text=True
+    _wait_for_container(
+        container_id,
+        marker="Listening on",
+        timeout=30,
+        label="Agent",
     )
-    stop_container(container_id)
-    pytest.fail(
-        f"Agent container not ready within 30s:\n{all_logs.stdout}\n{all_logs.stderr}"
-    )
-    return ""  # unreachable
-
-
-def stop_process(proc: subprocess.Popen) -> None:
-    """Gracefully stop a subprocess."""
-    if proc.poll() is not None:
-        return
-    proc.send_signal(signal.SIGINT)
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+    return container_id
 
 
 def stop_container(container_id: str) -> None:

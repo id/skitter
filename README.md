@@ -16,7 +16,7 @@ export ANTHROPIC_API_KEY=sk-ant-...    # for Claude models
 # or: export OPENAI_API_KEY=sk-...    # for OpenAI models
 # or: export GEMINI_API_KEY=...       # for Gemini models
 
-export SKITTER_LLM_MODEL=claude-haiku-4-5-20251001  # any litellm model string
+export SKITTER_LLM_MODEL=anthropic/claude-haiku-4-5  # any litellm model string
 ```
 
 Agent runners need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) logged in (depending on which runtime the agent uses).
@@ -93,7 +93,7 @@ uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
 uv run python -m skitter agent-runner ~/.codex/agents/coder.toml
 ```
 
-Each agent-runner publishes a discovery card, handles A2A requests independently, and maintains its own MQTT connection for liveness tracking.
+Each agent-runner publishes a retained discovery card on startup and handles A2A requests independently.
 
 ## Composed Apps
 
@@ -146,7 +146,7 @@ uv run python -m pytest tests/test_unit.py -q
 docker compose up -d                          # start EMQX broker
 docker build -f Dockerfile.agent -t skitter-agent:latest .  # build agent image
 export ANTHROPIC_API_KEY='your-key'           # LLM API key for coordinator
-export SKITTER_LLM_MODEL=claude-haiku-4-5-20251001
+export SKITTER_LLM_MODEL=anthropic/claude-haiku-4-5
 
 # Claude (requires OAuth token)
 export CLAUDE_CODE_OAUTH_TOKEN='your-token'
@@ -156,7 +156,7 @@ uv run python -m pytest tests/test_live.py -v -s --runtime claude
 uv run python -m pytest tests/test_live.py -v -s --runtime codex
 ```
 
-Live tests run agent-runners in Docker containers for full isolation. They never touch your local agent files. The coordinator runs as a local subprocess.
+Live tests run both agent-runners and the coordinator in Docker containers for full isolation. They never touch your local agent files or config. Credentials are loaded from `.env.test`.
 
 ## Limitations
 

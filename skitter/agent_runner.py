@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import aiomqtt
 
 from skitter.config import AgentDef
-from skitter.discovery import CardPublisher, build_card
+from skitter.discovery import build_card
 from skitter.mqtt import (
     A2A_ORG,
     A2A_UNIT,
@@ -28,6 +28,7 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_a2a_event,
+    topic_discovery,
     topic_request,
 )
 from skitter.types import (
@@ -302,21 +303,19 @@ async def run(agent_name: str) -> None:
     # Compute env once at startup
     env = agent_env()
 
-    # Publish discovery card
+    # Publish discovery card (retained, via main client below)
     card = build_card(agent)
     card_json = json.dumps(card)
-    publisher = CardPublisher(
-        agent.id, card_json, mqtt_kwargs=_mqtt_kwargs_for_agent(agent)
-    )
-    await publisher.start()
 
     # LWT for crash detection
     lwt_topic = topic_a2a_event(agent.id)
-    lwt_payload = json.dumps({
-        "event": "dead",
-        "agent": agent.id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    lwt_payload = json.dumps(
+        {
+            "event": "dead",
+            "agent": agent.id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
     will = aiomqtt.Will(topic=lwt_topic, payload=lwt_payload, qos=1)
 
     request_topic = topic_request(agent.id)
@@ -332,6 +331,12 @@ async def run(agent_name: str) -> None:
             ),
         ) as client:
             await client.subscribe(request_topic, qos=1)
+            await client.publish(
+                topic_discovery(agent.id),
+                card_json,
+                qos=1,
+                retain=True,
+            )
             log.info("Listening on %s", request_topic)
 
             async for mqtt_msg in client.messages:
@@ -372,7 +377,6 @@ async def run(agent_name: str) -> None:
             task.cancel()
         if inflight:
             await asyncio.gather(*inflight, return_exceptions=True)
-        await publisher.stop()
 
 
 def main() -> None:

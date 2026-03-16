@@ -20,7 +20,7 @@ from skitter.db import (
     DBTask,
     open_db,
 )
-from skitter.discovery import CardPublisher, is_workflow_card, parse_card
+from skitter.discovery import is_workflow_card, parse_card
 from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
     CANCEL_KEY,
@@ -36,6 +36,7 @@ from skitter.mqtt import (
     make_properties,
     mqtt_client_kwargs,
     topic_a2a_event,
+    topic_discovery,
     topic_discovery_wildcard,
     topic_request,
     topic_reply,
@@ -123,7 +124,7 @@ def _build_context(state: SessionState, task: SessionTask) -> str:
     parts = []
     for need_id in task.needs:
         if need_id in state.results:
-            parts.append(f"## Result from '{need_id}':\n{state.results[need_id]}")
+            parts.append(f"## Input from task '{need_id}'\n{state.results[need_id]}")
     return "\n\n".join(parts)
 
 
@@ -174,7 +175,6 @@ class Coordinator:
         self._db = db
         self._sessions: dict[str, SessionState] = {}
         self._registry = DiscoveryRegistry()
-        self._publishers: dict[str, CardPublisher] = {}
         self._client: aiomqtt.Client | None = None
         self._reply_subscriptions: set[str] = set()
 
@@ -596,16 +596,16 @@ class Coordinator:
         if not app_id or not card:
             return
 
-        # Subscribe to the new app's request topic
+        # Subscribe to the new app's request topic and publish its card
         if self._client:
             await self._client.subscribe(topic_request(app_id), qos=1)
-
-        # Publish its discovery card
-        card_json = json.dumps(card)
-        pub = CardPublisher(app_id, card_json)
-        self._publishers[app_id] = pub
-        await pub.start()
-        log.info("Registered new app %s (subscribed + card published)", app_id)
+            await self._client.publish(
+                topic_discovery(app_id),
+                json.dumps(card),
+                qos=1,
+                retain=True,
+            )
+            log.info("Registered new app %s (subscribed + card published)", app_id)
 
     # --- Inbound request handling ---
 
@@ -716,9 +716,12 @@ class Coordinator:
             if app.card_json:
                 if self._client:
                     await self._client.subscribe(topic_request(app.id), qos=1)
-                pub = CardPublisher(app.id, app.card_json)
-                self._publishers[app.id] = pub
-                await pub.start()
+                    await self._client.publish(
+                        topic_discovery(app.id),
+                        app.card_json,
+                        qos=1,
+                        retain=True,
+                    )
                 log.info("Recovered app %s (subscribed + card published)", app.id)
 
         # 2. Rehydrate inflight sessions
@@ -805,12 +808,6 @@ class Coordinator:
 
     async def run(self) -> None:
         """Main coordinator loop."""
-        # Publish runtime API card
-        rt_card_json = json.dumps(runtime_card())
-        pub = CardPublisher(RUNTIME_AGENT_ID, rt_card_json)
-        self._publishers[RUNTIME_AGENT_ID] = pub
-        await pub.start()
-
         try:
             async with aiomqtt.Client(
                 **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator"),
@@ -820,6 +817,15 @@ class Coordinator:
                 # Subscribe to discovery + runtime API
                 await client.subscribe(topic_discovery_wildcard(), qos=1)
                 await client.subscribe(topic_request(RUNTIME_AGENT_ID), qos=1)
+
+                # Publish runtime API card (retained)
+                rt_card_json = json.dumps(runtime_card())
+                await client.publish(
+                    topic_discovery(RUNTIME_AGENT_ID),
+                    rt_card_json,
+                    qos=1,
+                    retain=True,
+                )
 
                 # Recover apps (subscribe + republish cards) and inflight sessions
                 await self.recover()
@@ -868,13 +874,9 @@ class Coordinator:
                             await self.handle_reply(topic, payload)
         finally:
             self._client = None
-            for pub in self._publishers.values():
-                await pub.stop()
 
     async def stop(self) -> None:
         """Stop the coordinator and clean up."""
-        for pub in self._publishers.values():
-            await pub.stop()
         self._db.close()
 
 

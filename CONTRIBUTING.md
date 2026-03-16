@@ -9,7 +9,7 @@ skitter/
   runtime_api.py   Runtime state queries + app creation
   graph_gen.py     LLM-based graph generation + validation
   llm.py           LLM API wrapper (litellm)
-  discovery.py     Build + publish A2A discovery cards
+  discovery.py     Build + parse A2A discovery cards
   db.py            Database interface (SQLite/PostgreSQL)
   fly.py           Fly Machines API client
   deploy_fly.py    Deploy to Fly (build image, set secrets)
@@ -72,7 +72,7 @@ db:
   postgres_dsn: postgresql://...
 
 llm:
-  model: claude-haiku-4-5-20251001  # for graph generation
+  model: anthropic/claude-haiku-4-5  # for graph generation (litellm format)
 ```
 
 ## Environment Variables
@@ -85,7 +85,7 @@ llm:
 | `MQTT_USER` / `MQTT_PASS` | (empty) | Broker auth |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
-| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation ([litellm format](https://docs.litellm.ai/docs/providers)) |
+| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation (`provider/model`, e.g. `anthropic/claude-haiku-4-5` — see [litellm providers](https://docs.litellm.ai/docs/providers)) |
 | `ANTHROPIC_API_KEY` | (empty) | Anthropic API key (for Claude models) |
 | `OPENAI_API_KEY` | (empty) | OpenAI API key (for OpenAI models) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | Claude auth for agent-runners |
@@ -116,7 +116,7 @@ uv run python -m pytest tests/test_unit.py -q
 docker compose up -d
 docker build -f Dockerfile.agent -t skitter-agent:latest .
 export ANTHROPIC_API_KEY='your-key'
-export SKITTER_LLM_MODEL=claude-haiku-4-5-20251001
+export SKITTER_LLM_MODEL=anthropic/claude-haiku-4-5
 
 # Claude
 export CLAUDE_CODE_OAUTH_TOKEN='your-token'
@@ -126,7 +126,7 @@ uv run python -m pytest tests/test_live.py -v -s --runtime claude
 uv run python -m pytest tests/test_live.py -v -s --runtime codex
 ```
 
-Live tests run agent-runners in Docker containers — they never touch local agent files.
+Live tests run both agent-runners and the coordinator in Docker containers — they never touch local agent files or config. Credentials are loaded from `.env.test`.
 
 ## Lint and Format
 

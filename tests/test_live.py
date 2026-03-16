@@ -1,16 +1,14 @@
-"""Live e2e tests — agent-runner (Docker) + coordinator + composed apps.
+"""Live e2e tests — agent-runners + coordinator in Docker + composed apps.
 
-Agent runners run in Docker containers for full isolation. The coordinator
-runs as a local subprocess.
+Both agent-runners and the coordinator run in Docker containers for full
+isolation.  Credentials are loaded from .env.test at the project root.
 
 Requires:
   - Docker with the skitter network (docker compose up -d)
   - MQTT broker on the skitter network
-  - Claude: CLAUDE_CODE_OAUTH_TOKEN env var
-  - Codex: ~/.codex/auth.json
+  - .env.test with CLAUDE_CODE_OAUTH_TOKEN and/or OPENAI_API_KEY
 
 Usage:
-  unset CLAUDECODE
   uv run pytest tests/test_live.py -v -s                    # auto-detect runtime
   uv run pytest tests/test_live.py -v -s --runtime claude   # claude only
   uv run pytest tests/test_live.py -v -s --runtime codex    # codex only
@@ -36,7 +34,6 @@ from .conftest import (
     start_agent_runner,
     start_coordinator,
     stop_container,
-    stop_process,
     wait_for_discovery,
     write_agent_file,
 )
@@ -48,8 +45,8 @@ MODELS = {
 
 # Default LLM model for graph generation, per runtime
 LLM_MODELS = {
-    "claude": "claude-haiku-4-6-20260514",
-    "codex": "gpt-5-mini",
+    "claude": "anthropic/claude-haiku-4-5",
+    "codex": "openai/gpt-5-mini",
 }
 
 needs_docker = pytest.mark.skipif(not docker_available(), reason="Docker not available")
@@ -71,17 +68,19 @@ def _pick_runtime(config) -> str:
 
 @pytest.fixture(scope="module")
 def runtime(request):
-    rt = _pick_runtime(request.config)
-    # Set LLM model for coordinator graph generation (inherits env)
-    os.environ.setdefault("SKITTER_LLM_MODEL", LLM_MODELS.get(rt, "claude-haiku-4-6-20260514"))
-    return rt
+    return _pick_runtime(request.config)
 
 
 @pytest.fixture(scope="module")
-def coordinator():
-    proc = start_coordinator()
-    yield proc
-    stop_process(proc)
+def coordinator(runtime):
+    """Start coordinator in Docker with the right LLM model."""
+    container_id = start_coordinator(
+        env_vars={
+            "SKITTER_LLM_MODEL": LLM_MODELS.get(runtime, "anthropic/claude-haiku-4-5")
+        },
+    )
+    yield container_id
+    stop_container(container_id)
 
 
 @pytest.fixture(scope="module")

@@ -604,7 +604,7 @@ class TestDependencyResolution:
         ctx = _build_context(state, task)
         assert "result A" in ctx
         assert "result B" in ctx
-        assert "Result from 'a'" in ctx
+        assert "task 'a'" in ctx
 
 
 # --- Discovery registry ---
@@ -1791,10 +1791,9 @@ class TestRuntimeApiIntegration:
         assert len(app_request_topics) == 1
         assert "request/" in app_request_topics[0]
 
-        # Should have a CardPublisher for the new app
-        app_ids = [k for k in sup._publishers if k != "skitter"]
-        assert len(app_ids) == 1
-
-        # Clean up publisher to avoid event loop warnings
-        for pub in sup._publishers.values():
-            await pub.stop()
+        # Should have published the discovery card (retained)
+        publish_calls = mock_client.publish.call_args_list
+        discovery_publishes = [
+            c for c in publish_calls if "/discovery/" in str(c.args[0])
+        ]
+        assert len(discovery_publishes) >= 1

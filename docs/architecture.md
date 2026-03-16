@@ -6,7 +6,7 @@
 
 2. **Coordinator is a pure A2A orchestrator.** It publishes A2A requests and collects A2A replies. It doesn't know how agents are implemented, doesn't spawn processes, and doesn't import agent-runner code. Running a local Claude/Codex agent is an operational concern.
 
-3. **Card ownership follows service ownership.** Individual agents own their cards (agent-runner publishes, its connection = liveness). Composed apps are owned by the coordinator (it services requests, its connection = liveness).
+3. **Card ownership follows service ownership.** Individual agents publish their own retained discovery cards via their main MQTT connection. Composed app cards are published by the coordinator. Liveness is tracked separately via LWT.
 
 4. **DB-backed sessions.** Sessions and task state are persisted to SQLite (local) or PostgreSQL (production). On restart, the coordinator rehydrates inflight sessions and resubscribes to reply topics.
 
@@ -140,7 +140,7 @@ The coordinator (`skitter/coordinator.py`) is a long-lived process that:
 
 1. Publishes its own discovery card (`skitter`) for runtime API access
 2. Subscribes to discovery (agent registry), runtime API requests, and per-app request topics
-3. On startup: recovers app subscriptions + card publishers, rehydrates inflight sessions from DB
+3. On startup: recovers app subscriptions + republishes discovery cards, rehydrates inflight sessions from DB
 4. On app request: creates a DB session with task graph, dispatches ready tasks, resolves dependencies as replies arrive
 5. On reply: completes/fails tasks, propagates failures, dispatches newly ready tasks, finalizes sessions
 6. On runtime query: handles `list apps`, `get session`, `cancel session`, `create app`, etc.
@@ -159,9 +159,9 @@ In-memory `SessionState` tracks pending/inflight/completed/failed tasks. DB is t
 
 The agent-runner (`skitter/agent_runner.py`) is a standalone process:
 
-1. Reads agent definition from `~/.skitter/agents/{id}.yaml`
-2. Connects to MQTT, publishes discovery card (retained)
-3. Subscribes to its request topic
+1. Reads agent definition from native CLI file (`.md` or `.toml`)
+2. Connects to MQTT, subscribes to its request topic
+3. Publishes retained discovery card
 4. On request: runs the CLI tool as a subprocess, streams events back to caller
 5. Handles cancellation via `/cancel` topic
 
@@ -204,7 +204,7 @@ Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
 **Coordinator crash:** On restart, recovers from DB — resubscribes to app request topics, republishes discovery cards, rehydrates inflight sessions, dispatches ready tasks.
 
-**Agent crash:** The broker clears the agent's discovery card (LWT). Inflight tasks dispatched to the agent will time out and fail. The coordinator propagates the failure to dependent tasks.
+**Agent crash:** The agent's LWT publishes a `dead` event. The retained discovery card stays on the broker but the agent is no longer listening. Inflight tasks dispatched to the agent will time out and fail. The coordinator propagates the failure to dependent tasks.
 
 **Broker restart:** Discovery cards are lost. Agents republish cards on reconnect. DB-backed session state survives broker restarts.
 
@@ -218,7 +218,7 @@ db:
   postgres_dsn: postgresql://...
 
 llm:
-  model: claude-haiku-4-5-20251001  # for graph generation
+  model: anthropic/claude-haiku-4-5  # for graph generation (litellm format)
 ```
 
 Environment variables: `MQTT_HOST`, `MQTT_PORT`, `MQTT_TLS`, `MQTT_USER`, `MQTT_PASS`, `SKITTER_A2A_ORG`, `SKITTER_A2A_UNIT`, `SKITTER_LLM_MODEL`.

@@ -119,7 +119,7 @@ Tasks with no `needs` are dispatched immediately (parallel fan-out). Tasks with 
 
 ```mermaid
 sequenceDiagram
-    participant C as Client (NexHub)
+    participant C as Client
     participant Co as Coordinator
     participant LLM as LLM API
 
@@ -180,7 +180,7 @@ The `skitter` agent handles structured queries:
 | `cancel session {id}` | Cancel a running session |
 | `create app {json}` | Create composed app from agent IDs + instructions |
 
-Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` for external consumers (e.g., NexHub dashboard).
+Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` for external consumers (e.g., dashboards).
 
 ## Database
 

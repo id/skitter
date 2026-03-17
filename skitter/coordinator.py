@@ -25,6 +25,7 @@ from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
     CANCEL_KEY,
     CREATE_APP_KEY,
+    DELETE_APP_KEY,
     handle_query as runtime_query,
     runtime_card,
 )
@@ -181,6 +182,8 @@ class Coordinator:
         self._registry = DiscoveryRegistry()
         self._client: aiomqtt.Client | None = None
         self._reply_subscriptions: set[str] = set()
+        self._app_clients: dict[str, aiomqtt.Client] = {}  # app_id -> dedicated client
+        self._app_tasks: dict[str, asyncio.Task] = {}  # app_id -> forwarding task
 
     @property
     def registry(self) -> DiscoveryRegistry:
@@ -338,7 +341,7 @@ class Coordinator:
         a2a_req = A2ARequest(
             text=prompt,
             request_id=request_id,
-            sender="coordinator",
+            sender="skitter",
         )
         request_topic = topic_request(target.agent)
         props = make_properties(
@@ -558,6 +561,8 @@ class Coordinator:
                 await self._cancel_session_cleanup(result[CANCEL_KEY])
             if CREATE_APP_KEY in result:
                 await self._register_new_app(result[CREATE_APP_KEY])
+            if DELETE_APP_KEY in result:
+                await self._delete_app_cleanup(result[DELETE_APP_KEY])
         except Exception:
             log.exception("Runtime query post-action failed")
 
@@ -631,17 +636,94 @@ class Coordinator:
         card = app_info.get("card")
         if not app_id or not card:
             return
+        await self._start_app_connection(app_id, json.dumps(card))
 
-        # Subscribe to the new app's request topic and publish its card
-        if self._client:
-            await self._client.subscribe(topic_request(app_id), qos=1)
-            await self._client.publish(
-                topic_discovery(app_id),
-                json.dumps(card),
-                qos=1,
-                retain=True,
-            )
-            log.info("Registered new app %s (subscribed + card published)", app_id)
+    async def _delete_app_cleanup(self, app_id: str) -> None:
+        """Clear retained discovery card and tear down the app's MQTT connection."""
+        client = self._app_clients.get(app_id)
+        if client:
+            try:
+                await client.publish(topic_discovery(app_id), b"", qos=1, retain=True)
+            except Exception:
+                log.warning("Failed to clear discovery card for %s", app_id)
+        await self._stop_app_connection(app_id)
+        self._registry.remove(app_id)
+
+    async def _start_app_connection(self, app_id: str, card_json: str) -> None:
+        """Open a dedicated MQTT connection for an app.
+
+        Publishes the retained discovery card and subscribes to the app's
+        request topic. A background task forwards incoming requests to
+        handle_request. The client ID matches the card's agent_id so the
+        broker accepts the card publish per EIP-0033.
+        """
+        # Tear down any existing connection for this app (idempotent on recovery)
+        await self._stop_app_connection(app_id)
+
+        client = aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/{app_id}",
+            ),
+        )
+        await client.__aenter__()
+        self._app_clients[app_id] = client
+
+        await client.publish(topic_discovery(app_id), card_json, qos=1, retain=True)
+        await client.subscribe(topic_request(app_id), qos=1)
+
+        task = asyncio.create_task(self._app_message_loop(app_id, client))
+        self._app_tasks[app_id] = task
+        log.info("App %s: dedicated connection started", app_id)
+
+    async def _app_message_loop(self, app_id: str, client: aiomqtt.Client) -> None:
+        """Forward requests arriving on an app's dedicated connection."""
+        try:
+            async for mqtt_msg in client.messages:
+                topic = str(mqtt_msg.topic)
+                payload_bytes = mqtt_msg.payload
+                payload = payload_bytes.decode() if payload_bytes else ""
+                if not payload or "/request/" not in topic or "/cancel" in topic:
+                    continue
+
+                caller_reply = get_response_topic(mqtt_msg) or ""
+                caller_corr = get_correlation_data(mqtt_msg) or ""
+
+                if not caller_reply or not caller_corr:
+                    log.warning(
+                        "App %s: request missing Response Topic or Correlation Data",
+                        app_id,
+                    )
+                    if caller_reply:
+                        await self._send_error(
+                            caller_reply,
+                            caller_corr,
+                            "Request must include MQTT v5 Response Topic "
+                            "and Correlation Data",
+                            code=A2A_TRANSPORT_PROTOCOL_ERROR,
+                        )
+                    continue
+
+                await self.handle_request(payload, caller_reply, caller_corr, app_id)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("App %s: message loop crashed", app_id)
+
+    async def _stop_app_connection(self, app_id: str) -> None:
+        """Tear down an app's dedicated MQTT connection."""
+        task = self._app_tasks.pop(app_id, None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        client = self._app_clients.pop(app_id, None)
+        if client:
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception:
+                pass
 
     # --- Inbound request handling ---
 
@@ -732,7 +814,7 @@ class Coordinator:
     def handle_discovery(self, topic: str, payload: bytes) -> None:
         """Process a discovery card update from the broker."""
         agent_id = topic.split("/")[-1]
-        if agent_id in ("coordinator", RUNTIME_AGENT_ID):
+        if agent_id == RUNTIME_AGENT_ID:
             return
         if not payload:
             self._registry.remove(agent_id)
@@ -747,18 +829,10 @@ class Coordinator:
 
     async def recover(self) -> None:
         """Recover state from DB on startup."""
-        # 1. Subscribe to composed app request topics + republish cards
+        # 1. Start dedicated connections for composed apps (card + request topic)
         for app in self._db.list_apps():
             if app.card_json:
-                if self._client:
-                    await self._client.subscribe(topic_request(app.id), qos=1)
-                    await self._client.publish(
-                        topic_discovery(app.id),
-                        app.card_json,
-                        qos=1,
-                        retain=True,
-                    )
-                log.info("Recovered app %s (subscribed + card published)", app.id)
+                await self._start_app_connection(app.id, app.card_json)
 
         # 2. Rehydrate inflight sessions
         for db_session in self._db.list_sessions():
@@ -847,7 +921,7 @@ class Coordinator:
         """Fail fast if another coordinator is already running on this broker."""
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator-lock-check",
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}-lock-check",
             ),
         ) as client:
             await client.subscribe(topic_coordinator_lock(), qos=1)
@@ -877,7 +951,7 @@ class Coordinator:
         try:
             async with aiomqtt.Client(
                 **mqtt_client_kwargs(
-                    identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator",
+                    identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}",
                     will=lwt,
                 ),
             ) as client:
@@ -914,8 +988,8 @@ class Coordinator:
                         self.handle_discovery(topic, payload_bytes or b"")
 
                     elif "/request/" in topic and "/cancel" not in topic:
-                        agent_id = _parse_agent_id_from_topic(topic)
-
+                        # Main connection only handles runtime API requests;
+                        # app requests arrive on dedicated per-app connections.
                         caller_reply = get_response_topic(mqtt_msg) or ""
                         caller_corr = get_correlation_data(mqtt_msg) or ""
 
@@ -933,25 +1007,23 @@ class Coordinator:
                                 )
                             continue
 
-                        if agent_id == RUNTIME_AGENT_ID:
-                            await self._handle_runtime_query(
-                                payload, caller_reply, caller_corr
-                            )
-                            continue
-
-                        await self.handle_request(
-                            payload, caller_reply, caller_corr, agent_id
+                        await self._handle_runtime_query(
+                            payload, caller_reply, caller_corr
                         )
 
                     elif "/reply/" in topic and "/skitter/" in topic:
                         if payload:
                             await self.handle_reply(topic, payload)
         finally:
+            # Tear down per-app connections
+            for app_id in list(self._app_tasks):
+                await self._stop_app_connection(app_id)
+
             # Clear coordinator lock on clean shutdown
             try:
                 async with aiomqtt.Client(
                     **mqtt_client_kwargs(
-                        identifier=f"{A2A_ORG}/{A2A_UNIT}/coordinator-cleanup",
+                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}-cleanup",
                     ),
                 ) as client:
                     await client.publish(
@@ -963,6 +1035,8 @@ class Coordinator:
 
     async def stop(self) -> None:
         """Stop the coordinator and clean up."""
+        for app_id in list(self._app_tasks):
+            await self._stop_app_connection(app_id)
         self._db.close()
 
 

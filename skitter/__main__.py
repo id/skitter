@@ -83,7 +83,7 @@ def dispatch() -> None:
             print("Usage: skitter run '<prompt>'", file=sys.stderr)
             sys.exit(1)
         _run_prompt("skitter", prompt)
-    elif subcmd in ("coordinator", "supervisor"):
+    elif subcmd in ("skitter", "supervisor"):
         from skitter.coordinator import main
 
         main()

@@ -345,6 +345,30 @@ class TestAppCreation:
         assert card["name"] == "Test App"
         assert len(card["metadata"]["tasks"]) == 1
 
+    def test_provided_app_id(self):
+        from skitter.runtime_api import create_app
+
+        app_id = "predefined_id"
+        app, version, card_json = create_app(
+            self.db,
+            app_id=app_id,
+            name="Test App",
+            description="A test",
+            graph={
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "agent": "researcher",
+                        "description": "do stuff",
+                        "needs": [],
+                        "next": "output",
+                    }
+                ]
+            },
+        )
+        assert app is not None
+        assert app.id == app_id
+
     def test_version_increment(self):
         from skitter.runtime_api import create_app
 

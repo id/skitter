@@ -264,6 +264,8 @@ async def _handle_create_app(
     if not registry:
         return json.dumps({"error": "No discovery registry available"})
 
+    app_id = spec.get("id", None)
+
     # Look up agent cards from registry.
     # NOTE: registry presence doesn't guarantee the agent is online —
     # discovery cards are retained on the broker after disconnect.
@@ -292,6 +294,7 @@ async def _handle_create_app(
     description = spec.get("description", "")
     app, version, card_json = create_app(
         db,
+        app_id=app_id,
         name=name,
         description=description,
         source_cards=cards,

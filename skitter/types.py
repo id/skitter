@@ -1,12 +1,28 @@
 from dataclasses import dataclass, field
 import json
 import time
+import uuid
 
 
 # --- A2A error codes (§ Mandatory Binding-Specific Error Mapping) ---
 
+A2A_REQUEST_EXPIRED = -32003
 A2A_RESPONDER_UNAVAILABLE = -32004
 A2A_TRANSPORT_PROTOCOL_ERROR = -32005
+
+_A2A_ERROR_MAP = {
+    -32003: "request_expired",
+    -32004: "responder_unavailable",
+    -32005: "transport_protocol_error",
+}
+
+
+def make_a2a_error(code: int, message: str) -> dict:
+    """Build an A2A error dict with data.a2a_error for transport error codes."""
+    error: dict = {"code": code, "message": message}
+    if code in _A2A_ERROR_MAP:
+        error["data"] = {"a2a_error": _A2A_ERROR_MAP[code]}
+    return error
 
 
 @dataclass
@@ -38,7 +54,7 @@ def make_status_event(
     """Build a TaskStatusUpdateEvent JSON-RPC response (A2A streaming reply).
 
     Used for both streaming updates (state="working") and terminal results
-    (state="completed"/"failed"/"cancelled").
+    (state="completed"/"failed"/"canceled").
 
     task_id is the A2A Task.id (= session_id). task_name is the internal
     workflow task name, carried in metadata for dashboard routing.
@@ -82,7 +98,7 @@ def classify_reply(data: dict) -> tuple[str, str]:
     REPLY_ERROR, or "" for unrecognized messages.
 
     REPLY_TERMINAL is returned for completed tasks (content = artifact text).
-    REPLY_FAILED is returned for failed/cancelled tasks (content = error message).
+    REPLY_FAILED is returned for failed/canceled/rejected tasks (content = error message).
     """
     if "error" in data:
         err = data["error"]
@@ -114,7 +130,7 @@ def classify_reply(data: dict) -> tuple[str, str]:
     if state == "completed":
         return REPLY_TERMINAL, _artifact_text()
 
-    if state in ("failed", "cancelled"):
+    if state in ("failed", "canceled", "rejected"):
         message = status.get("message", "") or _artifact_text()
         return REPLY_FAILED, message or f"Task {state}"
 
@@ -126,12 +142,17 @@ def classify_reply(data: dict) -> tuple[str, str]:
 
 @dataclass
 class A2ARequest:
-    """JSON-RPC 2.0 request for A2A tasks/send."""
+    """JSON-RPC 2.0 request for A2A message/send."""
 
     text: str
     request_id: str
+    task_id: str | None = None
     sender: str = ""
     variables: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.task_id is None:
+            self.task_id = str(uuid.uuid4())
 
     def to_json(self) -> str:
         metadata: dict = {}
@@ -139,19 +160,19 @@ class A2ARequest:
             metadata["sender"] = self.sender
         if self.variables:
             metadata["variables"] = self.variables
-        params: dict = {
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": self.text}],
-            },
+        message: dict = {
+            "role": "user",
+            "parts": [{"type": "text", "text": self.text}],
+            "taskId": self.task_id,
         }
+        params: dict = {"message": message}
         if metadata:
             params["metadata"] = metadata
         return json.dumps(
             {
                 "jsonrpc": "2.0",
                 "id": self.request_id,
-                "method": "tasks/send",
+                "method": "message/send",
                 "params": params,
             }
         )
@@ -164,9 +185,11 @@ class A2ARequest:
         metadata = params.get("metadata", {})
         parts = message.get("parts", [])
         text = parts[0].get("text", "") if parts else ""
+        task_id = message.get("taskId", "")
         return cls(
             text=text,
             request_id=d.get("id", f"req-{time.time_ns()}"),
+            task_id=task_id,
             sender=metadata.get("sender", ""),
             variables=metadata.get("variables", {}),
         )

@@ -171,7 +171,7 @@ class TestAgentRunner:
         aid = f"test-disco-{uuid.uuid4().hex[:4]}"
         await start_agent(aid, description="Discovery test agent")
         card = await wait_for_discovery(aid)
-        assert card["protocolVersion"] == "0.2.5"
+        assert card["protocolVersion"] == "1.0.0"
         assert card["capabilities"]["streaming"] is True
         assert card["skills"][0]["id"] == aid
 
@@ -241,6 +241,180 @@ class TestAgentRunner:
         assert terminal
         assert "Final answer" in terminal[0][1]
 
+    async def test_reply_echoes_requester_task_id(self, start_agent):
+        """All reply events must carry the requester's taskId (spec gap 1)."""
+        aid = f"test-taskid-{uuid.uuid4().hex[:4]}"
+
+        async def handler(agent, prompt, publish_stream, env):
+            await publish_stream("text", "working")
+            return "done"
+
+        await start_agent(aid, handler=handler)
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        task_id = str(uuid.uuid4())
+        req = A2ARequest(
+            text="Echo test",
+            request_id=f"e-{uuid.uuid4().hex[:8]}",
+            task_id=task_id,
+            sender="test",
+        )
+
+        task_ids_in_replies: list[str] = []
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-echo-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(aid), req.to_json(), qos=1, properties=props
+            )
+
+            async with asyncio.timeout(10.0):
+                async for msg in client.messages:
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+                    data = json.loads(payload)
+                    result = data.get("result", {})
+                    if result.get("type") == "TaskStatusUpdateEvent":
+                        task_ids_in_replies.append(result.get("taskId", ""))
+                    kind, _ = classify_reply(data)
+                    if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                        break
+
+        assert len(task_ids_in_replies) >= 2  # at least submitted + completed
+        assert all(tid == task_id for tid in task_ids_in_replies)
+
+    async def test_rejects_missing_task_id(self, start_agent):
+        """Agent runner must reject requests with no Task.id (spec gap 6)."""
+        aid = f"test-notaskid-{uuid.uuid4().hex[:4]}"
+        await start_agent(aid)
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+
+        # Hand-craft a payload with empty taskId
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "rpc-1",
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "hello"}],
+                        "taskId": "",
+                    }
+                },
+            }
+        )
+
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-notaskid-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(response_topic=reply_t, correlation_data="corr-1")
+            await client.publish(topic_request(aid), payload, qos=1, properties=props)
+
+            async with asyncio.timeout(5.0):
+                async for msg in client.messages:
+                    raw = msg.payload.decode() if msg.payload else ""
+                    if not raw:
+                        continue
+                    data = json.loads(raw)
+                    assert "error" in data
+                    assert data["error"]["code"] == -32005
+                    assert (
+                        data["error"]["data"]["a2a_error"] == "transport_protocol_error"
+                    )
+                    return
+
+            pytest.fail("No error response received for missing Task.id")
+
+    async def test_deduplication_by_task_id(self, start_agent):
+        """Duplicate Task.id must be silently ignored (spec gap 7)."""
+        aid = f"test-dedup-{uuid.uuid4().hex[:4]}"
+        call_count = 0
+
+        async def counting_handler(agent, prompt, publish_stream, env):
+            nonlocal call_count
+            call_count += 1
+            return f"call-{call_count}"
+
+        await start_agent(aid, handler=counting_handler)
+
+        task_id = str(uuid.uuid4())
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+
+        # First request
+        req1 = A2ARequest(
+            text="first",
+            request_id=f"r1-{uuid.uuid4().hex[:8]}",
+            task_id=task_id,
+            sender="test",
+        )
+
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-dedup-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req1.request_id
+            )
+            await client.publish(
+                topic_request(aid), req1.to_json(), qos=1, properties=props
+            )
+
+            # Wait for completion
+            async with asyncio.timeout(10.0):
+                async for msg in client.messages:
+                    raw = msg.payload.decode() if msg.payload else ""
+                    if not raw:
+                        continue
+                    data = json.loads(raw)
+                    kind, _ = classify_reply(data)
+                    if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                        break
+
+            assert call_count == 1
+
+            # Send duplicate with same task_id but different request_id
+            req2 = A2ARequest(
+                text="duplicate",
+                request_id=f"r2-{uuid.uuid4().hex[:8]}",
+                task_id=task_id,
+                sender="test",
+            )
+            props2 = make_properties(
+                response_topic=reply_t, correlation_data=req2.request_id
+            )
+            await client.publish(
+                topic_request(aid), req2.to_json(), qos=1, properties=props2
+            )
+
+            # Give it a moment; no reply should come
+            try:
+                async with asyncio.timeout(2.0):
+                    async for msg in client.messages:
+                        raw = msg.payload.decode() if msg.payload else ""
+                        if raw:
+                            pytest.fail("Got unexpected reply for duplicate Task.id")
+            except TimeoutError:
+                pass  # expected: no reply
+
+        assert call_count == 1  # handler was NOT called again
+
 
 # ---------------------------------------------------------------------------
 # Composed app tests (coordinator + agent runners)
@@ -295,6 +469,76 @@ class TestComposedApp:
         result = await send_and_collect(topic_request(app_id), req, timeout=15.0)
         assert result
         assert "output-from-A" in result
+
+    async def test_pipeline_replies_carry_requester_task_id(
+        self, coordinator, start_agent, mock_graph
+    ):
+        """All coordinator replies must carry the requester's Task.id (spec gap 1)."""
+        aid = f"agent-tid-{uuid.uuid4().hex[:4]}"
+
+        async def handler(agent, prompt, publish_stream, env):
+            await publish_stream("text", "working")
+            return "result"
+
+        await start_agent(aid, description="TaskId test", handler=handler)
+
+        mock_graph(
+            {
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": aid,
+                        "description": "Do it",
+                        "needs": [],
+                        "next": "output",
+                    },
+                ]
+            }
+        )
+
+        app_id = await create_test_app([aid], f"Use {aid}")
+        await wait_for_discovery(app_id)
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        task_id = str(uuid.uuid4())
+        req = A2ARequest(
+            text="Go.",
+            request_id=f"app-{uuid.uuid4().hex[:8]}",
+            task_id=task_id,
+            sender="test",
+        )
+
+        task_ids_in_replies: list[str] = []
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-tid-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(app_id), req.to_json(), qos=1, properties=props
+            )
+
+            async with asyncio.timeout(15.0):
+                async for msg in client.messages:
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+                    data = json.loads(payload)
+                    result = data.get("result", {})
+                    if result.get("type") == "TaskStatusUpdateEvent":
+                        task_ids_in_replies.append(result.get("taskId", ""))
+                    kind, _ = classify_reply(data)
+                    if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                        break
+
+        # Coordinator session_id = req.task_id, so all replies must carry it
+        assert len(task_ids_in_replies) >= 2  # at least submitted + completed
+        assert all(tid == task_id for tid in task_ids_in_replies)
 
     async def test_fan_out_fan_in(self, coordinator, start_agent, mock_graph):
         aid_a = f"fork-a-{uuid.uuid4().hex[:4]}"

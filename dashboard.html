@@ -452,7 +452,7 @@
               state.activityLog.push(entry);
               if (state.activityLog.length > 500) state.activityLog.splice(0, state.activityLog.length - 500);
               scheduleStreamRender();
-            } else if (st === 'completed' || st === 'failed' || st === 'cancelled') {
+            } else if (st === 'completed' || st === 'failed' || st === 'canceled' || st === 'rejected') {
               if (sid && taskName) {
                 state.taskStatus.set(`${sid}/${taskName}`, 'done');
                 if (artifact) state.taskResults.set(`${sid}/${taskName}`, artifact);

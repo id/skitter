@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("skitter.runtime_api")
 
 AGENT_ID = "skitter"
-CANCEL_KEY = "cancelled"
+CANCEL_KEY = "canceled"
 CREATE_APP_KEY = "created_app"
 DELETE_APP_KEY = "deleted_app"
 
@@ -164,7 +164,7 @@ def _cancel_session(db: DB, session_id: str) -> str:
         return json.dumps({"error": f"Session not found: {session_id}"})
     if session.state != "running":
         return json.dumps({"error": f"Session not running (state={session.state})"})
-    db.update_session_state(session_id, "cancelled")
+    db.update_session_state(session_id, "canceled")
     return json.dumps({CANCEL_KEY: session_id})
 
 

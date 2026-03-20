@@ -35,6 +35,7 @@ from skitter.types import (
     A2ARequest,
     A2AResponse,
     A2A_TRANSPORT_PROTOCOL_ERROR,
+    make_a2a_error,
     make_status_event,
 )
 
@@ -54,6 +55,8 @@ log = logging.getLogger("skitter.agent_runner")
 
 # Max concurrent requests per agent runner
 _MAX_CONCURRENT = int(os.environ.get("SKITTER_AGENT_MAX_CONCURRENT", "4"))
+# TTL for completed task deduplication (seconds)
+_DEDUP_TTL = 300.0
 
 
 def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
@@ -187,12 +190,12 @@ async def handle_request(
     semaphore: asyncio.Semaphore,
 ) -> None:
     """Handle a single A2A request: run CLI, stream results, send reply."""
-    log.info("Request %s: %.80s", req.request_id, req.text)
+    log.info("Request %s (task %s): %.80s", req.request_id, req.task_id, req.text)
 
     # Send submitted ack
     ack = make_status_event(
         request_id=correlation,
-        task_id=req.request_id,
+        task_id=req.task_id,
         state="submitted",
     )
     props = make_properties(correlation_data=correlation)
@@ -202,34 +205,34 @@ async def handle_request(
     async def publish_stream(item_type: str, content: str) -> None:
         event = make_status_event(
             request_id=correlation,
-            task_id=req.request_id,
+            task_id=req.task_id,
             state="working",
             message=content,
             message_type=item_type,
         )
-        await client.publish(reply_topic, event, qos=0, properties=props)
+        await client.publish(reply_topic, event, qos=1, properties=props)
 
     try:
         async with semaphore:
             result = await _run_cli(agent, req.text, publish_stream, env)
     except asyncio.CancelledError:
-        cancelled = make_status_event(
+        canceled = make_status_event(
             request_id=correlation,
-            task_id=req.request_id,
-            state="cancelled",
-            message="Task cancelled",
+            task_id=req.task_id,
+            state="canceled",
+            message="Task canceled",
         )
         try:
-            await client.publish(reply_topic, cancelled, qos=1, properties=props)
+            await client.publish(reply_topic, canceled, qos=1, properties=props)
         except Exception:
             pass
-        log.info("Request %s cancelled", req.request_id)
+        log.info("Request %s canceled", req.request_id)
         return
     except Exception:
         log.exception("Request %s failed", req.request_id)
         failed = make_status_event(
             request_id=correlation,
-            task_id=req.request_id,
+            task_id=req.task_id,
             state="failed",
             message="Internal error",
         )
@@ -239,7 +242,7 @@ async def handle_request(
     # Send terminal result
     terminal = make_status_event(
         request_id=correlation,
-        task_id=req.request_id,
+        task_id=req.task_id,
         state="completed",
         artifact_text=result,
     )
@@ -346,6 +349,7 @@ async def run_with_def(agent: AgentDef) -> None:
     request_topic = topic_request(agent.id)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
     task_registry: dict[str, asyncio.Task] = {}  # task_id → asyncio.Task
+    completed_tasks: dict[str, float] = {}  # task_id → completion timestamp
 
     try:
         async with aiomqtt.Client(
@@ -380,10 +384,10 @@ async def run_with_def(agent: AgentDef) -> None:
                     cancel_id = data.get("params", {}).get("id", "")
                     if cancel_id and cancel_id in task_registry:
                         task_registry[cancel_id].cancel()
-                        log.info("Cancelling task %s", cancel_id)
+                        log.info("Canceling task %s", cancel_id)
                     continue
 
-                # tasks/send (or unspecified method): validate MQTT v5 properties
+                # message/send (or unspecified method): validate MQTT v5 properties
                 reply_topic = get_response_topic(mqtt_msg) or ""
                 correlation = get_correlation_data(mqtt_msg) or ""
                 if not reply_topic or not correlation:
@@ -391,15 +395,16 @@ async def run_with_def(agent: AgentDef) -> None:
                     if reply_topic:
                         resp = A2AResponse(
                             id=correlation,
-                            error={
-                                "code": A2A_TRANSPORT_PROTOCOL_ERROR,
-                                "message": "Missing MQTT v5 Response Topic or Correlation Data",
-                            },
+                            error=make_a2a_error(
+                                A2A_TRANSPORT_PROTOCOL_ERROR,
+                                "Missing MQTT v5 Response Topic or Correlation Data",
+                            ),
                         )
-                        await client.publish(reply_topic, resp.to_json(), qos=1)
+                        err_props = make_properties(correlation_data=correlation)
+                        await client.publish(
+                            reply_topic, resp.to_json(), qos=1, properties=err_props
+                        )
                     continue
-
-                task_id = data.get("id", "")
 
                 try:
                     req = A2ARequest.from_json(payload)
@@ -407,8 +412,35 @@ async def run_with_def(agent: AgentDef) -> None:
                     log.error("Bad request JSON: %s", e)
                     continue
 
-                def _on_done(t: asyncio.Task, tid: str = task_id) -> None:
+                # Validate Task.id presence
+                if not req.task_id:
+                    log.warning("Request missing Task.id")
+                    resp = A2AResponse(
+                        id=correlation,
+                        error=make_a2a_error(
+                            A2A_TRANSPORT_PROTOCOL_ERROR,
+                            "Missing required Task.id (message.taskId)",
+                        ),
+                    )
+                    props = make_properties(correlation_data=correlation)
+                    await client.publish(
+                        reply_topic, resp.to_json(), qos=1, properties=props
+                    )
+                    continue
+
+                # Task.id deduplication: evict stale entries, skip known tasks
+                now = asyncio.get_running_loop().time()
+                stale = [k for k, t in completed_tasks.items() if now - t > _DEDUP_TTL]
+                for k in stale:
+                    del completed_tasks[k]
+
+                if req.task_id in completed_tasks or req.task_id in task_registry:
+                    log.info("Duplicate Task.id %s, ignoring", req.task_id)
+                    continue
+
+                def _on_done(t: asyncio.Task, tid: str = req.task_id) -> None:
                     task_registry.pop(tid, None)
+                    completed_tasks[tid] = asyncio.get_running_loop().time()
                     if not t.cancelled() and t.exception():
                         log.error("Request handler failed: %s", t.exception())
 
@@ -417,8 +449,7 @@ async def run_with_def(agent: AgentDef) -> None:
                         client, agent, req, reply_topic, correlation, env, semaphore
                     )
                 )
-                if task_id:
-                    task_registry[task_id] = task
+                task_registry[req.task_id] = task
                 task.add_done_callback(_on_done)
     finally:
         # Cancel inflight tasks on shutdown

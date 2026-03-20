@@ -64,6 +64,7 @@ class DBTask:
     next: str = ""
     target_json: str = ""
     request_id: str = ""
+    a2a_task_id: str = ""
     reply_topic: str = ""
     dispatched_at: str = ""
     state: str = "pending"
@@ -145,6 +146,7 @@ _MIGRATIONS: list[list[str]] = [
             next          TEXT DEFAULT '',
             target_json   TEXT DEFAULT '',
             request_id    TEXT DEFAULT '',
+            a2a_task_id   TEXT DEFAULT '',
             reply_topic   TEXT DEFAULT '',
             dispatched_at TEXT DEFAULT '',
             state         TEXT DEFAULT 'pending',
@@ -162,6 +164,7 @@ _TASK_UPDATABLE_FIELDS = frozenset(
         "result",
         "error",
         "request_id",
+        "a2a_task_id",
         "reply_topic",
         "dispatched_at",
         "started_at",
@@ -222,6 +225,7 @@ def _row_to_task(row) -> DBTask:
         next=row["next"] or "",
         target_json=row["target_json"] or "",
         request_id=row["request_id"] or "",
+        a2a_task_id=row["a2a_task_id"] or "",
         reply_topic=row["reply_topic"] or "",
         dispatched_at=row["dispatched_at"] or "",
         state=row["state"] or "pending",
@@ -383,7 +387,7 @@ class SqliteDB:
         return [_row_to_session(r) for r in rows]
 
     def update_session_state(self, session_id: str, state: str) -> None:
-        if state in ("completed", "failed", "cancelled"):
+        if state in ("completed", "failed", "canceled"):
             self._conn.execute(
                 "UPDATE session SET state = ?, completed_at = ? WHERE id = ?",
                 (state, _now(), session_id),
@@ -596,7 +600,7 @@ class PostgresDB:
         return [_row_to_session(r) for r in rows]
 
     def update_session_state(self, session_id: str, state: str) -> None:
-        if state in ("completed", "failed", "cancelled"):
+        if state in ("completed", "failed", "canceled"):
             self._exec(
                 "UPDATE session SET state = %s, completed_at = %s WHERE id = %s",
                 (state, _now(), session_id),

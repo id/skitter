@@ -27,7 +27,7 @@ def build_card(
         "description": agent.description,
         "version": "0.1.0",
         "url": url,
-        "protocolVersion": "0.2.5",
+        "protocolVersion": "1.0.0",
         "capabilities": capabilities,
         "defaultInputModes": list(agent.input_modes)
         if agent.input_modes

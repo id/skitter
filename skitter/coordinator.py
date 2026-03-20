@@ -50,8 +50,12 @@ from skitter.types import (
     A2A_TRANSPORT_PROTOCOL_ERROR,
     REPLY_ERROR,
     REPLY_FAILED,
+    REPLY_TERMINAL,
+    REPLY_TEXT,
+    REPLY_TOOL,
     TaskTarget,
     classify_reply,
+    make_a2a_error,
     make_status_event,
 )
 
@@ -74,7 +78,8 @@ class SessionTask:
     needs: list[str] = field(default_factory=list)
     next: str = ""
     target: TaskTarget | None = None
-    request_id: str = ""  # set on dispatch; used for tasks/cancel
+    request_id: str = ""  # set on dispatch
+    a2a_task_id: str = ""  # A2A Task.id sent to agent; used for tasks/cancel
 
 
 @dataclass
@@ -237,7 +242,7 @@ class Coordinator:
         variables: dict[str, str] | None = None,
     ) -> SessionState:
         """Create a new session from an orchestration graph."""
-        session_id = uuid.uuid4().hex[:16]
+        session_id = request.task_id
         variables = variables or {}
 
         graph = json.loads(graph_json)
@@ -318,11 +323,16 @@ class Coordinator:
         request_id = uuid.uuid4().hex[:16]
         reply_t = topic_reply("skitter", f"{state.session_id}/{task_id}")
 
+        # Generate the A2A Task.id for the dispatched request
+        task_uuid = str(uuid.uuid4())
+        task.a2a_task_id = task_uuid
+
         # Write-ahead: persist dispatch info before sending
         db_task_id = f"{state.session_id}/{task_id}"
         self._db.update_task(
             db_task_id,
             request_id=request_id,
+            a2a_task_id=task_uuid,
             reply_topic=reply_t,
             dispatched_at=datetime.now(timezone.utc).isoformat(),
             state="running",
@@ -336,11 +346,10 @@ class Coordinator:
         if self._client and reply_t not in self._reply_subscriptions:
             await self._client.subscribe(reply_t, qos=1)
             self._reply_subscriptions.add(reply_t)
-
-        # Build and send A2A request
         a2a_req = A2ARequest(
             text=prompt,
             request_id=request_id,
+            task_id=task_uuid,
             sender="skitter",
         )
         request_topic = topic_request(target.agent)
@@ -384,11 +393,11 @@ class Coordinator:
 
         kind, content = classify_reply(data)
 
-        if kind == "terminal":
+        if kind == REPLY_TERMINAL:
             await self._complete_task(state, task_id, content)
         elif kind in (REPLY_FAILED, REPLY_ERROR):
             await self._fail_task(state, task_id, content)
-        elif kind in ("text", "tool_use"):
+        elif kind in (REPLY_TEXT, REPLY_TOOL):
             # Forward streaming updates to caller
             await self._forward_stream(state, task_id, kind, content)
 
@@ -408,7 +417,7 @@ class Coordinator:
         )
         props = make_properties(correlation_data=state.caller_correlation)
         await self._client.publish(
-            state.caller_reply_topic, event, qos=0, properties=props
+            state.caller_reply_topic, event, qos=1, properties=props
         )
 
     async def _complete_task(
@@ -552,6 +561,15 @@ class Coordinator:
             log.error("Bad runtime query JSON: %s", e)
             return
 
+        if not req.task_id:
+            await self._send_error(
+                reply_topic,
+                correlation,
+                "Missing required Task.id (message.taskId)",
+                code=A2A_TRANSPORT_PROTOCOL_ERROR,
+            )
+            return
+
         result_json = await runtime_query(self._db, req.text, self._registry)
 
         # Post-action hooks (cancel cleanup, app registration)
@@ -570,7 +588,7 @@ class Coordinator:
         if reply_topic and self._client:
             event = make_status_event(
                 request_id=correlation,
-                task_id=req.request_id,
+                task_id=req.task_id,
                 state="completed",
                 artifact_text=result_json,
             )
@@ -578,7 +596,7 @@ class Coordinator:
             await self._client.publish(reply_topic, event, qos=1, properties=props)
 
     async def _cancel_session_cleanup(self, session_id: str) -> None:
-        """Clean up in-memory state after a session is cancelled in the DB.
+        """Clean up in-memory state after a session is canceled in the DB.
 
         Sends A2A tasks/cancel to agents with inflight tasks (best-effort).
         """
@@ -590,13 +608,14 @@ class Coordinator:
         # Send tasks/cancel to agents with inflight tasks
         for tid in list(state.inflight):
             task_def = state.graph.get(tid)
-            if task_def and task_def.request_id and self._client:
+            cancel_id = task_def.a2a_task_id if task_def else ""
+            if cancel_id and self._client:
                 cancel_msg = json.dumps(
                     {
                         "jsonrpc": "2.0",
-                        "id": f"cancel-{task_def.request_id}",
+                        "id": f"cancel-{cancel_id}",
                         "method": "tasks/cancel",
-                        "params": {"id": task_def.request_id},
+                        "params": {"id": cancel_id},
                     }
                 )
                 try:
@@ -616,14 +635,14 @@ class Coordinator:
 
         for tid in state.pending | state.inflight:
             self._db.update_task(
-                f"{session_id}/{tid}", state="cancelled", completed_at=now
+                f"{session_id}/{tid}", state="canceled", completed_at=now
             )
         if state.caller_reply_topic and self._client:
             event = make_status_event(
                 request_id=state.caller_correlation,
                 task_id=session_id,
-                state="cancelled",
-                artifact_text="Session cancelled via runtime API",
+                state="canceled",
+                artifact_text="Session canceled via runtime API",
             )
             props = make_properties(correlation_data=state.caller_correlation)
             await self._client.publish(
@@ -762,6 +781,21 @@ class Coordinator:
             log.error("Bad inbound JSON-RPC: %s", e)
             return
 
+        # Validate Task.id presence
+        if not req.task_id:
+            await self._send_error(
+                caller_reply_topic,
+                caller_correlation,
+                "Missing required Task.id (message.taskId)",
+                code=A2A_TRANSPORT_PROTOCOL_ERROR,
+            )
+            return
+
+        # Deduplication: if a session with this Task.id exists (in-memory or DB)
+        if req.task_id in self._sessions or self._db.get_session(req.task_id):
+            log.info("Duplicate Task.id %s, ignoring", req.task_id)
+            return
+
         app = self._db.get_app(agent_id)
         if not app or not app.card_json:
             await self._send_error(
@@ -802,7 +836,7 @@ class Coordinator:
         if reply_topic and self._client:
             resp = A2AResponse(
                 id=correlation or "",
-                error={"code": code, "message": message},
+                error=make_a2a_error(code, message),
             )
             props = make_properties(correlation_data=correlation)
             await self._client.publish(
@@ -860,6 +894,7 @@ class Coordinator:
                     next=t.next,
                     target=TaskTarget(agent=t.agent),
                     request_id=t.request_id,
+                    a2a_task_id=t.a2a_task_id,
                 )
 
                 if t.state == "completed":

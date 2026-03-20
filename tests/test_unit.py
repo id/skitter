@@ -1,5 +1,6 @@
 """Tests for skitter coordinator architecture."""
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,7 @@ from skitter.mqtt import (
 )
 from skitter.types import (
     A2ARequest,
+    A2A_REQUEST_EXPIRED,
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
     REPLY_ERROR,
@@ -22,6 +24,7 @@ from skitter.types import (
     REPLY_TEXT,
     REPLY_TOOL,
     classify_reply,
+    make_a2a_error,
     make_status_event,
 )
 
@@ -34,6 +37,7 @@ class TestA2ARequest:
         req = A2ARequest(
             text="Research quantum computing",
             request_id="req-abc123",
+            task_id="550e8400-e29b-41d4-a716-446655440000",
             sender="cli",
             variables={"topic": "quantum"},
         )
@@ -41,9 +45,12 @@ class TestA2ARequest:
         d = json.loads(j)
         assert d["jsonrpc"] == "2.0"
         assert d["id"] == "req-abc123"
-        assert d["method"] == "tasks/send"
+        assert d["method"] == "message/send"
         assert (
             d["params"]["message"]["parts"][0]["text"] == "Research quantum computing"
+        )
+        assert (
+            d["params"]["message"]["taskId"] == "550e8400-e29b-41d4-a716-446655440000"
         )
         assert d["params"]["metadata"]["sender"] == "cli"
         assert d["params"]["metadata"]["variables"]["topic"] == "quantum"
@@ -51,17 +58,21 @@ class TestA2ARequest:
         restored = A2ARequest.from_json(j)
         assert restored.text == "Research quantum computing"
         assert restored.request_id == "req-abc123"
+        assert restored.task_id == "550e8400-e29b-41d4-a716-446655440000"
         assert restored.sender == "cli"
         assert restored.variables == {"topic": "quantum"}
 
     def test_minimal(self):
         req = A2ARequest(text="hello", request_id="s1")
+        assert req.task_id  # auto-generated UUIDv4
         j = req.to_json()
         d = json.loads(j)
         assert "metadata" not in d["params"]
+        assert d["params"]["message"]["taskId"] == req.task_id
 
         restored = A2ARequest.from_json(j)
         assert restored.text == "hello"
+        assert restored.task_id == req.task_id
         assert restored.sender == ""
         assert restored.variables == {}
 
@@ -150,14 +161,23 @@ class TestStatusEvent:
         assert kind == REPLY_FAILED
         assert content == "error details"
 
-    def test_cancelled_reply(self):
+    def test_canceled_reply(self):
         event = make_status_event(
-            "req-5", "sess-xyz", "cancelled", message="User cancelled"
+            "req-5", "sess-xyz", "canceled", message="User canceled"
         )
         d = json.loads(event)
         kind, content = classify_reply(d)
         assert kind == REPLY_FAILED
-        assert content == "User cancelled"
+        assert content == "User canceled"
+
+    def test_rejected_reply(self):
+        event = make_status_event(
+            "req-6", "sess-xyz", "rejected", message="Request rejected"
+        )
+        d = json.loads(event)
+        kind, content = classify_reply(d)
+        assert kind == REPLY_FAILED
+        assert content == "Request rejected"
 
     def test_unknown_message(self):
         kind, content = classify_reply({"something": "else"})
@@ -170,8 +190,24 @@ class TestStatusEvent:
 
 class TestErrorCodes:
     def test_error_codes_defined(self):
+        assert A2A_REQUEST_EXPIRED == -32003
         assert A2A_RESPONDER_UNAVAILABLE == -32004
         assert A2A_TRANSPORT_PROTOCOL_ERROR == -32005
+
+    def test_make_a2a_error_with_transport_code(self):
+        err = make_a2a_error(-32004, "Agent offline")
+        assert err["code"] == -32004
+        assert err["message"] == "Agent offline"
+        assert err["data"]["a2a_error"] == "responder_unavailable"
+
+    def test_make_a2a_error_with_request_expired(self):
+        err = make_a2a_error(-32003, "Timed out")
+        assert err["data"]["a2a_error"] == "request_expired"
+
+    def test_make_a2a_error_without_transport_code(self):
+        err = make_a2a_error(-32602, "Invalid params")
+        assert err["code"] == -32602
+        assert "data" not in err
 
 
 # --- Topic builders ---
@@ -261,6 +297,8 @@ class TestCoordinatorSession:
             caller_reply_topic="reply/t",
             caller_correlation="corr",
         )
+        # Session ID must equal the requester's Task.id (spec gap 1)
+        assert state.session_id == req.task_id
         assert "research" in state.graph
         assert "review" in state.graph
         assert state.graph["review"].needs == ["research"]
@@ -302,6 +340,334 @@ class TestCoordinatorSession:
             variables={"topic": "quantum"},
         )
         assert "quantum" in state.graph["research"].description
+
+
+# --- A2A compliance: agent runner handle_request ---
+
+
+class TestAgentRunnerCompliance:
+    """Verify agent_runner.handle_request echoes req.task_id in all status events."""
+
+    @pytest.mark.asyncio
+    async def test_status_events_use_task_id(self):
+        """All status events (submitted, working, completed) must carry req.task_id."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from skitter.agent_runner import handle_request
+
+        agent = AgentDef(id="test", name="Test")
+        task_id = "550e8400-e29b-41d4-a716-446655440000"
+        req = A2ARequest(
+            text="hello", request_id="rpc-1", task_id=task_id, sender="test"
+        )
+
+        mock_client = MagicMock()
+        published: list[str] = []
+
+        async def capture_publish(topic, payload, **kwargs):
+            published.append(payload)
+
+        mock_client.publish = AsyncMock(side_effect=capture_publish)
+        semaphore = asyncio.Semaphore(1)
+
+        with patch(
+            "skitter.agent_runner._run_cli",
+            new=AsyncMock(return_value="result text"),
+        ):
+            await handle_request(
+                mock_client, agent, req, "reply/t", "corr-1", {}, semaphore
+            )
+
+        # Every published event must have taskId = req.task_id
+        for raw in published:
+            data = json.loads(raw)
+            result = data.get("result", {})
+            if result.get("type") == "TaskStatusUpdateEvent":
+                assert result["taskId"] == task_id
+
+    @pytest.mark.asyncio
+    async def test_stream_qos_is_1(self):
+        """Streaming updates must use QoS 1 per spec."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from skitter.agent_runner import handle_request
+
+        agent = AgentDef(id="test", name="Test")
+        req = A2ARequest(text="hello", request_id="rpc-1", sender="test")
+
+        mock_client = MagicMock()
+        qos_values: list[int] = []
+
+        async def capture_publish(topic, payload, qos=0, **kwargs):
+            qos_values.append(qos)
+
+        mock_client.publish = AsyncMock(side_effect=capture_publish)
+        semaphore = asyncio.Semaphore(1)
+
+        async def streaming_cli(agent, prompt, publish_stream, env):
+            await publish_stream("text", "chunk")
+            return "done"
+
+        with patch("skitter.agent_runner._run_cli", new=streaming_cli):
+            await handle_request(
+                mock_client, agent, req, "reply/t", "corr-1", {}, semaphore
+            )
+
+        # All publishes (submitted ack, stream chunk, terminal) should be QoS 1
+        assert all(q == 1 for q in qos_values)
+
+
+# --- A2A compliance: coordinator dispatch ---
+
+
+class TestCoordinatorDispatchCompliance:
+    """Verify coordinator dispatches with proper Task.id and cancel uses a2a_task_id."""
+
+    def setup_method(self):
+        from skitter.db import SqliteDB
+
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    def _make_coordinator_with_app(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from skitter.coordinator import Coordinator
+        from skitter.runtime_api import create_app
+
+        sup = Coordinator(self.db)
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        sup._client = mock_client
+
+        create_app(
+            self.db,
+            app_id="test-app",
+            name="Test",
+            graph={
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": "researcher",
+                        "description": "Do it",
+                        "needs": [],
+                        "next": "output",
+                    }
+                ]
+            },
+        )
+        return sup, mock_client
+
+    @pytest.mark.asyncio
+    async def test_dispatched_request_has_uuid4_task_id(self):
+        """Coordinator must generate a UUIDv4 task_id for dispatched A2A requests."""
+        import uuid as uuid_mod
+
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+
+        # Find the A2A request published to the agent's request topic
+        dispatched_payloads = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatched_payloads) == 1
+        dispatched = dispatched_payloads[0]
+
+        # Must use message/send method
+        assert dispatched["method"] == "message/send"
+
+        # taskId in the message must be a valid UUID
+        dispatched_task_id = dispatched["params"]["message"]["taskId"]
+        uuid_mod.UUID(dispatched_task_id)  # raises if not valid UUID
+
+        # The dispatched task_id must differ from the session's task_id
+        assert dispatched_task_id != req.task_id
+
+        # SessionTask must store the a2a_task_id
+        assert state.graph["step"].a2a_task_id == dispatched_task_id
+
+    @pytest.mark.asyncio
+    async def test_cancel_uses_a2a_task_id(self):
+        """tasks/cancel must reference the dispatched Task.id, not the JSON-RPC id."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/caller",
+            caller_correlation="corr-caller",
+        )
+        await sup.dispatch_ready(state)
+        a2a_task_id = state.graph["step"].a2a_task_id
+        assert a2a_task_id  # must be set
+
+        mock_client.publish.reset_mock()
+        await sup._cancel_session_cleanup(state.session_id)
+
+        # Find the tasks/cancel message
+        cancel_calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0])
+        ]
+        cancel_msgs = [c for c in cancel_calls if c.get("method") == "tasks/cancel"]
+        assert len(cancel_msgs) == 1
+        assert cancel_msgs[0]["params"]["id"] == a2a_task_id
+
+    @pytest.mark.asyncio
+    async def test_handle_request_rejects_missing_task_id(self):
+        """Coordinator must reject requests with missing Task.id."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        # Build a request payload with taskId explicitly empty
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "rpc-1",
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "go"}],
+                        "taskId": "",
+                    }
+                },
+            }
+        )
+
+        await sup.handle_request(payload, "reply/t", "corr-1", "test-app")
+
+        # Should have published an error response
+        error_calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/t"
+        ]
+        assert len(error_calls) == 1
+        err = error_calls[0]["error"]
+        assert err["code"] == A2A_TRANSPORT_PROTOCOL_ERROR
+        assert err["data"]["a2a_error"] == "transport_protocol_error"
+
+    @pytest.mark.asyncio
+    async def test_handle_request_deduplicates_by_task_id(self):
+        """Second request with same Task.id must be silently ignored."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        # Session is now registered under req.task_id
+
+        mock_client.publish.reset_mock()
+
+        # Send another request with the same task_id
+        dup_req = A2ARequest(text="go again", request_id="r2", task_id=req.task_id)
+        await sup.handle_request(dup_req.to_json(), "reply/t2", "corr-2", "test-app")
+
+        # No error published, no new session created; silently dropped
+        error_publishes = [
+            call
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/t2"
+        ]
+        assert len(error_publishes) == 0
+        # Still only one session
+        assert len(sup._sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_send_error_includes_a2a_error_data(self):
+        """_send_error must include data.a2a_error for transport error codes."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        await sup._send_error(
+            "reply/t", "corr-1", "Agent offline", code=A2A_RESPONDER_UNAVAILABLE
+        )
+
+        calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/t"
+        ]
+        assert len(calls) == 1
+        err = calls[0]["error"]
+        assert err["data"]["a2a_error"] == "responder_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_forward_stream_qos_1(self):
+        """Forwarded stream updates to caller must use QoS 1."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/caller",
+            caller_correlation="corr-caller",
+        )
+
+        mock_client.publish.reset_mock()
+        await sup._forward_stream(state, "step", "text", "thinking...")
+
+        # Check QoS in the publish call
+        assert mock_client.publish.call_count == 1
+        call_kwargs = mock_client.publish.call_args
+        assert (
+            call_kwargs.kwargs.get(
+                "qos", call_kwargs.args[2] if len(call_kwargs.args) > 2 else 0
+            )
+            == 1
+        )
+
+
+# --- A2A compliance: backoff calculation ---
+
+
+class TestBackoffDelay:
+    def test_backoff_within_expected_range(self):
+        from skitter.mqtt import _backoff_delay
+
+        for _ in range(20):
+            d0 = _backoff_delay(0)
+            assert 1.0 <= d0 <= 1.2  # base=1.0, jitter up to 0.2
+
+            d1 = _backoff_delay(1)
+            assert 2.0 <= d1 <= 2.4
+
+            d2 = _backoff_delay(2)
+            assert 4.0 <= d2 <= 4.8
+
+    def test_backoff_clamps_at_max(self):
+        from skitter.mqtt import _backoff_delay
+
+        # Attempt index beyond the list should clamp to last entry
+        d = _backoff_delay(100)
+        assert 4.0 <= d <= 4.8
 
 
 # --- Entry task detection ---
@@ -396,7 +762,7 @@ class TestBuildCard:
         assert card["name"] == "Researcher"
         assert card["description"] == "Deep research with citations"
         assert card["version"] == "0.1.0"
-        assert card["protocolVersion"] == "0.2.5"
+        assert card["protocolVersion"] == "1.0.0"
         assert card["capabilities"]["streaming"] is True
         assert card["capabilities"]["pushNotifications"] is False
         assert card["defaultInputModes"] == ["text/plain"]
@@ -1306,10 +1672,10 @@ class TestRuntimeApi:
 
         self._populate()
         result = json.loads(await handle_query(self.db, "cancel session s1"))
-        assert result["cancelled"] == "s1"
+        assert result["canceled"] == "s1"
 
         session = self.db.get_session("s1")
-        assert session.state == "cancelled"
+        assert session.state == "canceled"
 
     @pytest.mark.asyncio
     async def test_cancel_session_not_running(self):
@@ -1756,15 +2122,15 @@ class TestRuntimeApiIntegration:
         # Session removed from memory
         assert sid not in sup._sessions
 
-        # DB state is cancelled
+        # DB state is canceled
         db_session = self.db.get_session(sid)
-        assert db_session.state == "cancelled"
+        assert db_session.state == "canceled"
 
-        # Tasks are cancelled in DB
+        # Tasks are canceled in DB
         tasks = self.db.list_tasks(sid)
         for t in tasks:
             if t.state not in ("completed",):
-                assert t.state == "cancelled"
+                assert t.state == "canceled"
 
         # Original caller was notified
         caller_notified = any(

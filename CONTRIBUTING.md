@@ -89,6 +89,10 @@ llm:
 | `ANTHROPIC_API_KEY` | (empty) | Anthropic API key (for Claude models) |
 | `OPENAI_API_KEY` | (empty) | OpenAI API key (for OpenAI models) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | Claude auth for agent-runners |
+| `SKITTER_REPLY_FIRST_TIMEOUT` | `15.0` | Seconds to wait for first reply before retry |
+| `SKITTER_STREAM_IDLE_TIMEOUT` | `30.0` | Seconds between stream messages before timeout |
+| `SKITTER_MAX_ATTEMPTS` | `3` | Max send attempts (1 initial + retries) |
+| `SKITTER_AGENT_MAX_CONCURRENT` | `4` | Max concurrent requests per agent runner |
 
 For cloud deployment, see `.env.cloud.example` and `docs/fly-deployment.md`.
 

@@ -30,6 +30,7 @@ from skitter.types import (
 
 async def run_chat(session_id: str) -> None:
     mqtt_session = uuid.uuid4().hex[:12]
+    context_id = str(uuid.uuid4())
     reply_t = topic_reply("cli", mqtt_session)
     default_request = topic_request("skitter")
 
@@ -106,6 +107,7 @@ async def run_chat(session_id: str) -> None:
                 req = A2ARequest(
                     text=text,
                     request_id=request_id,
+                    context_id=context_id,
                     sender="cli",
                 )
 

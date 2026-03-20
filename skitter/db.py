@@ -44,6 +44,7 @@ class AppVersion:
 class DBSession:
     id: str
     app_version_id: str
+    context_id: str = ""
     request_json: str = ""
     variables: str = ""
     caller_reply_topic: str = ""
@@ -156,6 +157,8 @@ _MIGRATIONS: list[list[str]] = [
             completed_at  TEXT DEFAULT ''
         )""",
     ],
+    # v2: contextId support
+    ["ALTER TABLE session ADD COLUMN context_id TEXT DEFAULT ''"],
 ]
 
 _TASK_UPDATABLE_FIELDS = frozenset(
@@ -204,6 +207,7 @@ def _row_to_session(row) -> DBSession:
     return DBSession(
         id=row["id"],
         app_version_id=row["app_version_id"],
+        context_id=row["context_id"] or "",
         request_json=row["request_json"] or "",
         variables=row["variables"] or "",
         caller_reply_topic=row["caller_reply_topic"] or "",
@@ -350,12 +354,13 @@ class SqliteDB:
 
     def create_session(self, session: DBSession) -> None:
         self._conn.execute(
-            "INSERT INTO session (id, app_version_id, request_json, variables, "
-            "caller_reply_topic, caller_correlation, state, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO session (id, app_version_id, context_id, request_json, "
+            "variables, caller_reply_topic, caller_correlation, state, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.id,
                 session.app_version_id,
+                session.context_id,
                 session.request_json,
                 session.variables,
                 session.caller_reply_topic,
@@ -568,12 +573,13 @@ class PostgresDB:
 
     def create_session(self, session: DBSession) -> None:
         self._exec(
-            "INSERT INTO session (id, app_version_id, request_json, variables, "
-            "caller_reply_topic, caller_correlation, state, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO session (id, app_version_id, context_id, request_json, "
+            "variables, caller_reply_topic, caller_correlation, state, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 session.id,
                 session.app_version_id,
+                session.context_id,
                 session.request_json,
                 session.variables,
                 session.caller_reply_topic,

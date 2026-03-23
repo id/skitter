@@ -29,34 +29,36 @@ from skitter.runtime_api import (
     handle_query as runtime_query,
     runtime_card,
 )
-from skitter.mqtt import (
+from skitter.a2a import (
     A2A_ORG,
     A2A_UNIT,
-    get_correlation_data,
-    get_response_topic,
-    make_properties,
-    mqtt_client_kwargs,
-    topic_a2a_event,
-    topic_coordinator_lock,
-    topic_discovery,
-    topic_discovery_wildcard,
-    topic_request,
-    topic_reply,
-)
-from skitter.types import (
+    A2A_INVALID_PARAMS,
     A2ARequest,
     A2AResponse,
     A2A_RESPONDER_UNAVAILABLE,
-    A2A_TRANSPORT_PROTOCOL_ERROR,
+    REPLY_ARTIFACT,
     REPLY_ERROR,
     REPLY_FAILED,
+    REPLY_INPUT_REQUIRED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     REPLY_TOOL,
     TaskTarget,
     classify_reply,
     make_a2a_error,
+    make_artifact_event,
     make_status_event,
+    topic_a2a_event,
+    topic_coordinator_lock,
+    topic_discovery,
+    topic_discovery_wildcard,
+    topic_reply,
+    topic_request,
+    validate_a2a_request,
+)
+from skitter.mqtt import (
+    make_properties,
+    mqtt_client_kwargs,
 )
 
 logging.basicConfig(
@@ -97,6 +99,15 @@ class SessionState:
     inflight: set[str] = field(default_factory=set)
     failed: set[str] = field(default_factory=set)
     variables: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def a2a_state(self) -> str:
+        """Derive A2A task state from session progress."""
+        if self.pending or self.inflight:
+            return "working"
+        if self.failed:
+            return "failed"
+        return "completed"
 
 
 def _compute_ready(state: SessionState) -> list[str]:
@@ -405,8 +416,16 @@ class Coordinator:
 
         kind, content = classify_reply(data)
 
-        if kind == REPLY_TERMINAL:
-            await self._complete_task(state, task_id, content)
+        if kind == REPLY_ARTIFACT:
+            # Accumulate artifact content; terminal status follows separately
+            state.results[task_id] = content
+        elif kind == REPLY_TERMINAL:
+            # Prefer artifact content (preceding REPLY_ARTIFACT) over status message
+            result = state.results.get(task_id, "") or content
+            await self._complete_task(state, task_id, result)
+        elif kind == REPLY_INPUT_REQUIRED:
+            # Interrupted state: multi-turn not yet supported for sub-agents
+            await self._fail_task(state, task_id, f"Agent requires input: {content}")
         elif kind in (REPLY_FAILED, REPLY_ERROR):
             await self._fail_task(state, task_id, content)
         elif kind in (REPLY_TEXT, REPLY_TOOL):
@@ -424,9 +443,8 @@ class Coordinator:
             task_id=state.session_id,
             state="working",
             message=content,
-            message_type=msg_type,
-            task_name=task_id,
             context_id=state.context_id,
+            metadata={"type": msg_type, "task_name": task_id},
         )
         props = make_properties(correlation_data=state.caller_correlation)
         await self._client.publish(
@@ -517,18 +535,13 @@ class Coordinator:
 
         result_text = "\n\n".join(result_parts) if result_parts else "(no result)"
 
-        if state.caller_reply_topic and self._client:
-            event = make_status_event(
-                request_id=state.caller_correlation,
-                task_id=state.session_id,
-                state="completed",
-                artifact_text=result_text,
-                context_id=state.context_id,
-            )
-            props = make_properties(correlation_data=state.caller_correlation)
-            await self._client.publish(
-                state.caller_reply_topic, event, qos=1, properties=props
-            )
+        await self._publish_completed(
+            state.caller_reply_topic,
+            state.caller_correlation,
+            state.session_id,
+            state.context_id,
+            artifact_text=result_text,
+        )
 
         await self._publish_event("session_completed", state.session_id)
         self._sessions.pop(state.session_id, None)
@@ -565,26 +578,14 @@ class Coordinator:
 
     async def _handle_runtime_query(
         self,
-        payload: str,
+        req: A2ARequest,
         reply_topic: str,
         correlation: str,
     ) -> None:
-        """Handle a runtime state query (list apps, get session, etc.)."""
-        try:
-            req = A2ARequest.from_json(payload)
-        except Exception as e:
-            log.error("Bad runtime query JSON: %s", e)
-            return
+        """Handle a runtime state query (list apps, get session, etc.).
 
-        if not req.task_id:
-            await self._send_error(
-                reply_topic,
-                correlation,
-                "Missing required Task.id (message.taskId)",
-                code=A2A_TRANSPORT_PROTOCOL_ERROR,
-            )
-            return
-
+        Caller must pass a validated A2ARequest (v5 props and Task.id already checked).
+        """
         result_json = await runtime_query(self._db, req.text, self._registry)
 
         # Post-action hooks (cancel cleanup, app registration)
@@ -600,16 +601,13 @@ class Coordinator:
             log.exception("Runtime query post-action failed")
 
         # Reply to the query caller
-        if reply_topic and self._client:
-            event = make_status_event(
-                request_id=correlation,
-                task_id=req.task_id,
-                state="completed",
-                artifact_text=result_json,
-                context_id=req.context_id or "",
-            )
-            props = make_properties(correlation_data=correlation)
-            await self._client.publish(reply_topic, event, qos=1, properties=props)
+        await self._publish_completed(
+            reply_topic,
+            correlation,
+            req.task_id,
+            req.context_id or "",
+            artifact_text=result_json,
+        )
 
     async def _cancel_session_cleanup(self, session_id: str) -> None:
         """Clean up in-memory state after a session is canceled in the DB.
@@ -658,7 +656,7 @@ class Coordinator:
                 request_id=state.caller_correlation,
                 task_id=session_id,
                 state="canceled",
-                artifact_text="Session canceled via runtime API",
+                message="Session canceled via runtime API",
                 context_id=state.context_id,
             )
             props = make_properties(correlation_data=state.caller_correlation)
@@ -721,25 +719,12 @@ class Coordinator:
                 if not payload or "/request/" not in topic or "/cancel" in topic:
                     continue
 
-                caller_reply = get_response_topic(mqtt_msg) or ""
-                caller_corr = get_correlation_data(mqtt_msg) or ""
-
-                if not caller_reply or not caller_corr:
-                    log.warning(
-                        "App %s: request missing Response Topic or Correlation Data",
-                        app_id,
-                    )
-                    if caller_reply:
-                        await self._send_error(
-                            caller_reply,
-                            caller_corr,
-                            "Request must include MQTT v5 Response Topic "
-                            "and Correlation Data",
-                            code=A2A_TRANSPORT_PROTOCOL_ERROR,
-                        )
+                validated = await validate_a2a_request(mqtt_msg, client, log=log)
+                if not validated:
                     continue
+                req, caller_reply, caller_corr = validated
 
-                await self.handle_request(payload, caller_reply, caller_corr, app_id)
+                await self.handle_request(req, caller_reply, caller_corr, app_id)
         except asyncio.CancelledError:
             return
         except Exception:
@@ -787,32 +772,27 @@ class Coordinator:
 
     async def handle_request(
         self,
-        payload: str,
+        req: A2ARequest,
         caller_reply_topic: str,
         caller_correlation: str,
         agent_id: str,
     ) -> None:
-        """Handle an inbound A2A request for a composed app."""
-        try:
-            req = A2ARequest.from_json(payload)
-        except Exception as e:
-            log.error("Bad inbound JSON-RPC: %s", e)
-            return
+        """Handle an inbound A2A request for a composed app.
 
-        # Validate Task.id presence
-        if not req.task_id:
-            await self._send_error(
-                caller_reply_topic,
-                caller_correlation,
-                "Missing required Task.id (message.taskId)",
-                code=A2A_TRANSPORT_PROTOCOL_ERROR,
-            )
-            return
-
+        Caller must pass a validated A2ARequest (v5 props and Task.id already checked).
+        """
         # Deduplication: if a session with this Task.id exists, reply with
         # current state (A2A-over-MQTT spec: MUST return existing task state)
+        incoming_ctx = req.context_id or ""
         existing = self._sessions.get(req.task_id)
         if existing:
+            if await self._reject_context_mismatch(
+                existing.context_id,
+                incoming_ctx,
+                caller_reply_topic,
+                caller_correlation,
+            ):
+                return
             log.info(
                 "Duplicate Task.id %s (in-flight), returning current state", req.task_id
             )
@@ -822,6 +802,13 @@ class Coordinator:
             return
         db_session = self._db.get_session(req.task_id)
         if db_session:
+            if await self._reject_context_mismatch(
+                db_session.context_id,
+                incoming_ctx,
+                caller_reply_topic,
+                caller_correlation,
+            ):
+                return
             log.info(
                 "Duplicate Task.id %s (DB: %s), returning stored state",
                 req.task_id,
@@ -862,6 +849,34 @@ class Coordinator:
         )
         await self._start_session(state, f"App '{agent_id}'")
 
+    async def _publish_completed(
+        self,
+        reply_topic: str,
+        correlation: str,
+        task_id: str,
+        context_id: str,
+        artifact_text: str = "",
+    ) -> None:
+        """Publish artifact event (if any) followed by completed status event."""
+        if not reply_topic or not self._client:
+            return
+        props = make_properties(correlation_data=correlation)
+        if artifact_text:
+            artifact = make_artifact_event(
+                request_id=correlation,
+                task_id=task_id,
+                artifact_text=artifact_text,
+                context_id=context_id,
+            )
+            await self._client.publish(reply_topic, artifact, qos=1, properties=props)
+        event = make_status_event(
+            request_id=correlation,
+            task_id=task_id,
+            state="completed",
+            context_id=context_id,
+        )
+        await self._client.publish(reply_topic, event, qos=1, properties=props)
+
     async def _reply_existing_state(
         self,
         state: SessionState,
@@ -874,7 +889,7 @@ class Coordinator:
         event = make_status_event(
             request_id=correlation,
             task_id=state.session_id,
-            state="working",
+            state=state.a2a_state,
             context_id=state.context_id,
         )
         props = make_properties(correlation_data=correlation)
@@ -886,43 +901,76 @@ class Coordinator:
         reply_topic: str,
         correlation: str,
     ) -> None:
-        """Reply with stored session state for dedup.
+        """Replay stored session state for dedup.
 
-        Handles completed, failed, canceled, and running (crash recovery window)
-        sessions. The "running" → "working" mapping covers the edge case where a
-        session exists in DB but not yet rehydrated into memory after a restart.
+        Replays the artifact (for completed) or error message (for failed)
+        so retrying requesters can recover the original output. The
+        "running" -> "working" mapping covers sessions not yet rehydrated
+        after a restart.
         """
         if not reply_topic or not self._client:
             return
-        artifact_text = ""
-        message = ""
         reply_state = "working" if db_session.state == "running" else db_session.state
+        props = make_properties(correlation_data=correlation)
+
+        # Replay artifact/error content for terminal sessions
+        error_msg = ""
         if db_session.state == "completed":
             tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.task_id)
             results = [t.result for t in tasks if _is_terminal(t.next) and t.result]
-            artifact_text = "\n\n".join(results) if results else "(no result)"
+            artifact_text = "\n\n".join(results) if results else ""
+            if artifact_text:
+                artifact = make_artifact_event(
+                    request_id=correlation,
+                    task_id=db_session.id,
+                    artifact_text=artifact_text,
+                    context_id=db_session.context_id,
+                )
+                await self._client.publish(
+                    reply_topic, artifact, qos=1, properties=props
+                )
         elif db_session.state in ("failed", "canceled"):
             tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.task_id)
             errors = [t.error for t in tasks if t.error]
-            message = "; ".join(errors) if errors else db_session.state
+            error_msg = "; ".join(errors) if errors else ""
 
         event = make_status_event(
             request_id=correlation,
             task_id=db_session.id,
             state=reply_state,
-            artifact_text=artifact_text,
-            message=message,
+            message=error_msg,
             context_id=db_session.context_id,
         )
-        props = make_properties(correlation_data=correlation)
         await self._client.publish(reply_topic, event, qos=1, properties=props)
+
+    async def _reject_context_mismatch(
+        self,
+        stored_ctx: str,
+        incoming_ctx: str,
+        reply_topic: str,
+        correlation: str,
+    ) -> bool:
+        """Return True (and send error) if context_id mismatches on dedup.
+
+        Empty context_id on either side is allowed (untracked context).
+        """
+        if stored_ctx and incoming_ctx and incoming_ctx != stored_ctx:
+            await self._send_error(
+                reply_topic,
+                correlation,
+                "context_id mismatch: incoming context_id differs "
+                "from stored value for this Task.id",
+                code=A2A_INVALID_PARAMS,
+            )
+            return True
+        return False
 
     async def _send_error(
         self,
         reply_topic: str,
         correlation: str,
         message: str,
-        code: int = -32602,
+        code: int = A2A_INVALID_PARAMS,
     ) -> None:
         if reply_topic and self._client:
             resp = A2AResponse(
@@ -1120,26 +1168,14 @@ class Coordinator:
                     elif "/request/" in topic and "/cancel" not in topic:
                         # Main connection only handles runtime API requests;
                         # app requests arrive on dedicated per-app connections.
-                        caller_reply = get_response_topic(mqtt_msg) or ""
-                        caller_corr = get_correlation_data(mqtt_msg) or ""
-
-                        if not caller_reply or not caller_corr:
-                            log.warning(
-                                "Request missing Response Topic or Correlation Data"
-                            )
-                            if caller_reply:
-                                await self._send_error(
-                                    caller_reply,
-                                    caller_corr,
-                                    "Request must include MQTT v5 Response Topic "
-                                    "and Correlation Data",
-                                    code=A2A_TRANSPORT_PROTOCOL_ERROR,
-                                )
-                            continue
-
-                        await self._handle_runtime_query(
-                            payload, caller_reply, caller_corr
+                        validated = await validate_a2a_request(
+                            mqtt_msg, client, log=log
                         )
+                        if not validated:
+                            continue
+                        req, caller_reply, caller_corr = validated
+
+                        await self._handle_runtime_query(req, caller_reply, caller_corr)
 
                     elif "/reply/" in topic and "/skitter/" in topic:
                         if payload:

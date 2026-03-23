@@ -7,24 +7,25 @@ import uuid
 
 import aiomqtt
 
-from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
+from skitter.a2a import (
     A2A_ORG,
     A2A_UNIT,
-    make_properties,
-    mqtt_client_kwargs,
-    topic_reply,
-    topic_request,
-)
-from skitter.types import (
     A2ARequest,
+    REPLY_ARTIFACT,
     REPLY_ERROR,
     REPLY_FAILED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     REPLY_TOOL,
     classify_reply,
+    topic_reply,
+    topic_request,
+)
+from skitter.mqtt import (
+    MQTT_HOST,
+    MQTT_PORT,
+    make_properties,
+    mqtt_client_kwargs,
 )
 
 
@@ -58,8 +59,9 @@ async def run_chat(session_id: str) -> None:
                         print(f"\r\033[K{content}", end="", flush=True)
                     elif kind == REPLY_TOOL:
                         print(f"\r\033[K  [tool] {content}")
-                    elif kind == REPLY_TERMINAL:
+                    elif kind == REPLY_ARTIFACT:
                         print(f"\r\033[K\n{content}")
+                    elif kind == REPLY_TERMINAL:
                         print("> ", end="", flush=True)
                     elif kind == REPLY_FAILED:
                         print(f"\r\033[KFailed: {content}")

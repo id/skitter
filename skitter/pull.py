@@ -15,7 +15,8 @@ import aiomqtt
 import yaml
 
 from skitter.discovery import is_workflow_card, parse_card
-from skitter.mqtt import mqtt_client_kwargs, topic_discovery_wildcard
+from skitter.a2a import topic_discovery_wildcard
+from skitter.mqtt import mqtt_client_kwargs
 
 log = logging.getLogger("skitter.pull")
 

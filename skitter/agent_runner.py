@@ -20,24 +20,21 @@ import aiomqtt
 
 from skitter.config import AgentDef
 from skitter.discovery import build_card
-from skitter.mqtt import (
+from skitter.a2a import (
     A2A_ORG,
     A2A_UNIT,
-    get_correlation_data,
-    get_response_topic,
-    make_properties,
-    mqtt_client_kwargs,
+    A2A_INVALID_PARAMS,
+    A2ARequest,
+    A2AResponse,
+    make_a2a_error,
+    make_artifact_event,
+    make_status_event,
     topic_a2a_event,
     topic_discovery,
     topic_request,
+    validate_a2a_request,
 )
-from skitter.types import (
-    A2ARequest,
-    A2AResponse,
-    A2A_TRANSPORT_PROTOCOL_ERROR,
-    make_a2a_error,
-    make_status_event,
-)
+from skitter.mqtt import make_properties, mqtt_client_kwargs
 
 
 def agent_env() -> dict[str, str]:
@@ -209,8 +206,8 @@ async def handle_request(
             task_id=req.task_id,
             state="working",
             message=content,
-            message_type=item_type,
             context_id=req.context_id or "",
+            metadata={"type": item_type},
         )
         await client.publish(reply_topic, event, qos=1, properties=props)
 
@@ -243,12 +240,19 @@ async def handle_request(
         await client.publish(reply_topic, failed, qos=1, properties=props)
         return ""
 
-    # Send terminal result
+    # Send artifact then terminal status
+    if result:
+        artifact = make_artifact_event(
+            request_id=correlation,
+            task_id=req.task_id,
+            artifact_text=result,
+            context_id=req.context_id or "",
+        )
+        await client.publish(reply_topic, artifact, qos=1, properties=props)
     terminal = make_status_event(
         request_id=correlation,
         task_id=req.task_id,
         state="completed",
-        artifact_text=result,
         context_id=req.context_id or "",
     )
     await client.publish(reply_topic, terminal, qos=1, properties=props)
@@ -358,6 +362,7 @@ async def run_with_def(agent: AgentDef) -> None:
     completed_tasks: dict[
         str, tuple[float, str, str]
     ] = {}  # task_id → (timestamp, state, result)
+    task_context: dict[str, str] = {}  # task_id → context_id
 
     try:
         async with aiomqtt.Client(
@@ -381,7 +386,7 @@ async def run_with_def(agent: AgentDef) -> None:
                 if not payload:
                     continue
 
-                # Parse JSON-RPC method to handle tasks/cancel
+                # Parse method to handle tasks/cancel separately
                 try:
                     data = json.loads(payload)
                 except json.JSONDecodeError:
@@ -395,46 +400,11 @@ async def run_with_def(agent: AgentDef) -> None:
                         log.info("Canceling task %s", cancel_id)
                     continue
 
-                # message/send (or unspecified method): validate MQTT v5 properties
-                reply_topic = get_response_topic(mqtt_msg) or ""
-                correlation = get_correlation_data(mqtt_msg) or ""
-                if not reply_topic or not correlation:
-                    log.warning("Request missing Response Topic or Correlation Data")
-                    if reply_topic:
-                        resp = A2AResponse(
-                            id=correlation,
-                            error=make_a2a_error(
-                                A2A_TRANSPORT_PROTOCOL_ERROR,
-                                "Missing MQTT v5 Response Topic or Correlation Data",
-                            ),
-                        )
-                        err_props = make_properties(correlation_data=correlation)
-                        await client.publish(
-                            reply_topic, resp.to_json(), qos=1, properties=err_props
-                        )
+                # message/send: validate MQTT v5 properties + Task.id
+                validated = await validate_a2a_request(mqtt_msg, client, log=log)
+                if not validated:
                     continue
-
-                try:
-                    req = A2ARequest.from_json(payload)
-                except Exception as e:
-                    log.error("Bad request JSON: %s", e)
-                    continue
-
-                # Validate Task.id presence
-                if not req.task_id:
-                    log.warning("Request missing Task.id")
-                    resp = A2AResponse(
-                        id=correlation,
-                        error=make_a2a_error(
-                            A2A_TRANSPORT_PROTOCOL_ERROR,
-                            "Missing required Task.id (message.taskId)",
-                        ),
-                    )
-                    props = make_properties(correlation_data=correlation)
-                    await client.publish(
-                        reply_topic, resp.to_json(), qos=1, properties=props
-                    )
-                    continue
+                req, reply_topic, correlation = validated
 
                 # Task.id deduplication: evict stale entries, return state for known tasks
                 now = asyncio.get_running_loop().time()
@@ -443,29 +413,67 @@ async def run_with_def(agent: AgentDef) -> None:
                 ]
                 for k in stale:
                     del completed_tasks[k]
+                    task_context.pop(k, None)
 
                 if req.task_id in task_registry:
-                    dedup_state, dedup_artifact = "working", ""
+                    dedup_state, dedup_result = "working", ""
                 elif req.task_id in completed_tasks:
-                    _, dedup_state, dedup_artifact = completed_tasks[req.task_id]
+                    _, dedup_state, dedup_result = completed_tasks[req.task_id]
                 else:
                     dedup_state = None
+                    dedup_result = None
 
                 if dedup_state:
+                    # Reject context_id mismatch per A2A-over-MQTT spec
+                    stored_ctx = task_context.get(req.task_id, "")
+                    incoming_ctx = req.context_id or ""
+                    if stored_ctx and incoming_ctx and incoming_ctx != stored_ctx:
+                        log.warning(
+                            "context_id mismatch for Task.id %s: stored=%s incoming=%s",
+                            req.task_id,
+                            stored_ctx,
+                            incoming_ctx,
+                        )
+                        resp = A2AResponse(
+                            id=correlation,
+                            error=make_a2a_error(
+                                A2A_INVALID_PARAMS,
+                                "context_id mismatch: incoming context_id differs "
+                                "from stored value for this Task.id",
+                            ),
+                        )
+                        props = make_properties(correlation_data=correlation)
+                        await client.publish(
+                            reply_topic, resp.to_json(), qos=1, properties=props
+                        )
+                        continue
+
                     log.info(
                         "Duplicate Task.id %s (%s), returning %s state",
                         req.task_id,
                         "in-flight" if dedup_state == "working" else "done",
                         dedup_state,
                     )
+                    ctx = req.context_id or ""
+                    props = make_properties(correlation_data=correlation)
+                    # Replay artifact for completed tasks so retrying requesters
+                    # can recover the original output
+                    if dedup_result:
+                        artifact = make_artifact_event(
+                            request_id=correlation,
+                            task_id=req.task_id,
+                            artifact_text=dedup_result,
+                            context_id=ctx,
+                        )
+                        await client.publish(
+                            reply_topic, artifact, qos=1, properties=props
+                        )
                     event = make_status_event(
                         request_id=correlation,
                         task_id=req.task_id,
                         state=dedup_state,
-                        artifact_text=dedup_artifact,
-                        context_id=req.context_id or "",
+                        context_id=ctx,
                     )
-                    props = make_properties(correlation_data=correlation)
                     await client.publish(reply_topic, event, qos=1, properties=props)
                     continue
 
@@ -484,6 +492,7 @@ async def run_with_def(agent: AgentDef) -> None:
                         result,
                     )
 
+                task_context[req.task_id] = req.context_id or ""
                 task = asyncio.create_task(
                     handle_request(
                         client, agent, req, reply_topic, correlation, env, semaphore

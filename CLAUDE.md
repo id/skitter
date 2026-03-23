@@ -1,6 +1,6 @@
 # Skitter
 
-~2,700 lines of Python. MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT broker as infrastructure backbone.
+~3,900 lines of Python. MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT broker as infrastructure backbone.
 
 ## Quick Orientation
 
@@ -13,10 +13,10 @@
 | Graph generation + validation | `skitter/graph_gen.py` |
 | Runtime API + app creation | `skitter/runtime_api.py` |
 | Pull agent cards from broker | `skitter/pull.py` |
-| MQTT settings, A2A topic builders, v5 helpers | `skitter/mqtt.py` |
+| A2A protocol (message types, topics, validation, requester helper) | `skitter/a2a.py` |
+| MQTT v5 transport (connection, properties) | `skitter/mqtt.py` |
 | Config loading (~/.skitter/), dataclasses | `skitter/config.py` |
 | DB interface (SQLite/PostgreSQL) | `skitter/db.py` |
-| Message types | `skitter/types.py` |
 | Chat client | `skitter/cli.py` |
 | CLI dispatch | `skitter/__main__.py` |
 | Dashboard (single-file, MQTT-connected) | `dashboard.html` |
@@ -40,6 +40,7 @@ Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. 
 - **Namespace separation.** `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery, events).
 - **Native sub-agents.** Agent identity owned by `~/.claude/agents/*.md` / `~/.codex/agents/*.toml`, not skitter. No separate skitter agent config.
 - **Independent agents.** Agents are any A2A-over-MQTT compliant process. The coordinator doesn't spawn or manage them.
+- **A2A protocol compliance.** All protocol-facing code must conform to [A2A v1.0.0](https://github.com/a2aproject/A2A/blob/main/specification/a2a.proto) and the [A2A-over-MQTT v0.1 binding](https://github.com/emqx/mqtt-for-ai/blob/main/a2a-over-mqtt/specification/0.1/basic/mqtt_transport.md). Use `/a2a-compliance` to validate after protocol changes.
 
 ## Writing Style
 
@@ -65,8 +66,9 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 3. **Lint and format**: `uvx ruff format` and `uvx ruff check` on changed files.
 4. **Unit tests**: `uv run python -m pytest tests/test_unit.py -q`.
 5. **E2E tests**: `uv run python -m pytest tests/test_e2e.py -v -s` (needs EMQX on localhost).
-6. **Dashboard**: verify `dashboard.html` still works if session state or topics changed.
-7. **Docs and env files**: update `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `.env.example`, and `.env.cloud.example` if behavior, config, env vars, or CLI usage changed.
+6. **A2A compliance**: if protocol-facing code changed, run `/a2a-compliance`.
+7. **Dashboard**: verify `dashboard.html` still works if session state or topics changed.
+8. **Docs and env files**: update `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `.env.example`, and `.env.cloud.example` if behavior, config, env vars, or CLI usage changed.
 
 ## Limitations
 

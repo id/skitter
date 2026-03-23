@@ -12,9 +12,9 @@ skitter/
   discovery.py     Build + parse A2A discovery cards
   db.py            Database interface (SQLite/PostgreSQL)
   pull.py          Pull agent cards from broker, generate local agent files
-  mqtt.py          MQTT connection settings, A2A topic builders, v5 property helpers
+  a2a.py           A2A protocol: message types, topics, validation, requester helper
+  mqtt.py          MQTT v5 transport: connection, properties, extraction
   config.py        ~/.skitter/ management, YAML loading, dataclasses
-  types.py         Message type definitions
   cli.py           Chat client
   __main__.py      CLI dispatch
 ```

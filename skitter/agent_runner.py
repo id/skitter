@@ -188,8 +188,8 @@ async def handle_request(
     correlation: str,
     env: dict[str, str],
     semaphore: asyncio.Semaphore,
-) -> None:
-    """Handle a single A2A request: run CLI, stream results, send reply."""
+) -> str:
+    """Handle a single A2A request: run CLI, stream results, send reply. Returns result text."""
     log.info("Request %s (task %s): %.80s", req.request_id, req.task_id, req.text)
 
     # Send submitted ack
@@ -230,7 +230,7 @@ async def handle_request(
         except Exception:
             pass
         log.info("Request %s canceled", req.request_id)
-        return
+        return ""
     except Exception:
         log.exception("Request %s failed", req.request_id)
         failed = make_status_event(
@@ -241,7 +241,7 @@ async def handle_request(
             context_id=req.context_id or "",
         )
         await client.publish(reply_topic, failed, qos=1, properties=props)
-        return
+        return ""
 
     # Send terminal result
     terminal = make_status_event(
@@ -253,6 +253,7 @@ async def handle_request(
     )
     await client.publish(reply_topic, terminal, qos=1, properties=props)
     log.info("Request %s completed (%d chars)", req.request_id, len(result))
+    return result
 
 
 def load_agent(path_str: str) -> AgentDef:
@@ -354,7 +355,9 @@ async def run_with_def(agent: AgentDef) -> None:
     request_topic = topic_request(agent.id)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
     task_registry: dict[str, asyncio.Task] = {}  # task_id → asyncio.Task
-    completed_tasks: dict[str, float] = {}  # task_id → completion timestamp
+    completed_tasks: dict[
+        str, tuple[float, str, str]
+    ] = {}  # task_id → (timestamp, state, result)
 
     try:
         async with aiomqtt.Client(
@@ -433,21 +436,53 @@ async def run_with_def(agent: AgentDef) -> None:
                     )
                     continue
 
-                # Task.id deduplication: evict stale entries, skip known tasks
+                # Task.id deduplication: evict stale entries, return state for known tasks
                 now = asyncio.get_running_loop().time()
-                stale = [k for k, t in completed_tasks.items() if now - t > _DEDUP_TTL]
+                stale = [
+                    k for k, v in completed_tasks.items() if now - v[0] > _DEDUP_TTL
+                ]
                 for k in stale:
                     del completed_tasks[k]
 
-                if req.task_id in completed_tasks or req.task_id in task_registry:
-                    log.info("Duplicate Task.id %s, ignoring", req.task_id)
+                if req.task_id in task_registry:
+                    dedup_state, dedup_artifact = "working", ""
+                elif req.task_id in completed_tasks:
+                    _, dedup_state, dedup_artifact = completed_tasks[req.task_id]
+                else:
+                    dedup_state = None
+
+                if dedup_state:
+                    log.info(
+                        "Duplicate Task.id %s (%s), returning %s state",
+                        req.task_id,
+                        "in-flight" if dedup_state == "working" else "done",
+                        dedup_state,
+                    )
+                    event = make_status_event(
+                        request_id=correlation,
+                        task_id=req.task_id,
+                        state=dedup_state,
+                        artifact_text=dedup_artifact,
+                        context_id=req.context_id or "",
+                    )
+                    props = make_properties(correlation_data=correlation)
+                    await client.publish(reply_topic, event, qos=1, properties=props)
                     continue
 
                 def _on_done(t: asyncio.Task, tid: str = req.task_id) -> None:
                     task_registry.pop(tid, None)
-                    completed_tasks[tid] = asyncio.get_running_loop().time()
-                    if not t.cancelled() and t.exception():
+                    if t.cancelled():
+                        state, result = "canceled", ""
+                    elif t.exception():
                         log.error("Request handler failed: %s", t.exception())
+                        state, result = "failed", ""
+                    else:
+                        state, result = "completed", t.result() or ""
+                    completed_tasks[tid] = (
+                        asyncio.get_running_loop().time(),
+                        state,
+                        result,
+                    )
 
                 task = asyncio.create_task(
                     handle_request(

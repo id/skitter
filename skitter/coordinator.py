@@ -140,13 +140,14 @@ def _build_context(state: SessionState, task: SessionTask) -> str:
     return "\n\n".join(parts)
 
 
+def _is_terminal(next_val: str) -> bool:
+    """True if the task's 'next' field marks it as a terminal (output) task."""
+    return not next_val or next_val == "output"
+
+
 def _find_terminal_tasks(state: SessionState) -> list[str]:
     """Find tasks whose next is empty or 'output'."""
-    return [
-        tid
-        for tid, task in state.graph.items()
-        if not task.next or task.next == "output"
-    ]
+    return [tid for tid, task in state.graph.items() if _is_terminal(task.next)]
 
 
 # --- Discovery registry ---
@@ -808,9 +809,27 @@ class Coordinator:
             )
             return
 
-        # Deduplication: if a session with this Task.id exists (in-memory or DB)
-        if req.task_id in self._sessions or self._db.get_session(req.task_id):
-            log.info("Duplicate Task.id %s, ignoring", req.task_id)
+        # Deduplication: if a session with this Task.id exists, reply with
+        # current state (A2A-over-MQTT spec: MUST return existing task state)
+        existing = self._sessions.get(req.task_id)
+        if existing:
+            log.info(
+                "Duplicate Task.id %s (in-flight), returning current state", req.task_id
+            )
+            await self._reply_existing_state(
+                existing, caller_reply_topic, caller_correlation
+            )
+            return
+        db_session = self._db.get_session(req.task_id)
+        if db_session:
+            log.info(
+                "Duplicate Task.id %s (DB: %s), returning stored state",
+                req.task_id,
+                db_session.state,
+            )
+            await self._reply_existing_db_state(
+                db_session, caller_reply_topic, caller_correlation
+            )
             return
 
         app = self._db.get_app(agent_id)
@@ -842,6 +861,61 @@ class Coordinator:
             variables=req.variables,
         )
         await self._start_session(state, f"App '{agent_id}'")
+
+    async def _reply_existing_state(
+        self,
+        state: SessionState,
+        reply_topic: str,
+        correlation: str,
+    ) -> None:
+        """Reply with current in-memory session state (for dedup of in-flight sessions)."""
+        if not reply_topic or not self._client:
+            return
+        event = make_status_event(
+            request_id=correlation,
+            task_id=state.session_id,
+            state="working",
+            context_id=state.context_id,
+        )
+        props = make_properties(correlation_data=correlation)
+        await self._client.publish(reply_topic, event, qos=1, properties=props)
+
+    async def _reply_existing_db_state(
+        self,
+        db_session: DBSession,
+        reply_topic: str,
+        correlation: str,
+    ) -> None:
+        """Reply with stored session state for dedup.
+
+        Handles completed, failed, canceled, and running (crash recovery window)
+        sessions. The "running" → "working" mapping covers the edge case where a
+        session exists in DB but not yet rehydrated into memory after a restart.
+        """
+        if not reply_topic or not self._client:
+            return
+        artifact_text = ""
+        message = ""
+        reply_state = "working" if db_session.state == "running" else db_session.state
+        if db_session.state == "completed":
+            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.task_id)
+            results = [t.result for t in tasks if _is_terminal(t.next) and t.result]
+            artifact_text = "\n\n".join(results) if results else "(no result)"
+        elif db_session.state in ("failed", "canceled"):
+            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.task_id)
+            errors = [t.error for t in tasks if t.error]
+            message = "; ".join(errors) if errors else db_session.state
+
+        event = make_status_event(
+            request_id=correlation,
+            task_id=db_session.id,
+            state=reply_state,
+            artifact_text=artifact_text,
+            message=message,
+            context_id=db_session.context_id,
+        )
+        props = make_properties(correlation_data=correlation)
+        await self._client.publish(reply_topic, event, qos=1, properties=props)
 
     async def _send_error(
         self,

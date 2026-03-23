@@ -50,6 +50,7 @@ def make_status_event(
     message_type: str = "",
     artifact_text: str = "",
     task_name: str = "",
+    context_id: str = "",
 ) -> str:
     """Build a TaskStatusUpdateEvent JSON-RPC response (A2A streaming reply).
 
@@ -74,6 +75,8 @@ def make_status_event(
         "taskId": task_id,
         "status": status,
     }
+    if context_id:
+        result["contextId"] = context_id
     if artifact_text:
         result["artifact"] = {
             "parts": [{"type": "text", "text": artifact_text}],
@@ -147,12 +150,15 @@ class A2ARequest:
     text: str
     request_id: str
     task_id: str | None = None
+    context_id: str | None = None
     sender: str = ""
     variables: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.task_id is None:
             self.task_id = str(uuid.uuid4())
+        if self.context_id is None:
+            self.context_id = str(uuid.uuid4())
 
     def to_json(self) -> str:
         metadata: dict = {}
@@ -164,6 +170,7 @@ class A2ARequest:
             "role": "user",
             "parts": [{"type": "text", "text": self.text}],
             "taskId": self.task_id,
+            "contextId": self.context_id,
         }
         params: dict = {"message": message}
         if metadata:
@@ -186,10 +193,12 @@ class A2ARequest:
         parts = message.get("parts", [])
         text = parts[0].get("text", "") if parts else ""
         task_id = message.get("taskId", "")
+        context_id = message.get("contextId") or None
         return cls(
             text=text,
             request_id=d.get("id", f"req-{time.time_ns()}"),
             task_id=task_id,
+            context_id=context_id,
             sender=metadata.get("sender", ""),
             variables=metadata.get("variables", {}),
         )

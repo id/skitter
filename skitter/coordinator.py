@@ -88,6 +88,7 @@ class SessionState:
 
     session_id: str
     app_version_id: str
+    context_id: str = ""
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     graph: dict[str, SessionTask] = field(default_factory=dict)
@@ -254,6 +255,7 @@ class Coordinator:
         db_session = DBSession(
             id=session_id,
             app_version_id=app_version_id,
+            context_id=request.context_id or "",
             request_json=request.to_json(),
             variables=json.dumps(variables),
             caller_reply_topic=caller_reply_topic,
@@ -265,6 +267,7 @@ class Coordinator:
         state = SessionState(
             session_id=session_id,
             app_version_id=app_version_id,
+            context_id=request.context_id or "",
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
             variables=variables,
@@ -357,6 +360,7 @@ class Coordinator:
             text=prompt,
             request_id=request_id,
             task_id=task_uuid,
+            context_id=state.context_id,
             sender="skitter",
         )
         request_topic = topic_request(target.agent)
@@ -421,6 +425,7 @@ class Coordinator:
             message=content,
             message_type=msg_type,
             task_name=task_id,
+            context_id=state.context_id,
         )
         props = make_properties(correlation_data=state.caller_correlation)
         await self._client.publish(
@@ -517,6 +522,7 @@ class Coordinator:
                 task_id=state.session_id,
                 state="completed",
                 artifact_text=result_text,
+                context_id=state.context_id,
             )
             props = make_properties(correlation_data=state.caller_correlation)
             await self._client.publish(
@@ -539,6 +545,7 @@ class Coordinator:
                 task_id=state.session_id,
                 state="failed",
                 message=error,
+                context_id=state.context_id,
             )
             props = make_properties(correlation_data=state.caller_correlation)
             await self._client.publish(
@@ -598,6 +605,7 @@ class Coordinator:
                 task_id=req.task_id,
                 state="completed",
                 artifact_text=result_json,
+                context_id=req.context_id or "",
             )
             props = make_properties(correlation_data=correlation)
             await self._client.publish(reply_topic, event, qos=1, properties=props)
@@ -650,6 +658,7 @@ class Coordinator:
                 task_id=session_id,
                 state="canceled",
                 artifact_text="Session canceled via runtime API",
+                context_id=state.context_id,
             )
             props = make_properties(correlation_data=state.caller_correlation)
             await self._client.publish(
@@ -760,6 +769,7 @@ class Coordinator:
                 request_id=state.caller_correlation,
                 task_id=state.session_id,
                 state="submitted",
+                context_id=state.context_id,
             )
             props = make_properties(correlation_data=state.caller_correlation)
             await self._client.publish(
@@ -887,6 +897,7 @@ class Coordinator:
             state = SessionState(
                 session_id=db_session.id,
                 app_version_id=db_session.app_version_id,
+                context_id=db_session.context_id,
                 caller_reply_topic=db_session.caller_reply_topic,
                 caller_correlation=db_session.caller_correlation,
                 variables=json.loads(db_session.variables)

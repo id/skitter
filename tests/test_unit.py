@@ -76,6 +76,42 @@ class TestA2ARequest:
         assert restored.sender == ""
         assert restored.variables == {}
 
+    def test_context_id_in_roundtrip(self):
+        ctx = "ctx-11111111-2222-3333-4444-555555555555"
+        req = A2ARequest(text="hello", request_id="r1", context_id=ctx, sender="cli")
+        j = req.to_json()
+        d = json.loads(j)
+        assert d["params"]["message"]["contextId"] == ctx
+
+        restored = A2ARequest.from_json(j)
+        assert restored.context_id == ctx
+
+    def test_context_id_auto_generated(self):
+        import uuid as uuid_mod
+
+        req = A2ARequest(text="hello", request_id="r1")
+        assert req.context_id
+        uuid_mod.UUID(req.context_id)  # must be valid UUID
+
+    def test_context_id_preserved_from_json(self):
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "r1",
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "hi"}],
+                        "taskId": "t1",
+                        "contextId": "ctx-explicit",
+                    }
+                },
+            }
+        )
+        req = A2ARequest.from_json(payload)
+        assert req.context_id == "ctx-explicit"
+
 
 class TestStatusEvent:
     def test_working_text(self):
@@ -183,6 +219,18 @@ class TestStatusEvent:
         kind, content = classify_reply({"something": "else"})
         assert kind == ""
         assert content == ""
+
+    def test_status_event_with_context_id(self):
+        event = make_status_event(
+            "req-1", "sess-1", "working", message="hi", context_id="ctx-123"
+        )
+        d = json.loads(event)
+        assert d["result"]["contextId"] == "ctx-123"
+
+    def test_status_event_without_context_id(self):
+        event = make_status_event("req-1", "sess-1", "working", message="hi")
+        d = json.loads(event)
+        assert "contextId" not in d["result"]
 
 
 # --- A2A error codes ---
@@ -411,6 +459,44 @@ class TestCoordinatorSession:
             variables={"user_request": "custom override"},
         )
         assert state.variables["user_request"] == "custom override"
+
+    def test_session_stores_context_id(self):
+        from skitter.db import App, AppVersion
+
+        sup = self._make_coordinator()
+        self.db.create_app(App(id="ctx-app", name="Ctx"))
+        self.db.create_app_version(
+            AppVersion(
+                id="v1-ctx",
+                app_id="ctx-app",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "a",
+                                "agent": "x",
+                                "description": "do",
+                                "needs": [],
+                                "next": "output",
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+        req = A2ARequest(text="go", request_id="r1", context_id="ctx-explicit-123")
+        state = sup.create_session_from_graph(
+            graph_json=self.db.get_app_version("v1-ctx").graph_json,
+            app_version_id="v1-ctx",
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        assert state.context_id == "ctx-explicit-123"
+
+        db_session = self.db.get_session(state.session_id)
+        assert db_session.context_id == "ctx-explicit-123"
 
 
 # --- A2A compliance: agent runner handle_request ---
@@ -764,6 +850,61 @@ class TestCoordinatorDispatchCompliance:
         assert len(dispatched_payloads) == 1
         prompt_text = dispatched_payloads[0]["params"]["message"]["parts"][0]["text"]
         assert "User request:" not in prompt_text
+
+    @pytest.mark.asyncio
+    async def test_dispatched_request_has_context_id(self):
+        """Dispatched A2A payload must include the session's contextId."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1", context_id="ctx-dispatch-test")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+
+        dispatched_payloads = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatched_payloads) == 1
+        msg = dispatched_payloads[0]["params"]["message"]
+        assert msg["contextId"] == "ctx-dispatch-test"
+
+    @pytest.mark.asyncio
+    async def test_submitted_ack_has_context_id(self):
+        """Submitted ack event must include contextId."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1", context_id="ctx-ack-test")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/caller",
+            caller_correlation="corr-caller",
+        )
+        await sup._start_session(state, "test")
+
+        # Find submitted ack published to caller
+        ack_calls = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/caller"
+        ]
+        submitted = [
+            c
+            for c in ack_calls
+            if c.get("result", {}).get("status", {}).get("state") == "submitted"
+        ]
+        assert len(submitted) == 1
+        assert submitted[0]["result"]["contextId"] == "ctx-ack-test"
 
 
 # --- A2A compliance: backoff calculation ---

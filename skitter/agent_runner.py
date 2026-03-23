@@ -197,6 +197,7 @@ async def handle_request(
         request_id=correlation,
         task_id=req.task_id,
         state="submitted",
+        context_id=req.context_id or "",
     )
     props = make_properties(correlation_data=correlation)
     await client.publish(reply_topic, ack, qos=1, properties=props)
@@ -209,6 +210,7 @@ async def handle_request(
             state="working",
             message=content,
             message_type=item_type,
+            context_id=req.context_id or "",
         )
         await client.publish(reply_topic, event, qos=1, properties=props)
 
@@ -221,6 +223,7 @@ async def handle_request(
             task_id=req.task_id,
             state="canceled",
             message="Task canceled",
+            context_id=req.context_id or "",
         )
         try:
             await client.publish(reply_topic, canceled, qos=1, properties=props)
@@ -235,6 +238,7 @@ async def handle_request(
             task_id=req.task_id,
             state="failed",
             message="Internal error",
+            context_id=req.context_id or "",
         )
         await client.publish(reply_topic, failed, qos=1, properties=props)
         return
@@ -245,6 +249,7 @@ async def handle_request(
         task_id=req.task_id,
         state="completed",
         artifact_text=result,
+        context_id=req.context_id or "",
     )
     await client.publish(reply_topic, terminal, qos=1, properties=props)
     log.info("Request %s completed (%d chars)", req.request_id, len(result))

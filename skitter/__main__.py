@@ -14,51 +14,40 @@ def _run_prompt(agent_id: str, prompt: str) -> None:
         REPLY_FAILED,
         REPLY_INPUT_REQUIRED,
         REPLY_SUBMITTED,
-        REPLY_TERMINAL,
         REPLY_TEXT,
+        REPLY_TIMEOUT,
         REPLY_TOOL,
-        send_and_wait,
+        stream_replies,
         topic_request,
     )
 
     console = Console()
 
-    def on_reply(kind: str, content: str) -> bool:
-        if kind == REPLY_SUBMITTED:
-            console.print(f"[dim]Session: {content}[/dim]")
-        elif kind == REPLY_TEXT:
-            console.print(content, end="")
-        elif kind == REPLY_TOOL:
-            console.print(f"  [dim][tool] {content}[/dim]")
-        elif kind == REPLY_ARTIFACT:
-            console.print(f"\n\n{content}")
-        elif kind == REPLY_TERMINAL:
-            return True
-        elif kind == REPLY_INPUT_REQUIRED:
-            console.print(f"[yellow]Input required: {content}[/yellow]")
-            return True
-        elif kind == REPLY_FAILED:
-            console.print(f"[red]Failed: {content}[/red]")
-            return True
-        elif kind == REPLY_ERROR:
-            console.print(f"[red]Error: {content}[/red]")
-            return True
-        elif kind == "timeout":
-            console.print("[yellow]Timed out waiting for result[/yellow]")
-            return True
-        return False
+    async def _stream() -> None:
+        request_id = f"run-{uuid.uuid4().hex[:8]}"
+        req = A2ARequest(text=prompt, request_id=request_id, sender="cli")
 
-    request_id = f"run-{uuid.uuid4().hex[:8]}"
-    req = A2ARequest(text=prompt, request_id=request_id, sender="cli")
+        async for kind, content in stream_replies(
+            topic_request(agent_id), req.to_json(), request_id
+        ):
+            if kind == REPLY_SUBMITTED:
+                console.print(f"[dim]Session: {content}[/dim]")
+            elif kind == REPLY_TEXT:
+                console.print(content, end="")
+            elif kind == REPLY_TOOL:
+                console.print(f"  [dim][tool] {content}[/dim]")
+            elif kind == REPLY_ARTIFACT:
+                console.print(f"\n\n{content}")
+            elif kind == REPLY_INPUT_REQUIRED:
+                console.print(f"[yellow]Input required: {content}[/yellow]")
+            elif kind == REPLY_FAILED:
+                console.print(f"[red]Failed: {content}[/red]")
+            elif kind == REPLY_ERROR:
+                console.print(f"[red]Error: {content}[/red]")
+            elif kind == REPLY_TIMEOUT:
+                console.print("[yellow]Timed out waiting for result[/yellow]")
 
-    asyncio.run(
-        send_and_wait(
-            topic_request(agent_id),
-            req.to_json(),
-            request_id,
-            on_reply,
-        )
-    )
+    asyncio.run(_stream())
 
 
 def dispatch() -> None:

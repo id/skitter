@@ -6,13 +6,13 @@ layer on top.
 """
 
 import asyncio
+from collections.abc import AsyncGenerator
 import json
 import logging
 import os
 import random
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from skitter.mqtt import (
     get_correlation_data,
@@ -21,8 +21,7 @@ from skitter.mqtt import (
     mqtt_client_kwargs,
 )
 
-if TYPE_CHECKING:
-    import aiomqtt
+import aiomqtt
 
 # --- A2A namespace parameters ---
 
@@ -185,6 +184,17 @@ REPLY_TERMINAL = "terminal"
 REPLY_INPUT_REQUIRED = "input_required"
 REPLY_FAILED = "failed"
 REPLY_ERROR = "error"
+REPLY_TIMEOUT = "timeout"
+
+_TERMINAL_KINDS = frozenset(
+    {
+        REPLY_TERMINAL,
+        REPLY_INPUT_REQUIRED,
+        REPLY_FAILED,
+        REPLY_ERROR,
+        REPLY_TIMEOUT,
+    }
+)
 
 
 def _extract_message_text(status: dict) -> str:
@@ -348,26 +358,12 @@ def _backoff_delay(attempt: int) -> float:
     return base + jitter
 
 
-async def send_and_wait(
+async def send_request(
     request_topic: str,
     payload: str,
     correlation_id: str,
-    on_reply: "callable",
-    *,
-    wait: bool = True,
-    label: str = "",
 ) -> None:
-    """Publish a request and stream replies until terminal or timeout.
-
-    Implements the A2A requester retry/timeout profile: retries with new
-    Correlation Data on first-reply timeout, validates Correlation Data
-    on incoming messages.
-
-    on_reply(kind, content) is called for each classified reply message.
-    It should return True to stop listening (e.g. on terminal/error).
-    """
-    import aiomqtt
-
+    """Fire-and-forget: publish an A2A request without waiting for replies."""
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
 
@@ -376,16 +372,34 @@ async def send_and_wait(
             identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}",
         ),
     ) as client:
-        if wait:
-            await client.subscribe(reply_t, qos=1)
+        props = make_properties(
+            response_topic=reply_t,
+            correlation_data=correlation_id,
+        )
+        await client.publish(request_topic, payload, qos=1, properties=props)
 
-        if not wait:
-            props = make_properties(
-                response_topic=reply_t,
-                correlation_data=correlation_id,
-            )
-            await client.publish(request_topic, payload, qos=1, properties=props)
-            return
+
+async def stream_replies(
+    request_topic: str,
+    payload: str,
+    correlation_id: str,
+) -> AsyncGenerator[tuple[str, str], None]:
+    """Publish a request and yield (kind, content) reply tuples.
+
+    Implements the A2A requester retry/timeout profile: retries with new
+    Correlation Data on first-reply timeout, validates Correlation Data
+    on incoming messages. Yields ("timeout", "") if all attempts are
+    exhausted or the stream stalls after receiving at least one reply.
+    """
+    mqtt_session = uuid.uuid4().hex[:12]
+    reply_t = topic_reply("cli", mqtt_session)
+
+    async with aiomqtt.Client(
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}",
+        ),
+    ) as client:
+        await client.subscribe(reply_t, qos=1)
 
         got_first_reply = False
         current_correlation = correlation_id
@@ -434,20 +448,20 @@ async def send_and_wait(
                             got_first_reply = True
                             timeout = STREAM_IDLE_TIMEOUT
 
-                            if on_reply(kind, content):
+                            yield kind, content
+                            if kind in _TERMINAL_KINDS:
                                 return
                             break  # reset timeout for next message
                     # Inner loop broke normally (processed a message), continue
             except TimeoutError:
                 if got_first_reply:
-                    # Stream stalled after at least one reply
-                    on_reply("timeout", "")
+                    yield REPLY_TIMEOUT, ""
                     return
                 # No reply at all: retry (next attempt)
                 continue
 
         # All attempts exhausted
-        on_reply("timeout", "")
+        yield REPLY_TIMEOUT, ""
 
 
 # --- Shared request validation ---

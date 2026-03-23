@@ -421,6 +421,7 @@ async def run_with_def(agent: AgentDef) -> None:
                     _, dedup_state, dedup_result = completed_tasks[req.task_id]
                 else:
                     dedup_state = None
+                    dedup_result = None
 
                 if dedup_state:
                     # Reject context_id mismatch per A2A-over-MQTT spec

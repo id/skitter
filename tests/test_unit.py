@@ -1294,10 +1294,10 @@ class TestSendAndWait:
 
     @pytest.mark.asyncio
     async def test_fire_and_forget_mode(self):
-        """wait=False publishes once and returns without subscribing."""
+        """send_request publishes once and returns without subscribing."""
         from unittest.mock import AsyncMock, patch
 
-        from skitter.a2a import send_and_wait
+        from skitter.a2a import send_request
 
         mock_client = AsyncMock()
         mock_client.subscribe = AsyncMock()
@@ -1307,30 +1307,27 @@ class TestSendAndWait:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            await send_and_wait(
-                "topic/req", '{"test": true}', "corr-1", lambda k, c: False, wait=False
-            )
+            await send_request("topic/req", '{"test": true}', "corr-1")
 
         mock_client.subscribe.assert_not_called()
         mock_client.publish.assert_called_once()
+        # A2A protocol requires Response Topic even for fire-and-forget
+        props = mock_client.publish.call_args.kwargs.get("properties")
+        assert props is not None
+        assert hasattr(props, "ResponseTopic") and props.ResponseTopic
+        assert hasattr(props, "CorrelationData") and props.CorrelationData
 
     @pytest.mark.asyncio
     async def test_terminal_reply_stops_listening(self):
-        """on_reply returning True stops the loop immediately."""
+        """Generator stops after yielding a terminal kind."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from skitter.a2a import send_and_wait, make_status_event
+        from skitter.a2a import REPLY_TERMINAL, stream_replies, make_status_event
 
         # Build a terminal reply message
         terminal = make_status_event(
             request_id="corr-1", task_id="t1", state="completed", message="done"
         )
-
-        replies = []
-
-        def on_reply(kind, content):
-            replies.append((kind, content))
-            return kind == "terminal"
 
         # Mock MQTT client that yields one terminal message
         mock_msg = MagicMock()
@@ -1352,18 +1349,21 @@ class TestSendAndWait:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            await send_and_wait("topic/req", "{}", "corr-1", on_reply)
+            replies = [
+                (kind, content)
+                async for kind, content in stream_replies("topic/req", "{}", "corr-1")
+            ]
 
         assert len(replies) == 1
-        assert replies[0][0] == "terminal"
+        assert replies[0][0] == REPLY_TERMINAL
         assert "done" in replies[0][1]
 
     @pytest.mark.asyncio
     async def test_timeout_triggers_retry_with_new_correlation(self):
-        """When no reply arrives, send_and_wait retries with new Correlation Data."""
+        """When no reply arrives, stream_replies retries with new Correlation Data."""
         from unittest.mock import AsyncMock, patch
 
-        from skitter.a2a import send_and_wait
+        from skitter.a2a import REPLY_TIMEOUT, stream_replies
 
         mock_client = AsyncMock()
         mock_client.subscribe = AsyncMock()
@@ -1373,14 +1373,6 @@ class TestSendAndWait:
         async def blocking_messages():
             await asyncio.sleep(999)
             yield  # never reached; async gen that hangs
-
-        timeout_received = []
-
-        def on_reply(kind, content):
-            if kind == "timeout":
-                timeout_received.append(True)
-                return True
-            return False
 
         with (
             patch("aiomqtt.Client") as MockClient,
@@ -1394,18 +1386,20 @@ class TestSendAndWait:
             # Each access to .messages returns a fresh blocking generator
             type(mock_client).messages = property(lambda self: blocking_messages())
 
-            await send_and_wait("topic/req", "{}", "corr-orig", on_reply)
+            replies = []
+            async for kind, content in stream_replies("topic/req", "{}", "corr-orig"):
+                replies.append((kind, content))
 
         # Should have published 3 times (initial + 2 retries)
         assert mock_client.publish.call_count == 3
-        assert timeout_received == [True]
+        assert replies == [(REPLY_TIMEOUT, "")]
 
     @pytest.mark.asyncio
     async def test_ignores_mismatched_correlation(self):
         """Messages with wrong Correlation Data are silently skipped."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from skitter.a2a import send_and_wait, make_status_event
+        from skitter.a2a import stream_replies, make_status_event
 
         # One message with wrong correlation, then one with correct
         wrong_msg = MagicMock()
@@ -1424,12 +1418,6 @@ class TestSendAndWait:
         right_props.CorrelationData = b"corr-1"
         right_msg.properties = right_props
 
-        replies = []
-
-        def on_reply(kind, content):
-            replies.append((kind, content))
-            return kind == "terminal"
-
         mock_client = AsyncMock()
         mock_client.subscribe = AsyncMock()
         mock_client.publish = AsyncMock()
@@ -1444,9 +1432,12 @@ class TestSendAndWait:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            await send_and_wait("topic/req", "{}", "corr-1", on_reply)
+            replies = [
+                (kind, content)
+                async for kind, content in stream_replies("topic/req", "{}", "corr-1")
+            ]
 
-        # Only the correctly-correlated message should reach on_reply
+        # Only the correctly-correlated message should reach the caller
         assert len(replies) == 1
         assert "good" in replies[0][1]
 

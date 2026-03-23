@@ -725,7 +725,7 @@ class TestCoordinatorDispatchCompliance:
 
     @pytest.mark.asyncio
     async def test_handle_request_deduplicates_by_task_id(self):
-        """Second request with same Task.id must be silently ignored."""
+        """Second request with same Task.id must reply with current state, not create a new session."""
         sup, mock_client = self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
@@ -745,15 +745,53 @@ class TestCoordinatorDispatchCompliance:
         dup_req = A2ARequest(text="go again", request_id="r2", task_id=req.task_id)
         await sup.handle_request(dup_req.to_json(), "reply/t2", "corr-2", "test-app")
 
-        # No error published, no new session created; silently dropped
-        error_publishes = [
-            call
+        # Must reply with existing state, not create a new session
+        replies = [
+            json.loads(call.args[1])
             for call in mock_client.publish.call_args_list
             if str(call.args[0]) == "reply/t2"
         ]
-        assert len(error_publishes) == 0
+        assert len(replies) == 1
+        assert replies[0]["result"]["status"]["state"] == "working"
+        assert replies[0]["result"]["taskId"] == req.task_id
         # Still only one session
         assert len(sup._sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_dedup_completed_session_returns_stored_state(self):
+        """Duplicate Task.id for a completed session must reply with completed state."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        # Simulate completion: remove from in-memory, mark DB as completed
+        sup._sessions.pop(state.session_id)
+        self.db.update_session_state(state.session_id, "completed")
+        # Store a result on the terminal task
+        task_row_id = f"{state.session_id}/step"
+        self.db.update_task(task_row_id, state="completed", result="final answer")
+
+        mock_client.publish.reset_mock()
+
+        dup_req = A2ARequest(text="go again", request_id="r2", task_id=req.task_id)
+        await sup.handle_request(dup_req.to_json(), "reply/t2", "corr-2", "test-app")
+
+        replies = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/t2"
+        ]
+        assert len(replies) == 1
+        assert replies[0]["result"]["status"]["state"] == "completed"
+        assert replies[0]["result"]["taskId"] == req.task_id
+        assert "final answer" in replies[0]["result"]["artifact"]["parts"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_send_error_includes_a2a_error_data(self):

@@ -167,7 +167,7 @@ What it does:
 4. On request: runs the CLI tool as a subprocess, streams events back to caller
 5. Handles `tasks/cancel`: kills the subprocess, replies with `canceled` state
 6. Validates Task.id presence; rejects requests without it
-7. Deduplicates by Task.id (in-memory, 5-minute TTL)
+7. Deduplicates by Task.id (in-memory, 5-minute TTL); returns existing task state on duplicates
 
 The agent-runner reads native agent definitions directly: Claude `.md` files (YAML frontmatter) or Codex `.toml` files. No separate skitter config needed. Runtime is inferred from the file extension.
 
@@ -234,7 +234,7 @@ Every A2A request carries a `Task.id` (UUIDv4) in `params.message.taskId`, gener
 1. **Requester** generates a Task.id and includes it in the `message/send` payload
 2. **Responder** echoes the Task.id in all `TaskStatusUpdateEvent` replies
 3. **Retries** reuse the same Task.id with new MQTT Correlation Data
-4. **Deduplication**: responders track completed Task.ids and silently drop duplicates
+4. **Deduplication**: responders track completed Task.ids and return existing task state on duplicates (per A2A-over-MQTT spec)
 5. **Coordinator sessions**: the coordinator uses the incoming Task.id as the session ID; dispatched sub-tasks get their own UUIDv4 Task.ids
 
 Validation: both agent-runner and coordinator reject requests with missing Task.id (`transport_protocol_error`, code -32005).

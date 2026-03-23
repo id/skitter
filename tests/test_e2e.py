@@ -340,7 +340,7 @@ class TestAgentRunner:
             pytest.fail("No error response received for missing Task.id")
 
     async def test_deduplication_by_task_id(self, start_agent):
-        """Duplicate Task.id must be silently ignored (spec gap 7)."""
+        """Duplicate Task.id must return existing task state, not re-execute."""
         aid = f"test-dedup-{uuid.uuid4().hex[:4]}"
         call_count = 0
 
@@ -403,15 +403,17 @@ class TestAgentRunner:
                 topic_request(aid), req2.to_json(), qos=1, properties=props2
             )
 
-            # Give it a moment; no reply should come
-            try:
-                async with asyncio.timeout(2.0):
-                    async for msg in client.messages:
-                        raw = msg.payload.decode() if msg.payload else ""
-                        if raw:
-                            pytest.fail("Got unexpected reply for duplicate Task.id")
-            except TimeoutError:
-                pass  # expected: no reply
+            # Must get a reply with existing completed state
+            async with asyncio.timeout(5.0):
+                async for msg in client.messages:
+                    raw = msg.payload.decode() if msg.payload else ""
+                    if not raw:
+                        continue
+                    data = json.loads(raw)
+                    result = data.get("result", {})
+                    state = result.get("status", {}).get("state", "")
+                    if state == "completed":
+                        break
 
         assert call_count == 1  # handler was NOT called again
 

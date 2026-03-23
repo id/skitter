@@ -2,7 +2,7 @@
 
 MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker. A coordinator handles composed multi-agent apps: creating orchestration graphs from natural language via LLM, dispatching A2A requests, and resolving dependencies.
 
-~3,500 lines of Python. Works with any A2A-over-MQTT agent. Ships with a convenience wrapper for Claude Code and Codex CLI.
+~3,900 lines of Python. Works with any A2A-over-MQTT agent. Ships with a convenience wrapper for Claude Code and Codex CLI.
 
 ## Quickstart (Local)
 
@@ -34,11 +34,21 @@ uv run python -m skitter
 # Start an agent (terminal 2, see "Agents" section for setup)
 uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
 
-# Query the coordinator's runtime API (terminal 3)
+# One-shot request (terminal 3; see "run" section below)
 uv run python -m skitter run "list apps"
 ```
 
-The `run` command sends structured queries to the coordinator's runtime API (`list apps`, `create app`, `cancel session`, etc.). Use `chat` for interactive conversations with agents:
+The `run` command sends a one-shot A2A request. Without an agent ID it targets the coordinator's runtime API; with one it targets that agent directly:
+
+```bash
+# Runtime API query
+uv run python -m skitter run "list apps"
+
+# Direct agent request
+uv run python -m skitter run researcher "summarize the latest MQTT 5.0 features"
+```
+
+Use `chat` for interactive conversations with agents:
 
 ```bash
 uv run python -m skitter chat

@@ -7,15 +7,18 @@ def _run_prompt(agent_id: str, prompt: str) -> None:
     """Send a one-shot A2A request to an agent and print the reply."""
     from rich.console import Console
 
-    from skitter.mqtt import send_and_wait, topic_request
-    from skitter.types import (
+    from skitter.a2a import (
         A2ARequest,
+        REPLY_ARTIFACT,
         REPLY_ERROR,
         REPLY_FAILED,
+        REPLY_INPUT_REQUIRED,
         REPLY_SUBMITTED,
         REPLY_TERMINAL,
         REPLY_TEXT,
         REPLY_TOOL,
+        send_and_wait,
+        topic_request,
     )
 
     console = Console()
@@ -27,8 +30,12 @@ def _run_prompt(agent_id: str, prompt: str) -> None:
             console.print(content, end="")
         elif kind == REPLY_TOOL:
             console.print(f"  [dim][tool] {content}[/dim]")
-        elif kind == REPLY_TERMINAL:
+        elif kind == REPLY_ARTIFACT:
             console.print(f"\n\n{content}")
+        elif kind == REPLY_TERMINAL:
+            return True
+        elif kind == REPLY_INPUT_REQUIRED:
+            console.print(f"[yellow]Input required: {content}[/yellow]")
             return True
         elif kind == REPLY_FAILED:
             console.print(f"[red]Failed: {content}[/red]")
@@ -59,9 +66,11 @@ def dispatch() -> None:
 
     Routes to the appropriate sub-module based on the first positional arg:
 
-        skitter                → coordinator (default)
-        skitter chat  [...]    → interactive MQTT chat client
-        skitter run   [...]    → one-shot A2A request
+        skitter                              → coordinator (default)
+        skitter chat [...]                   → interactive MQTT chat client
+        skitter run  [agent_id] '<prompt>'   → one-shot A2A request (default: skitter)
+        skitter agent-runner <file>          → standalone A2A agent process
+        skitter pull [target_dir]            → pull agent cards from broker
     """
     subcmd = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -78,18 +87,16 @@ def dispatch() -> None:
 
         pull_main()
     elif subcmd == "run":
-        prompt = " ".join(sys.argv[2:])
-        if not prompt:
-            print("Usage: skitter run '<prompt>'", file=sys.stderr)
+        args = sys.argv[2:]
+        if not args:
+            print("Usage: skitter run [agent_id] '<prompt>'", file=sys.stderr)
             sys.exit(1)
-        _run_prompt("skitter", prompt)
-    elif subcmd in ("skitter", "supervisor"):
-        from skitter.coordinator import main
-
-        main()
-    elif subcmd and not subcmd.startswith("-"):
-        prompt = " ".join(sys.argv[1:])
-        _run_prompt("skitter", prompt)
+        # Two+ args where first doesn't look like prose: treat as agent_id
+        if len(args) >= 2 and " " not in args[0]:
+            agent_id, prompt = args[0], " ".join(args[1:])
+        else:
+            agent_id, prompt = "skitter", " ".join(args)
+        _run_prompt(agent_id, prompt)
     else:
         from skitter.coordinator import main
 

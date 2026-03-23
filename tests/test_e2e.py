@@ -20,24 +20,25 @@ import pytest_asyncio
 from skitter.config import AgentDef
 from skitter.coordinator import Coordinator
 from skitter.db import SqliteDB
-from skitter.mqtt import (
+from skitter.a2a import (
     A2A_ORG,
     A2A_UNIT,
-    make_properties,
-    mqtt_client_kwargs,
-    topic_coordinator_lock,
-    topic_discovery,
-    topic_reply,
-    topic_request,
-)
-from skitter.types import (
     A2ARequest,
+    REPLY_ARTIFACT,
     REPLY_ERROR,
     REPLY_FAILED,
     REPLY_SUBMITTED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     classify_reply,
+    topic_coordinator_lock,
+    topic_discovery,
+    topic_reply,
+    topic_request,
+)
+from skitter.mqtt import (
+    make_properties,
+    mqtt_client_kwargs,
 )
 
 from .conftest import create_test_app, needs_mqtt, send_and_collect, wait_for_discovery
@@ -237,9 +238,11 @@ class TestAgentRunner:
         stream_msgs = [(k, c) for k, c in messages if k == REPLY_TEXT]
         assert len(stream_msgs) >= 2
         assert any("thinking" in c for _, c in stream_msgs)
+        artifacts = [(k, c) for k, c in messages if k == REPLY_ARTIFACT]
+        assert artifacts
+        assert "Final answer" in artifacts[0][1]
         terminal = [(k, c) for k, c in messages if k == REPLY_TERMINAL]
         assert terminal
-        assert "Final answer" in terminal[0][1]
 
     async def test_reply_echoes_requester_task_id(self, start_agent):
         """All reply events must carry the requester's taskId (spec gap 1)."""

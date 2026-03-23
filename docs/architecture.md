@@ -183,6 +183,7 @@ The `skitter` agent handles structured queries:
 | `get session {id}` | Session with all task states |
 | `cancel session {id}` | Cancel a running session |
 | `create app {json}` | Create composed app from agent IDs + instructions |
+| `delete app {id}` | Delete an app and all its versions, sessions, and tasks |
 
 Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` for external consumers (e.g., dashboards).
 
@@ -241,7 +242,7 @@ Validation: both agent-runner and coordinator reject requests with missing Task.
 
 ## Requester Retry/Timeout Profile
 
-`send_and_wait()` in `skitter/mqtt.py` implements the spec-mandated retry profile:
+`send_and_wait()` in `skitter/a2a.py` implements the spec-mandated retry profile:
 
 | Parameter | Default | Env var |
 |-----------|---------|---------|

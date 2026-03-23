@@ -8,16 +8,12 @@ import pytest
 
 from skitter.config import AgentDef
 from skitter.coordinator import _parse_agent_id_from_topic
-from skitter.mqtt import (
-    topic_a2a_event,
-    topic_discovery_wildcard,
-    topic_request,
-)
-from skitter.types import (
+from skitter.a2a import (
     A2ARequest,
     A2A_REQUEST_EXPIRED,
     A2A_RESPONDER_UNAVAILABLE,
     A2A_TRANSPORT_PROTOCOL_ERROR,
+    REPLY_ARTIFACT,
     REPLY_ERROR,
     REPLY_FAILED,
     REPLY_TERMINAL,
@@ -25,7 +21,11 @@ from skitter.types import (
     REPLY_TOOL,
     classify_reply,
     make_a2a_error,
+    make_artifact_event,
     make_status_event,
+    topic_a2a_event,
+    topic_discovery_wildcard,
+    topic_request,
 )
 
 
@@ -63,8 +63,11 @@ class TestA2ARequest:
         assert restored.variables == {"topic": "quantum"}
 
     def test_minimal(self):
+        import uuid as uuid_mod
+
         req = A2ARequest(text="hello", request_id="s1")
         assert req.task_id  # auto-generated UUIDv4
+        uuid_mod.UUID(req.task_id)  # must be valid UUID format
         j = req.to_json()
         d = json.loads(j)
         assert "metadata" not in d["params"]
@@ -116,7 +119,11 @@ class TestA2ARequest:
 class TestStatusEvent:
     def test_working_text(self):
         event = make_status_event(
-            "req-1", "sess-abc123", "working", message="hello", task_name="research"
+            "req-1",
+            "sess-abc123",
+            "working",
+            message="hello",
+            metadata={"task_name": "research"},
         )
         d = json.loads(event)
         assert d["jsonrpc"] == "2.0"
@@ -124,8 +131,11 @@ class TestStatusEvent:
         assert d["result"]["type"] == "TaskStatusUpdateEvent"
         assert d["result"]["taskId"] == "sess-abc123"
         assert d["result"]["status"]["state"] == "working"
-        assert d["result"]["status"]["message"] == "hello"
-        assert d["result"]["status"]["metadata"]["task_name"] == "research"
+        assert d["result"]["status"]["message"] == {
+            "role": "agent",
+            "parts": [{"type": "text", "text": "hello"}],
+        }
+        assert d["result"]["metadata"]["task_name"] == "research"
         assert "artifact" not in d["result"]
 
         kind, content = classify_reply(d)
@@ -138,32 +148,36 @@ class TestStatusEvent:
             "sess-abc123",
             "working",
             message="Read: file.py",
-            message_type="tool_use",
-            task_name="research",
+            metadata={"type": "tool_use", "task_name": "research"},
         )
         d = json.loads(event)
-        assert d["result"]["status"]["metadata"]["type"] == "tool_use"
-        assert d["result"]["status"]["metadata"]["task_name"] == "research"
+        assert d["result"]["metadata"]["type"] == "tool_use"
+        assert d["result"]["metadata"]["task_name"] == "research"
 
         kind, content = classify_reply(d)
         assert kind == REPLY_TOOL
         assert content == "Read: file.py"
 
     def test_terminal_with_artifact(self):
-        event = make_status_event(
+        artifact_event = make_artifact_event(
             "req-2",
             "sess-def456",
-            "completed",
-            artifact_text="Final answer",
-            task_name="summarize",
+            "Final answer",
+            metadata={"task_name": "summarize"},
         )
-        d = json.loads(event)
-        assert d["result"]["status"]["state"] == "completed"
-        assert d["result"]["artifact"]["parts"][0]["text"] == "Final answer"
+        status_event = make_status_event("req-2", "sess-def456", "completed")
+        da = json.loads(artifact_event)
+        ds = json.loads(status_event)
+        assert ds["result"]["status"]["state"] == "completed"
+        assert da["result"]["artifact"]["parts"][0]["text"] == "Final answer"
 
-        kind, content = classify_reply(d)
-        assert kind == REPLY_TERMINAL
-        assert content == "Final answer"
+        kind_a, content_a = classify_reply(da)
+        assert kind_a == REPLY_ARTIFACT
+        assert content_a == "Final answer"
+
+        kind_s, content_s = classify_reply(ds)
+        assert kind_s == REPLY_TERMINAL
+        assert content_s == ""
 
     def test_error_reply(self):
         kind, content = classify_reply(
@@ -181,8 +195,8 @@ class TestStatusEvent:
         assert kind == REPLY_FAILED
         assert content == "Agent crashed"
 
-    def test_failed_reply_with_artifact_fallback(self):
-        """When a failed reply has no message, fall back to artifact text."""
+    def test_failed_reply_no_message_uses_default(self):
+        """When a failed reply has no message, content defaults to 'Task failed'."""
         d = {
             "jsonrpc": "2.0",
             "id": "req-4",
@@ -190,12 +204,11 @@ class TestStatusEvent:
                 "type": "TaskStatusUpdateEvent",
                 "taskId": "sess-xyz",
                 "status": {"state": "failed"},
-                "artifact": {"parts": [{"type": "text", "text": "error details"}]},
             },
         }
         kind, content = classify_reply(d)
         assert kind == REPLY_FAILED
-        assert content == "error details"
+        assert content == "Task failed"
 
     def test_canceled_reply(self):
         event = make_status_event(
@@ -227,10 +240,82 @@ class TestStatusEvent:
         d = json.loads(event)
         assert d["result"]["contextId"] == "ctx-123"
 
-    def test_status_event_without_context_id(self):
+    def test_context_id_always_present(self):
+        """contextId is REQUIRED per A2A v1.0.0 proto, always emitted."""
         event = make_status_event("req-1", "sess-1", "working", message="hi")
         d = json.loads(event)
-        assert "contextId" not in d["result"]
+        assert d["result"]["contextId"] == ""
+
+    def test_artifact_event_has_context_id(self):
+        """contextId is REQUIRED on TaskArtifactUpdateEvent per proto."""
+        event = make_artifact_event("req-1", "t1", "result", context_id="ctx-1")
+        d = json.loads(event)
+        assert d["result"]["contextId"] == "ctx-1"
+        # Also present when empty
+        event2 = make_artifact_event("req-1", "t1", "result")
+        d2 = json.loads(event2)
+        assert d2["result"]["contextId"] == ""
+
+    def test_input_required_is_stream_final(self):
+        """input-required MUST be treated as stream-final (A2A-over-MQTT spec)."""
+        from skitter.a2a import REPLY_INPUT_REQUIRED
+
+        d = {
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "result": {
+                "type": "TaskStatusUpdateEvent",
+                "taskId": "t1",
+                "contextId": "ctx-1",
+                "status": {
+                    "state": "input-required",
+                    "message": {
+                        "role": "agent",
+                        "parts": [{"type": "text", "text": "What is your name?"}],
+                    },
+                },
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_INPUT_REQUIRED
+        assert content == "What is your name?"
+
+    def test_auth_required_is_stream_final(self):
+        """auth-required MUST be treated as stream-final (A2A-over-MQTT spec)."""
+        from skitter.a2a import REPLY_INPUT_REQUIRED
+
+        d = {
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "result": {
+                "type": "TaskStatusUpdateEvent",
+                "taskId": "t1",
+                "contextId": "",
+                "status": {"state": "auth-required"},
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_INPUT_REQUIRED
+        assert content == "auth-required"
+
+
+class TestSpecDefaults:
+    """Verify spec-mandated default values for retry/timeout profile."""
+
+    def test_reply_first_timeout(self):
+        from skitter.a2a import REPLY_FIRST_TIMEOUT
+
+        assert REPLY_FIRST_TIMEOUT == 15.0
+
+    def test_stream_idle_timeout(self):
+        from skitter.a2a import STREAM_IDLE_TIMEOUT
+
+        assert STREAM_IDLE_TIMEOUT == 30.0
+
+    def test_max_attempts(self):
+        from skitter.a2a import MAX_ATTEMPTS
+
+        assert MAX_ATTEMPTS == 3
 
 
 # --- A2A error codes ---
@@ -690,40 +775,6 @@ class TestCoordinatorDispatchCompliance:
         assert cancel_msgs[0]["params"]["id"] == a2a_task_id
 
     @pytest.mark.asyncio
-    async def test_handle_request_rejects_missing_task_id(self):
-        """Coordinator must reject requests with missing Task.id."""
-        sup, mock_client = self._make_coordinator_with_app()
-
-        # Build a request payload with taskId explicitly empty
-        payload = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": "rpc-1",
-                "method": "message/send",
-                "params": {
-                    "message": {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": "go"}],
-                        "taskId": "",
-                    }
-                },
-            }
-        )
-
-        await sup.handle_request(payload, "reply/t", "corr-1", "test-app")
-
-        # Should have published an error response
-        error_calls = [
-            json.loads(call.args[1])
-            for call in mock_client.publish.call_args_list
-            if str(call.args[0]) == "reply/t"
-        ]
-        assert len(error_calls) == 1
-        err = error_calls[0]["error"]
-        assert err["code"] == A2A_TRANSPORT_PROTOCOL_ERROR
-        assert err["data"]["a2a_error"] == "transport_protocol_error"
-
-    @pytest.mark.asyncio
     async def test_handle_request_deduplicates_by_task_id(self):
         """Second request with same Task.id must reply with current state, not create a new session."""
         sup, mock_client = self._make_coordinator_with_app()
@@ -743,7 +794,7 @@ class TestCoordinatorDispatchCompliance:
 
         # Send another request with the same task_id
         dup_req = A2ARequest(text="go again", request_id="r2", task_id=req.task_id)
-        await sup.handle_request(dup_req.to_json(), "reply/t2", "corr-2", "test-app")
+        await sup.handle_request(dup_req, "reply/t2", "corr-2", "test-app")
 
         # Must reply with existing state, not create a new session
         replies = [
@@ -781,17 +832,26 @@ class TestCoordinatorDispatchCompliance:
         mock_client.publish.reset_mock()
 
         dup_req = A2ARequest(text="go again", request_id="r2", task_id=req.task_id)
-        await sup.handle_request(dup_req.to_json(), "reply/t2", "corr-2", "test-app")
+        await sup.handle_request(dup_req, "reply/t2", "corr-2", "test-app")
 
         replies = [
             json.loads(call.args[1])
             for call in mock_client.publish.call_args_list
             if str(call.args[0]) == "reply/t2"
         ]
-        assert len(replies) == 1
-        assert replies[0]["result"]["status"]["state"] == "completed"
-        assert replies[0]["result"]["taskId"] == req.task_id
-        assert "final answer" in replies[0]["result"]["artifact"]["parts"][0]["text"]
+        # Dedup replays artifact + completed status for terminal sessions
+        assert len(replies) == 2
+        artifact_reply = next(
+            r for r in replies if r["result"]["type"] == "TaskArtifactUpdateEvent"
+        )
+        status_reply = next(
+            r for r in replies if r["result"]["type"] == "TaskStatusUpdateEvent"
+        )
+        assert status_reply["result"]["status"]["state"] == "completed"
+        assert status_reply["result"]["taskId"] == req.task_id
+        assert (
+            "final answer" in artifact_reply["result"]["artifact"]["parts"][0]["text"]
+        )
 
     @pytest.mark.asyncio
     async def test_send_error_includes_a2a_error_data(self):
@@ -950,7 +1010,7 @@ class TestCoordinatorDispatchCompliance:
 
 class TestBackoffDelay:
     def test_backoff_within_expected_range(self):
-        from skitter.mqtt import _backoff_delay
+        from skitter.a2a import _backoff_delay
 
         for _ in range(20):
             d0 = _backoff_delay(0)
@@ -963,11 +1023,353 @@ class TestBackoffDelay:
             assert 4.0 <= d2 <= 4.8
 
     def test_backoff_clamps_at_max(self):
-        from skitter.mqtt import _backoff_delay
+        from skitter.a2a import _backoff_delay
 
         # Attempt index beyond the list should clamp to last entry
         d = _backoff_delay(100)
         assert 4.0 <= d <= 4.8
+
+
+# --- validate_a2a_request ---
+
+
+class TestValidateA2ARequest:
+    """Tests for the shared A2A request validation helper."""
+
+    def _make_mqtt_msg(
+        self,
+        payload: str | bytes = b"",
+        response_topic: str = "reply/t",
+        correlation: str = "corr-1",
+    ) -> MagicMock:
+        msg = MagicMock()
+        msg.payload = payload.encode() if isinstance(payload, str) else payload
+        props = MagicMock()
+        props.ResponseTopic = response_topic or None
+        props.CorrelationData = correlation.encode() if correlation else None
+        msg.properties = props
+        return msg
+
+    def _valid_payload(self, task_id: str = "tid-1") -> str:
+        return json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "rpc-1",
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "hello"}],
+                        "taskId": task_id,
+                    }
+                },
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_valid_request_returns_tuple(self):
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(payload=self._valid_payload())
+        client = AsyncMock()
+        import logging
+
+        result = await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        assert result is not None
+        req, reply_topic, correlation = result
+        assert req.text == "hello"
+        assert req.task_id == "tid-1"
+        assert reply_topic == "reply/t"
+        assert correlation == "corr-1"
+        client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_payload_returns_none_silently(self):
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(payload=b"")
+        client = AsyncMock()
+        import logging
+
+        result = await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        assert result is None
+        client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_response_topic_returns_none_no_error_sent(self):
+        """No Response Topic means we can't reply at all."""
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(
+            payload=self._valid_payload(), response_topic="", correlation="corr-1"
+        )
+        client = AsyncMock()
+        import logging
+
+        result = await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        assert result is None
+        client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_correlation_sends_error_to_reply_topic(self):
+        """Has Response Topic but no Correlation Data: send transport error."""
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(
+            payload=self._valid_payload(), response_topic="reply/t", correlation=""
+        )
+        client = AsyncMock()
+        import logging
+
+        result = await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        assert result is None
+        client.publish.assert_called_once()
+        err = json.loads(client.publish.call_args.args[1])
+        assert err["error"]["code"] == A2A_TRANSPORT_PROTOCOL_ERROR
+        assert "Response Topic or Correlation Data" in err["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_missing_both_props_returns_none_no_error_sent(self):
+        """Neither Response Topic nor Correlation Data: can't reply, just drop."""
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(
+            payload=self._valid_payload(), response_topic="", correlation=""
+        )
+        client = AsyncMock()
+        import logging
+
+        result = await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        assert result is None
+        client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bad_json_sends_parse_error(self):
+        """Malformed JSON sends -32700 parse error response."""
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(payload="not json{{{")
+        client = AsyncMock()
+        import logging
+
+        result = await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        assert result is None
+        client.publish.assert_called_once()
+        err = json.loads(client.publish.call_args.args[1])
+        assert err["error"]["code"] == -32700
+        assert "Parse error" in err["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_missing_task_id_sends_transport_error(self):
+        """Empty taskId sends transport_protocol_error."""
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(payload=self._valid_payload(task_id=""))
+        client = AsyncMock()
+        import logging
+
+        result = await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        assert result is None
+        client.publish.assert_called_once()
+        err = json.loads(client.publish.call_args.args[1])
+        assert err["error"]["code"] == A2A_TRANSPORT_PROTOCOL_ERROR
+        assert "Task.id" in err["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_error_response_echoes_correlation(self):
+        """All error responses must echo the Correlation Data."""
+        from unittest.mock import AsyncMock
+
+        from skitter.a2a import validate_a2a_request
+
+        msg = self._make_mqtt_msg(
+            payload=self._valid_payload(task_id=""), correlation="my-corr-99"
+        )
+        client = AsyncMock()
+        import logging
+
+        await validate_a2a_request(msg, client, log=logging.getLogger("test"))
+        err = json.loads(client.publish.call_args.args[1])
+        assert err["id"] == "my-corr-99"
+
+
+# --- send_and_wait ---
+
+
+class TestSendAndWait:
+    """Tests for the A2A requester retry/timeout profile."""
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_mode(self):
+        """wait=False publishes once and returns without subscribing."""
+        from unittest.mock import AsyncMock, patch
+
+        from skitter.a2a import send_and_wait
+
+        mock_client = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        mock_client.publish = AsyncMock()
+
+        with patch("aiomqtt.Client") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await send_and_wait(
+                "topic/req", '{"test": true}', "corr-1", lambda k, c: False, wait=False
+            )
+
+        mock_client.subscribe.assert_not_called()
+        mock_client.publish.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_terminal_reply_stops_listening(self):
+        """on_reply returning True stops the loop immediately."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from skitter.a2a import send_and_wait, make_status_event
+
+        # Build a terminal reply message
+        terminal = make_status_event(
+            request_id="corr-1", task_id="t1", state="completed", message="done"
+        )
+
+        replies = []
+
+        def on_reply(kind, content):
+            replies.append((kind, content))
+            return kind == "terminal"
+
+        # Mock MQTT client that yields one terminal message
+        mock_msg = MagicMock()
+        mock_msg.payload = terminal.encode()
+        corr_props = MagicMock()
+        corr_props.CorrelationData = b"corr-1"
+        mock_msg.properties = corr_props
+
+        mock_client = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        mock_client.publish = AsyncMock()
+
+        async def fake_messages():
+            yield mock_msg
+
+        mock_client.messages = fake_messages()
+
+        with patch("aiomqtt.Client") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await send_and_wait("topic/req", "{}", "corr-1", on_reply)
+
+        assert len(replies) == 1
+        assert replies[0][0] == "terminal"
+        assert "done" in replies[0][1]
+
+    @pytest.mark.asyncio
+    async def test_timeout_triggers_retry_with_new_correlation(self):
+        """When no reply arrives, send_and_wait retries with new Correlation Data."""
+        from unittest.mock import AsyncMock, patch
+
+        from skitter.a2a import send_and_wait
+
+        mock_client = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        mock_client.publish = AsyncMock()
+
+        # Messages iterator that blocks forever (until timeout fires)
+        async def blocking_messages():
+            await asyncio.sleep(999)
+            yield  # never reached; async gen that hangs
+
+        timeout_received = []
+
+        def on_reply(kind, content):
+            if kind == "timeout":
+                timeout_received.append(True)
+                return True
+            return False
+
+        with (
+            patch("aiomqtt.Client") as MockClient,
+            patch("skitter.a2a.REPLY_FIRST_TIMEOUT", 0.05),
+            patch("skitter.a2a._backoff_delay", return_value=0.01),
+            patch("skitter.a2a.MAX_ATTEMPTS", 3),
+        ):
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            # Each access to .messages returns a fresh blocking generator
+            type(mock_client).messages = property(lambda self: blocking_messages())
+
+            await send_and_wait("topic/req", "{}", "corr-orig", on_reply)
+
+        # Should have published 3 times (initial + 2 retries)
+        assert mock_client.publish.call_count == 3
+        assert timeout_received == [True]
+
+    @pytest.mark.asyncio
+    async def test_ignores_mismatched_correlation(self):
+        """Messages with wrong Correlation Data are silently skipped."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from skitter.a2a import send_and_wait, make_status_event
+
+        # One message with wrong correlation, then one with correct
+        wrong_msg = MagicMock()
+        wrong_msg.payload = make_status_event(
+            request_id="wrong", task_id="t1", state="completed", message="bad"
+        ).encode()
+        wrong_props = MagicMock()
+        wrong_props.CorrelationData = b"wrong-corr"
+        wrong_msg.properties = wrong_props
+
+        right_msg = MagicMock()
+        right_msg.payload = make_status_event(
+            request_id="corr-1", task_id="t1", state="completed", message="good"
+        ).encode()
+        right_props = MagicMock()
+        right_props.CorrelationData = b"corr-1"
+        right_msg.properties = right_props
+
+        replies = []
+
+        def on_reply(kind, content):
+            replies.append((kind, content))
+            return kind == "terminal"
+
+        mock_client = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        mock_client.publish = AsyncMock()
+
+        async def fake_messages():
+            yield wrong_msg
+            yield right_msg
+
+        mock_client.messages = fake_messages()
+
+        with patch("aiomqtt.Client") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await send_and_wait("topic/req", "{}", "corr-1", on_reply)
+
+        # Only the correctly-correlated message should reach on_reply
+        assert len(replies) == 1
+        assert "good" in replies[0][1]
 
 
 # --- Entry task detection ---
@@ -1488,7 +1890,7 @@ class TestSqliteDB:
 
 class TestTaskTarget:
     def test_defaults(self):
-        from skitter.types import TaskTarget
+        from skitter.a2a import TaskTarget
 
         t = TaskTarget(agent="researcher")
         assert t.mqtt_host == ""
@@ -2348,19 +2750,24 @@ class TestRuntimeApiIntegration:
 
         # Query: list apps
         req = A2ARequest(text="list apps", request_id="q1")
-        await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+        await sup._handle_runtime_query(req, "reply/q", "corr-q1")
 
-        # Find the reply (non-event publish)
+        # Find the replies (artifact event + status event)
         reply_calls = [
             call
             for call in mock_client.publish.call_args_list
             if str(call.args[0]) == "reply/q"
         ]
-        assert len(reply_calls) == 1
-        reply_data = json.loads(reply_calls[0].args[1])
-        # Should be a TaskStatusUpdateEvent with completed state
-        assert reply_data["result"]["status"]["state"] == "completed"
-        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        assert len(reply_calls) == 2
+        parsed = [json.loads(c.args[1]) for c in reply_calls]
+        artifact_reply = next(
+            r for r in parsed if r["result"]["type"] == "TaskArtifactUpdateEvent"
+        )
+        status_reply = next(
+            r for r in parsed if r["result"]["type"] == "TaskStatusUpdateEvent"
+        )
+        assert status_reply["result"]["status"]["state"] == "completed"
+        artifact = artifact_reply["result"]["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert len(result["apps"]) == 1
         assert result["apps"][0]["id"] == "test-app"
@@ -2386,16 +2793,19 @@ class TestRuntimeApiIntegration:
         # Query: get session
         mock_client.publish.reset_mock()
         query_req = A2ARequest(text=f"get session {sid}", request_id="q2")
-        await sup._handle_runtime_query(query_req.to_json(), "reply/q", "corr-q2")
+        await sup._handle_runtime_query(query_req, "reply/q", "corr-q2")
 
         reply_calls = [
             call
             for call in mock_client.publish.call_args_list
             if str(call.args[0]) == "reply/q"
         ]
-        assert len(reply_calls) == 1
-        reply_data = json.loads(reply_calls[0].args[1])
-        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        assert len(reply_calls) == 2
+        parsed = [json.loads(c.args[1]) for c in reply_calls]
+        artifact_reply = next(
+            r for r in parsed if r["result"]["type"] == "TaskArtifactUpdateEvent"
+        )
+        artifact = artifact_reply["result"]["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert result["id"] == sid
         assert result["state"] == "running"
@@ -2423,7 +2833,7 @@ class TestRuntimeApiIntegration:
         # Cancel via runtime query
         mock_client.publish.reset_mock()
         cancel_req = A2ARequest(text=f"cancel session {sid}", request_id="q3")
-        await sup._handle_runtime_query(cancel_req.to_json(), "reply/q", "corr-q3")
+        await sup._handle_runtime_query(cancel_req, "reply/q", "corr-q3")
 
         # Session removed from memory
         assert sid not in sup._sessions
@@ -2445,13 +2855,13 @@ class TestRuntimeApiIntegration:
         )
         assert caller_notified
 
-        # Query caller got a reply
+        # Query caller got a reply (artifact + status)
         query_reply = [
             call
             for call in mock_client.publish.call_args_list
             if str(call.args[0]) == "reply/q"
         ]
-        assert len(query_reply) == 1
+        assert len(query_reply) == 2
 
     @pytest.mark.asyncio
     async def test_create_app_subscribes_and_publishes(self):
@@ -2523,7 +2933,7 @@ class TestRuntimeApiIntegration:
             patch("skitter.coordinator.aiomqtt.Client", return_value=mock_app_client),
         ):
             mock_gen.return_value = graph
-            await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+            await sup._handle_runtime_query(req, "reply/q", "corr-q1")
 
         # Dedicated client should have subscribed to the app's request topic
         subscribe_calls = [
@@ -2553,19 +2963,22 @@ class TestRuntimeApiIntegration:
         assert self.db.get_app("test-app") is not None
 
         req = A2ARequest(text="delete app test-app", request_id="q1")
-        await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+        await sup._handle_runtime_query(req, "reply/q", "corr-q1")
 
         # App deleted from DB
         assert self.db.get_app("test-app") is None
 
-        # Reply contains DELETE_APP_KEY
+        # Reply contains DELETE_APP_KEY (artifact + status)
         reply_calls = [
             call
             for call in mock_client.publish.call_args_list
             if str(call.args[0]) == "reply/q"
         ]
-        assert len(reply_calls) == 1
-        reply_data = json.loads(reply_calls[0].args[1])
+        assert len(reply_calls) == 2
+        artifact_call = next(
+            c for c in reply_calls if "TaskArtifactUpdateEvent" in str(c.args[1])
+        )
+        reply_data = json.loads(artifact_call.args[1])
         artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert result[DELETE_APP_KEY] == "test-app"
@@ -2589,7 +3002,7 @@ class TestRuntimeApiIntegration:
 
         mock_client.publish.reset_mock()
         del_req = A2ARequest(text="delete app test-app", request_id="q1")
-        await sup._handle_runtime_query(del_req.to_json(), "reply/q", "corr-q1")
+        await sup._handle_runtime_query(del_req, "reply/q", "corr-q1")
 
         # App still exists
         assert self.db.get_app("test-app") is not None
@@ -2611,7 +3024,7 @@ class TestRuntimeApiIntegration:
         sup, mock_client = self._make_coordinator()
 
         req = A2ARequest(text="delete app no-such-app", request_id="q1")
-        await sup._handle_runtime_query(req.to_json(), "reply/q", "corr-q1")
+        await sup._handle_runtime_query(req, "reply/q", "corr-q1")
 
         reply_calls = [
             call

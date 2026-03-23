@@ -424,23 +424,31 @@
 
       // --- A2A protocol topics ($a2a/v1/...) ---
 
-      // Reply (TaskStatusUpdateEvent — streaming + terminal)
+      // Reply (TaskStatusUpdateEvent + TaskArtifactUpdateEvent)
       if (p[2] === 'reply' && raw) {
         try {
           const m = JSON.parse(raw);
           const r = m.result || {};
-          if (r.type === 'TaskStatusUpdateEvent') {
-            const sid = r.taskId; // taskId = session_id (A2A Task.id)
+          if (r.type === 'TaskArtifactUpdateEvent') {
+            const sid = r.taskId;
+            const meta = r.metadata || {};
+            const taskName = meta.task_name || '';
+            const text = ((r.artifact || {}).parts || [])[0]?.text || '';
+            if (text && sid && taskName) {
+              state.taskResults.set(`${sid}/${taskName}`, text);
+            }
+            renderSessions(); renderTasks(); renderDetail();
+          } else if (r.type === 'TaskStatusUpdateEvent') {
+            const sid = r.taskId;
             const status = r.status || {};
             const st = status.state;
-            const meta = status.metadata || {};
-            const taskName = meta.task_name || ''; // internal task name
-            const msg = status.message || '';
+            const meta = r.metadata || status.metadata || {};
+            const taskName = meta.task_name || '';
+            const msgObj = status.message || {};
+            const msg = typeof msgObj === 'string' ? msgObj : ((msgObj.parts || [])[0]?.text || '');
             const msgType = meta.type || 'text';
-            const artifact = ((r.artifact || {}).parts || [])[0]?.text || '';
 
             if (st === 'submitted') {
-              // Initial ack from coordinator — session will arrive via retained message
               renderAll();
             } else if (st === 'working' && msg && sid && taskName) {
               const k = `${sid}/${taskName}`;
@@ -455,7 +463,6 @@
             } else if (st === 'completed' || st === 'failed' || st === 'canceled' || st === 'rejected') {
               if (sid && taskName) {
                 state.taskStatus.set(`${sid}/${taskName}`, 'done');
-                if (artifact) state.taskResults.set(`${sid}/${taskName}`, artifact);
               }
               renderSessions(); renderTasks(); renderDetail();
             }

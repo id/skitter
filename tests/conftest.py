@@ -14,24 +14,25 @@ import uuid
 import aiomqtt
 import pytest
 
-from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
-    MQTT_TLS,
+from skitter.a2a import (
     A2A_ORG,
     A2A_UNIT,
-    make_properties,
-    mqtt_client_kwargs,
-    topic_discovery,
-    topic_reply,
-)
-from skitter.types import (
     A2ARequest,
+    REPLY_ARTIFACT,
     REPLY_ERROR,
     REPLY_FAILED,
     REPLY_TERMINAL,
     REPLY_TEXT,
     classify_reply,
+    topic_discovery,
+    topic_reply,
+)
+from skitter.mqtt import (
+    MQTT_HOST,
+    MQTT_PORT,
+    MQTT_TLS,
+    make_properties,
+    mqtt_client_kwargs,
 )
 
 
@@ -110,6 +111,7 @@ async def send_and_collect(
             properties=props,
         )
 
+        artifact_text = ""
         try:
             async with asyncio.timeout(timeout):
                 async for mqtt_msg in client.messages:
@@ -124,9 +126,11 @@ async def send_and_collect(
                     kind, content = classify_reply(data)
                     if kind == REPLY_TEXT:
                         print(content, end="", flush=True)
+                    elif kind == REPLY_ARTIFACT:
+                        artifact_text = content
                     elif kind == REPLY_TERMINAL:
                         print()
-                        return content
+                        return artifact_text or content
                     elif kind == REPLY_FAILED:
                         return f"Failed: {content}"
                     elif kind == REPLY_ERROR:
@@ -143,7 +147,7 @@ async def create_test_app(
     timeout: float = 30.0,
 ) -> str:
     """Create a composed app via the runtime API, return the app_id."""
-    from skitter.mqtt import topic_request
+    from skitter.a2a import topic_request
 
     spec = json.dumps(
         {

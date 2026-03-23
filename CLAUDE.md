@@ -66,7 +66,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 3. **Lint and format**: `uvx ruff format` and `uvx ruff check` on changed files.
 4. **Unit tests**: `uv run python -m pytest tests/test_unit.py -q`.
 5. **E2E tests**: `uv run python -m pytest tests/test_e2e.py -v -s` (needs EMQX on localhost).
-6. **A2A compliance**: if protocol-facing code changed (`skitter/a2a.py`, `coordinator.py`, `agent_runner.py`, `dashboard.html`), run `/a2a-compliance`.
+6. **A2A compliance**: if protocol-facing code changed, run `/a2a-compliance`.
 7. **Dashboard**: verify `dashboard.html` still works if session state or topics changed.
 8. **Docs and env files**: update `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `.env.example`, and `.env.cloud.example` if behavior, config, env vars, or CLI usage changed.
 

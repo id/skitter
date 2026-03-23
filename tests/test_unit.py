@@ -46,12 +46,10 @@ class TestA2ARequest:
         assert d["jsonrpc"] == "2.0"
         assert d["id"] == "req-abc123"
         assert d["method"] == "message/send"
-        assert (
-            d["params"]["message"]["parts"][0]["text"] == "Research quantum computing"
-        )
-        assert (
-            d["params"]["message"]["taskId"] == "550e8400-e29b-41d4-a716-446655440000"
-        )
+        msg = d["params"]["message"]
+        assert msg["parts"][0]["text"] == "Research quantum computing"
+        assert msg["taskId"] == "550e8400-e29b-41d4-a716-446655440000"
+        assert "messageId" in msg  # REQUIRED per A2A v1.0.0 proto
         assert d["params"]["metadata"]["sender"] == "cli"
         assert d["params"]["metadata"]["variables"]["topic"] == "quantum"
 
@@ -131,10 +129,10 @@ class TestStatusEvent:
         assert d["result"]["type"] == "TaskStatusUpdateEvent"
         assert d["result"]["taskId"] == "sess-abc123"
         assert d["result"]["status"]["state"] == "working"
-        assert d["result"]["status"]["message"] == {
-            "role": "agent",
-            "parts": [{"type": "text", "text": "hello"}],
-        }
+        msg = d["result"]["status"]["message"]
+        assert msg["role"] == "agent"
+        assert msg["parts"] == [{"type": "text", "text": "hello"}]
+        assert "messageId" in msg  # REQUIRED per A2A v1.0.0 proto
         assert d["result"]["metadata"]["task_name"] == "research"
         assert "artifact" not in d["result"]
 
@@ -792,8 +790,13 @@ class TestCoordinatorDispatchCompliance:
 
         mock_client.publish.reset_mock()
 
-        # Send another request with the same task_id
-        dup_req = A2ARequest(text="go again", request_id="r2", task_id=req.task_id)
+        # Send another request with the same task_id and context_id (retry)
+        dup_req = A2ARequest(
+            text="go again",
+            request_id="r2",
+            task_id=req.task_id,
+            context_id=req.context_id,
+        )
         await sup.handle_request(dup_req, "reply/t2", "corr-2", "test-app")
 
         # Must reply with existing state, not create a new session
@@ -831,7 +834,12 @@ class TestCoordinatorDispatchCompliance:
 
         mock_client.publish.reset_mock()
 
-        dup_req = A2ARequest(text="go again", request_id="r2", task_id=req.task_id)
+        dup_req = A2ARequest(
+            text="go again",
+            request_id="r2",
+            task_id=req.task_id,
+            context_id=req.context_id,
+        )
         await sup.handle_request(dup_req, "reply/t2", "corr-2", "test-app")
 
         replies = [
@@ -852,6 +860,77 @@ class TestCoordinatorDispatchCompliance:
         assert (
             "final answer" in artifact_reply["result"]["artifact"]["parts"][0]["text"]
         )
+
+    @pytest.mark.asyncio
+    async def test_context_id_mismatch_returns_error(self):
+        """Duplicate Task.id with different context_id must return -32602."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1", context_id="ctx-original")
+        version = self.db.get_current_version("test-app")
+        sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+
+        mock_client.publish.reset_mock()
+
+        # Send with same task_id but different context_id
+        dup_req = A2ARequest(
+            text="go again",
+            request_id="r2",
+            task_id=req.task_id,
+            context_id="ctx-different",
+        )
+        await sup.handle_request(dup_req, "reply/t2", "corr-2", "test-app")
+
+        replies = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/t2"
+        ]
+        assert len(replies) == 1
+        assert replies[0]["error"]["code"] == -32602
+        assert "context_id mismatch" in replies[0]["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_context_id_mismatch_db_session_returns_error(self):
+        """Duplicate Task.id in DB with different context_id must return -32602."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1", context_id="ctx-original")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        # Move to DB (simulate completion)
+        sup._sessions.pop(state.session_id)
+        self.db.update_session_state(state.session_id, "completed")
+
+        mock_client.publish.reset_mock()
+
+        dup_req = A2ARequest(
+            text="go again",
+            request_id="r2",
+            task_id=req.task_id,
+            context_id="ctx-different",
+        )
+        await sup.handle_request(dup_req, "reply/t2", "corr-2", "test-app")
+
+        replies = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/t2"
+        ]
+        assert len(replies) == 1
+        assert replies[0]["error"]["code"] == -32602
 
     @pytest.mark.asyncio
     async def test_send_error_includes_a2a_error_data(self):
@@ -1012,22 +1091,22 @@ class TestBackoffDelay:
     def test_backoff_within_expected_range(self):
         from skitter.a2a import _backoff_delay
 
-        for _ in range(20):
+        for _ in range(50):
             d0 = _backoff_delay(0)
-            assert 1.0 <= d0 <= 1.2  # base=1.0, jitter up to 0.2
+            assert 0.8 <= d0 <= 1.2  # base=1.0, +-20% jitter
 
             d1 = _backoff_delay(1)
-            assert 2.0 <= d1 <= 2.4
+            assert 1.6 <= d1 <= 2.4
 
             d2 = _backoff_delay(2)
-            assert 4.0 <= d2 <= 4.8
+            assert 3.2 <= d2 <= 4.8
 
     def test_backoff_clamps_at_max(self):
         from skitter.a2a import _backoff_delay
 
         # Attempt index beyond the list should clamp to last entry
         d = _backoff_delay(100)
-        assert 4.0 <= d <= 4.8
+        assert 3.2 <= d <= 4.8
 
 
 # --- validate_a2a_request ---
@@ -1464,12 +1543,18 @@ class TestBuildCard:
         assert card["name"] == "Researcher"
         assert card["description"] == "Deep research with citations"
         assert card["version"] == "0.1.0"
-        assert card["protocolVersion"] == "1.0.0"
+        # supportedInterfaces replaces top-level url/protocolVersion per A2A v1.0.0
+        ifaces = card["supportedInterfaces"]
+        assert len(ifaces) == 1
+        assert ifaces[0]["protocolVersion"] == "1.0.0"
+        assert ifaces[0]["protocolBinding"] == "MQTTv5+JSONRPCv2"
+        assert "url" in ifaces[0]
         assert card["capabilities"]["streaming"] is True
         assert card["capabilities"]["pushNotifications"] is False
         assert card["defaultInputModes"] == ["text/plain"]
         assert card["defaultOutputModes"] == ["text/plain"]
         assert card["skills"][0]["id"] == "researcher"
+        assert card["skills"][0]["tags"] == ["researcher"]
         assert "metadata" not in card
 
     def test_agent_card_custom_capabilities(self):
@@ -1512,7 +1597,26 @@ class TestBuildCard:
 
         agent = AgentDef(id="test", name="Test")
         card = build_card(agent, url="mqtt://custom:1883")
-        assert card["url"] == "mqtt://custom:1883"
+        assert card["supportedInterfaces"][0]["url"] == "mqtt://custom:1883"
+
+    def test_card_skills_have_tags(self):
+        from skitter.discovery import build_card
+
+        agent = AgentDef(
+            id="coder",
+            name="Coder",
+            description="Writes code",
+            tags=["code", "python"],
+        )
+        card = build_card(agent)
+        assert card["skills"][0]["tags"] == ["code", "python"]
+
+    def test_card_skills_default_tags(self):
+        from skitter.discovery import build_card
+
+        agent = AgentDef(id="writer", name="Writer", description="Writes")
+        card = build_card(agent)
+        assert card["skills"][0]["tags"] == ["writer"]
 
 
 class TestParseCard:

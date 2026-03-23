@@ -656,7 +656,8 @@
       let propsHtml = '';
       if (card.version) propsHtml += `<span class="compose-prop"><span>Version</span> ${esc(card.version)}</span>`;
       if (card.skills && card.skills.length) propsHtml += `<span class="compose-prop"><span>Skills</span> ${card.skills.map(s => s.name).join(', ')}</span>`;
-      if (card.url) propsHtml += `<span class="compose-prop"><span>URL</span> ${esc(card.url)}</span>`;
+      const cardUrl = card.supportedInterfaces && card.supportedInterfaces[0] ? card.supportedInterfaces[0].url : card.url;
+      if (cardUrl) propsHtml += `<span class="compose-prop"><span>URL</span> ${esc(cardUrl)}</span>`;
 
       const tasks = card.metadata && card.metadata.tasks;
       const tasksHtml = tasks && tasks.length ? `<div class="compose-tasks">

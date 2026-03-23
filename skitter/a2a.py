@@ -69,6 +69,7 @@ def topic_coordinator_lock() -> str:
 A2A_REQUEST_EXPIRED = -32003
 A2A_RESPONDER_UNAVAILABLE = -32004
 A2A_TRANSPORT_PROTOCOL_ERROR = -32005
+A2A_INVALID_PARAMS = -32602
 
 _A2A_ERROR_MAP = {
     A2A_REQUEST_EXPIRED: "request_expired",
@@ -129,6 +130,7 @@ def make_status_event(
     status: dict = {"state": state}
     if message:
         status["message"] = {
+            "messageId": uuid.uuid4().hex,
             "role": "agent",
             "parts": [{"type": "text", "text": message}],
         }
@@ -279,6 +281,7 @@ class A2ARequest:
         if self.variables:
             metadata["variables"] = self.variables
         message: dict = {
+            "messageId": uuid.uuid4().hex,
             "role": "user",
             "parts": [{"type": "text", "text": self.text}],
             "taskId": self.task_id,
@@ -307,7 +310,9 @@ class A2ARequest:
         parts = message.get("parts", [])
         text = parts[0].get("text", "") if parts else ""
         task_id = message.get("taskId", "")
-        context_id = message.get("contextId") or None
+        # Preserve wire value; empty means "untracked" (do not auto-generate,
+        # otherwise dedup context_id mismatch rejects retries that omit it).
+        context_id = message.get("contextId") or ""
         return cls(
             text=text,
             request_id=d.get("id", f"req-{time.time_ns()}"),
@@ -337,9 +342,9 @@ _JITTER_FACTOR = 0.2
 
 
 def _backoff_delay(attempt: int) -> float:
-    """Exponential backoff with jitter for retry attempt (0-indexed)."""
+    """Exponential backoff with +-20% jitter for retry attempt (0-indexed)."""
     base = _BACKOFF_BASE[min(attempt, len(_BACKOFF_BASE) - 1)]
-    jitter = base * _JITTER_FACTOR * random.random()
+    jitter = base * _JITTER_FACTOR * (2 * random.random() - 1)
     return base + jitter
 
 

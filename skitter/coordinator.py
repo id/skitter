@@ -32,6 +32,7 @@ from skitter.runtime_api import (
 from skitter.a2a import (
     A2A_ORG,
     A2A_UNIT,
+    A2A_INVALID_PARAMS,
     A2ARequest,
     A2AResponse,
     A2A_RESPONDER_UNAVAILABLE,
@@ -782,8 +783,16 @@ class Coordinator:
         """
         # Deduplication: if a session with this Task.id exists, reply with
         # current state (A2A-over-MQTT spec: MUST return existing task state)
+        incoming_ctx = req.context_id or ""
         existing = self._sessions.get(req.task_id)
         if existing:
+            if await self._reject_context_mismatch(
+                existing.context_id,
+                incoming_ctx,
+                caller_reply_topic,
+                caller_correlation,
+            ):
+                return
             log.info(
                 "Duplicate Task.id %s (in-flight), returning current state", req.task_id
             )
@@ -793,6 +802,13 @@ class Coordinator:
             return
         db_session = self._db.get_session(req.task_id)
         if db_session:
+            if await self._reject_context_mismatch(
+                db_session.context_id,
+                incoming_ctx,
+                caller_reply_topic,
+                caller_correlation,
+            ):
+                return
             log.info(
                 "Duplicate Task.id %s (DB: %s), returning stored state",
                 req.task_id,
@@ -927,12 +943,34 @@ class Coordinator:
         )
         await self._client.publish(reply_topic, event, qos=1, properties=props)
 
+    async def _reject_context_mismatch(
+        self,
+        stored_ctx: str,
+        incoming_ctx: str,
+        reply_topic: str,
+        correlation: str,
+    ) -> bool:
+        """Return True (and send error) if context_id mismatches on dedup.
+
+        Empty context_id on either side is allowed (untracked context).
+        """
+        if stored_ctx and incoming_ctx and incoming_ctx != stored_ctx:
+            await self._send_error(
+                reply_topic,
+                correlation,
+                "context_id mismatch: incoming context_id differs "
+                "from stored value for this Task.id",
+                code=A2A_INVALID_PARAMS,
+            )
+            return True
+        return False
+
     async def _send_error(
         self,
         reply_topic: str,
         correlation: str,
         message: str,
-        code: int = -32602,
+        code: int = A2A_INVALID_PARAMS,
     ) -> None:
         if reply_topic and self._client:
             resp = A2AResponse(

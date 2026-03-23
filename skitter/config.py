@@ -30,6 +30,7 @@ class AgentDef:
     capabilities: dict[str, bool] = field(default_factory=dict)
     input_modes: list[str] = field(default_factory=lambda: ["text/plain"])
     output_modes: list[str] = field(default_factory=lambda: ["text/plain"])
+    tags: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -172,9 +172,10 @@ class TestAgentRunner:
         aid = f"test-disco-{uuid.uuid4().hex[:4]}"
         await start_agent(aid, description="Discovery test agent")
         card = await wait_for_discovery(aid)
-        assert card["protocolVersion"] == "1.0.0"
+        assert card["supportedInterfaces"][0]["protocolVersion"] == "1.0.0"
         assert card["capabilities"]["streaming"] is True
         assert card["skills"][0]["id"] == aid
+        assert "tags" in card["skills"][0]
 
     async def test_direct_query(self, start_agent):
         aid = f"test-query-{uuid.uuid4().hex[:4]}"
@@ -392,11 +393,12 @@ class TestAgentRunner:
 
             assert call_count == 1
 
-            # Send duplicate with same task_id but different request_id
+            # Send duplicate with same task_id and context_id (retry)
             req2 = A2ARequest(
                 text="duplicate",
                 request_id=f"r2-{uuid.uuid4().hex[:8]}",
                 task_id=task_id,
+                context_id=req1.context_id,
                 sender="test",
             )
             props2 = make_properties(

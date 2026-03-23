@@ -22,12 +22,19 @@ def build_card(
     capabilities.setdefault("streaming", True)
     capabilities.setdefault("pushNotifications", False)
 
+    tags = agent.tags if agent.tags else [agent.id]
+
     card: dict = {
         "name": agent.name,
         "description": agent.description,
         "version": "0.1.0",
-        "url": url,
-        "protocolVersion": "1.0.0",
+        "supportedInterfaces": [
+            {
+                "url": url,
+                "protocolBinding": "MQTTv5+JSONRPCv2",
+                "protocolVersion": "1.0.0",
+            }
+        ],
         "capabilities": capabilities,
         "defaultInputModes": list(agent.input_modes)
         if agent.input_modes
@@ -40,6 +47,7 @@ def build_card(
                 "id": agent.id,
                 "name": agent.name,
                 "description": agent.description,
+                "tags": tags,
             }
         ],
     }

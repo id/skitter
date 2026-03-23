@@ -341,6 +341,77 @@ class TestCoordinatorSession:
         )
         assert "quantum" in state.graph["research"].description
 
+    def test_user_request_stored_in_variables(self):
+        from skitter.db import App, AppVersion
+
+        sup = self._make_coordinator()
+        self.db.create_app(App(id="test-app", name="Test"))
+        self.db.create_app_version(
+            AppVersion(
+                id="v1",
+                app_id="test-app",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "step",
+                                "agent": "researcher",
+                                "description": "Do it",
+                                "needs": [],
+                                "next": "output",
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+        req = A2ARequest(text="summarize the news", request_id="r1")
+        state = sup.create_session_from_graph(
+            graph_json=self.db.get_app_version("v1").graph_json,
+            app_version_id="v1",
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        assert state.variables["user_request"] == "summarize the news"
+
+    def test_user_request_does_not_override_explicit(self):
+        from skitter.db import App, AppVersion
+
+        sup = self._make_coordinator()
+        self.db.create_app(App(id="test-app", name="Test"))
+        self.db.create_app_version(
+            AppVersion(
+                id="v1",
+                app_id="test-app",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "step",
+                                "agent": "researcher",
+                                "description": "Do it",
+                                "needs": [],
+                                "next": "output",
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+        req = A2ARequest(text="summarize the news", request_id="r1")
+        state = sup.create_session_from_graph(
+            graph_json=self.db.get_app_version("v1").graph_json,
+            app_version_id="v1",
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+            variables={"user_request": "custom override"},
+        )
+        assert state.variables["user_request"] == "custom override"
+
 
 # --- A2A compliance: agent runner handle_request ---
 
@@ -643,6 +714,56 @@ class TestCoordinatorDispatchCompliance:
             )
             == 1
         )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_includes_user_request_in_prompt(self):
+        """Dispatched A2A request must append user request to prompt text."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="find latest news", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+
+        dispatched_payloads = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatched_payloads) == 1
+        prompt_text = dispatched_payloads[0]["params"]["message"]["parts"][0]["text"]
+        assert "User request: find latest news" in prompt_text
+
+    @pytest.mark.asyncio
+    async def test_dispatch_omits_user_request_when_empty(self):
+        """Dispatched prompt must not contain 'User request:' when request text is empty."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+
+        dispatched_payloads = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatched_payloads) == 1
+        prompt_text = dispatched_payloads[0]["params"]["message"]["parts"][0]["text"]
+        assert "User request:" not in prompt_text
 
 
 # --- A2A compliance: backoff calculation ---
@@ -961,6 +1082,12 @@ class TestSafeFormat:
 
 
 class TestDependencyResolution:
+    def test_variables_field_default(self):
+        from skitter.coordinator import SessionState
+
+        state = SessionState(session_id="s1", app_version_id="v1")
+        assert state.variables == {}
+
     def test_compute_ready_no_needs(self):
         from skitter.coordinator import SessionState, SessionTask as ST, _compute_ready
 

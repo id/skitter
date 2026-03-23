@@ -95,6 +95,7 @@ class SessionState:
     pending: set[str] = field(default_factory=set)
     inflight: set[str] = field(default_factory=set)
     failed: set[str] = field(default_factory=set)
+    variables: dict[str, str] = field(default_factory=dict)
 
 
 def _compute_ready(state: SessionState) -> list[str]:
@@ -244,6 +245,7 @@ class Coordinator:
         """Create a new session from an orchestration graph."""
         session_id = request.task_id
         variables = variables or {}
+        variables.setdefault("user_request", request.text or "")
 
         graph = json.loads(graph_json)
         tasks = graph.get("tasks", [])
@@ -265,6 +267,7 @@ class Coordinator:
             app_version_id=app_version_id,
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
+            variables=variables,
         )
 
         for t in tasks:
@@ -319,6 +322,10 @@ class Coordinator:
         prompt = task.description
         if context:
             prompt = f"{context}\n\n{prompt}"
+
+        user_request = state.variables.get("user_request", "")
+        if user_request:
+            prompt = f"{prompt}\n\nUser request: {user_request}"
 
         request_id = uuid.uuid4().hex[:16]
         reply_t = topic_reply("skitter", f"{state.session_id}/{task_id}")
@@ -882,6 +889,9 @@ class Coordinator:
                 app_version_id=db_session.app_version_id,
                 caller_reply_topic=db_session.caller_reply_topic,
                 caller_correlation=db_session.caller_correlation,
+                variables=json.loads(db_session.variables)
+                if db_session.variables
+                else {},
             )
 
             for t in tasks:

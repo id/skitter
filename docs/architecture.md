@@ -171,6 +171,10 @@ What it does:
 
 The agent-runner reads native agent definitions directly: Claude `.md` files (YAML frontmatter) or Codex `.toml` files. No separate skitter config needed. Runtime is inferred from the file extension.
 
+Permissions and isolation:
+- **Claude agents**: `--permission-mode auto` with filesystem sandbox (writes restricted to `/tmp`)
+- **Codex agents**: `--full-auto` (workspace-write sandbox), `--ephemeral`, `approval_policy=never`
+
 ## Runtime API
 
 The `skitter` agent handles structured queries:

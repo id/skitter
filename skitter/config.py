@@ -26,6 +26,7 @@ class AgentDef:
     runtime: str = ""  # "claude" or "codex"
     model: str = ""  # optional model override
     agent_file: str = ""  # runtime-specific prompt file (e.g. researcher.md)
+    system_prompt: str = ""  # codex only: passed via -c developer_instructions
     broker: BrokerConfig | None = None
     capabilities: dict[str, bool] = field(default_factory=dict)
     input_modes: list[str] = field(default_factory=lambda: ["text/plain"])

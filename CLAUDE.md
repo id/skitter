@@ -1,6 +1,6 @@
 # Skitter
 
-~3,900 lines of Python. MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT broker as infrastructure backbone.
+MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT broker as infrastructure backbone.
 
 ## Quick Orientation
 
@@ -72,14 +72,9 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 
 ## Limitations
 
-- Agent runners use `dangerouslySkipPermissions`
+- Agent runners use `--permission-mode auto` with filesystem sandbox (write restricted to `/tmp`)
 - No built-in authentication (rely on broker auth)
 - Single coordinator per broker (enforced via retained MQTT lock)
 - No timeout for coordinator-dispatched tasks (only recovery tasks get 120s timeout); requester-side `send_and_wait` has retry/timeout profile
-- Codex `.toml` agent definitions: only `model` is applied at runtime; `sandbox_mode` and other fields are not passed to `codex exec` (always uses `--full-auto`)
+- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime; `sandbox_mode` and other fields are not passed to `codex exec` (always uses `--full-auto`)
 - A2A-over-MQTT: Core Conformance only; Extended Conformance features (shared pool dispatch, task handover, binary artifacts, UBSP, broker-managed status, OAuth) are not implemented
-
-## Roadmap
-
-- Telegram bridge
-- Per-chat conversation history

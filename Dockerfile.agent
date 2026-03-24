@@ -4,11 +4,11 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Non-root user (required by claude --dangerously-skip-permissions)
+# Non-root user
 RUN useradd -m -s /bin/bash skitter
 USER skitter
 
-# Claude CLI (binary — no Node.js needed)
+# Claude CLI (binary, no Node.js needed)
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Codex CLI (binary from GitHub releases)

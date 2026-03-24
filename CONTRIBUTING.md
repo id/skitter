@@ -51,7 +51,7 @@ model = "gpt-5.1-codex-mini"
 developer_instructions = "You are a senior developer."
 ```
 
-Note: the agent-runner reads `model` and uses `developer_instructions` (first 100 chars) as the agent description for its discovery card. Other `.toml` fields (e.g. `sandbox_mode`) are not applied; the runner always uses `--full-auto`.
+The agent-runner reads `model` and `developer_instructions` from the TOML file. `developer_instructions` is passed to codex via `-c` at runtime; the first 100 chars are used as the agent description for the discovery card. Other `.toml` fields (e.g. `sandbox_mode`) are not applied; the runner always uses `--full-auto`.
 
 Start an agent-runner by pointing it at the file:
 

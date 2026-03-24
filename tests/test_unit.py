@@ -1659,6 +1659,9 @@ class TestAgentRunnerCli:
         assert "researcher" in cmd  # agent file without .md
         assert "--model" in cmd
         assert "sonnet" in cmd
+        assert cmd[cmd.index("--permission-mode") + 1] == "auto"
+        assert "--settings" in cmd
+        assert "--dangerously-skip-permissions" not in cmd
 
     def test_build_codex_cmd(self):
         from skitter.agent_runner import _build_cli_cmd
@@ -1671,9 +1674,42 @@ class TestAgentRunnerCli:
         )
         cmd = _build_cli_cmd(agent, "code something")
         assert cmd[0] == "codex"
-        assert "code something" in cmd
+        assert cmd[-1] == "code something"  # prompt must be last (positional)
         assert "--model" in cmd
         assert "gpt-5-nano" in cmd
+        assert "--ephemeral" in cmd
+        assert cmd[cmd.index("--color") + 1] == "never"
+        assert "--full-auto" in cmd
+
+    def test_build_codex_cmd_with_system_prompt(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(
+            id="coder",
+            name="Coder",
+            runtime="codex",
+            system_prompt="You are a senior developer.",
+        )
+        cmd = _build_cli_cmd(agent, "write tests")
+        assert "-c" in cmd
+        # Find the -c arg that sets developer_instructions
+        c_indices = [i for i, v in enumerate(cmd) if v == "-c"]
+        dev_instr_args = [
+            cmd[i + 1] for i in c_indices if "developer_instructions=" in cmd[i + 1]
+        ]
+        assert len(dev_instr_args) == 1
+        assert dev_instr_args[0] == "developer_instructions=You are a senior developer."
+
+    def test_build_codex_cmd_no_system_prompt(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="coder", name="Coder", runtime="codex")
+        cmd = _build_cli_cmd(agent, "write tests")
+        c_indices = [i for i, v in enumerate(cmd) if v == "-c"]
+        dev_instr_args = [
+            cmd[i + 1] for i in c_indices if "developer_instructions=" in cmd[i + 1]
+        ]
+        assert len(dev_instr_args) == 0
 
     def test_build_claude_cmd_default_agent_file(self):
         from skitter.agent_runner import _build_cli_cmd
@@ -1741,6 +1777,7 @@ class TestLoadAgent:
         assert agent.runtime == "codex"
         assert agent.model == "gpt-5.1-codex-mini"
         assert "senior developer" in agent.description
+        assert agent.system_prompt == "You are a senior developer."
 
 
 # --- Safe format ---

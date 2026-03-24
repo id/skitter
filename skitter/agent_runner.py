@@ -55,6 +55,10 @@ _MAX_CONCURRENT = int(os.environ.get("SKITTER_AGENT_MAX_CONCURRENT", "4"))
 # TTL for completed task deduplication (seconds)
 _DEDUP_TTL = 300.0
 
+_SANDBOX_SETTINGS = json.dumps(
+    {"sandbox": {"enabled": True, "filesystem": {"allowWrite": ["/tmp"]}}}
+)
+
 
 def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
     """Build the CLI command for the agent's runtime."""
@@ -64,11 +68,18 @@ def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
             "exec",
             "--json",
             "--full-auto",
+            "--ephemeral",
+            "--color",
+            "never",
             "--skip-git-repo-check",
-            prompt,
+            "-c",
+            "approval_policy=never",
         ]
         if agent.model:
             cmd.extend(["--model", agent.model])
+        if agent.system_prompt:
+            cmd.extend(["-c", f"developer_instructions={agent.system_prompt}"])
+        cmd.append(prompt)
     else:
         cmd = [
             "claude",
@@ -77,7 +88,10 @@ def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
             "--output-format",
             "stream-json",
             "--verbose",
-            "--dangerously-skip-permissions",
+            "--permission-mode",
+            "auto",
+            "--settings",
+            _SANDBOX_SETTINGS,
         ]
         agent_file = agent.agent_file or agent.id
         cmd.extend(["--agent", agent_file.removesuffix(".md")])
@@ -133,9 +147,7 @@ async def _run_cli(
             if event_type == "assistant":
                 for block in event.get("message", {}).get("content", []):
                     if block.get("type") == "text":
-                        text = block.get("text", "")
-                        texts.append(text)
-                        await publish_stream("text", text)
+                        texts.append(block.get("text", ""))
                     elif block.get("type") == "tool_use":
                         await publish_stream(
                             "tool_use",
@@ -147,7 +159,6 @@ async def _run_cli(
                     text = item.get("text", "")
                     if text:
                         texts.append(text)
-                        await publish_stream("text", text)
 
         await proc.wait()
     except asyncio.CancelledError:
@@ -319,12 +330,14 @@ def _load_codex_agent(path) -> AgentDef:
         log.error("Invalid TOML in %s: %s", path, e)
         sys.exit(1)
     agent_id = path.stem
+    instructions = data.get("developer_instructions", "")
     return AgentDef(
         id=agent_id,
         name=agent_id,
-        description=data.get("developer_instructions", "")[:100],
+        description=instructions[:100],
         runtime="codex",
         model=data.get("model", ""),
+        system_prompt=instructions,
     )
 
 

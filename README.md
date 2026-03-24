@@ -1,14 +1,55 @@
 # Skitter
 
-MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker. A coordinator handles composed multi-agent apps: creating orchestration graphs from natural language via LLM, dispatching A2A requests, and resolving dependencies.
+MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker.
 
-~3,900 lines of Python. Works with any A2A-over-MQTT agent. Ships with a convenience wrapper for Claude Code and Codex CLI.
+Two modes:
+
+- **Standalone agents**: direct A2A-over-MQTT requests to individual agents, no coordinator needed.
+- **Composed apps**: multi-agent workflows orchestrated by a coordinator that generates a dependency graph and dispatches work.
+
+Works with any A2A-over-MQTT agent. Ships with a built-in agent-runner that wraps Claude Code and Codex CLI.
 
 ## Quickstart (Local)
 
-You need Docker, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
+**Prerequisites:** Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker (only needed to run the local EMQX broker).
 
-The coordinator uses [litellm](https://docs.litellm.ai/) for LLM calls (graph generation for composed apps). Set the API key for your provider and the model to use:
+```bash
+# Start MQTT broker (Docker required for this step)
+docker compose up -d
+
+# Install
+uv sync
+```
+
+### Run a standalone agent
+
+No coordinator needed. Create an agent definition, start an agent-runner, and send it a request.
+
+```bash
+# Create an agent definition
+mkdir -p agents
+cat > agents/random-x.md << 'EOF'
+---
+name: random-x
+description: Returns a random number as JSON
+model: haiku
+---
+Return ONLY a JSON object {"x": <random 1-100>}. No explanation.
+EOF
+
+# Terminal 1: start the agent
+uv run python -m skitter agent-runner agents/random-x.md
+
+# Terminal 2: send a request
+uv run python -m skitter run random-x "go"
+# => {"x": 73}
+```
+
+The agent-runner publishes a discovery card on startup and handles A2A requests independently. It supports Claude Code (`.md`) and Codex (`.toml`) agent definitions. Any A2A-over-MQTT compliant process works too.
+
+### Create a composed app
+
+Composed apps need a coordinator, which uses an LLM to generate orchestration graphs. Set your provider's API key and model:
 
 ```bash
 # Pick your provider (see https://docs.litellm.ai/docs/providers)
@@ -16,45 +57,64 @@ export ANTHROPIC_API_KEY=sk-ant-...    # for Claude models
 # or: export OPENAI_API_KEY=sk-...    # for OpenAI models
 # or: export GEMINI_API_KEY=...       # for Gemini models
 
-export SKITTER_LLM_MODEL=anthropic/claude-haiku-4-5  # any litellm model string
+export SKITTER_LLM_MODEL=anthropic/claude-sonnet-4-6
 ```
 
-The built-in agent-runner needs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) logged in (depending on which runtime the agent uses). You can also run any A2A-over-MQTT compliant agent instead.
+Create two more agents alongside random-x:
 
 ```bash
-# Start MQTT broker
-docker compose up -d
+cat > agents/random-y.md << 'EOF'
+---
+name: random-y
+description: Returns a random number as JSON
+model: haiku
+---
+Return ONLY a JSON object {"y": <random 1-100>}. No explanation.
+EOF
 
-# Install
-uv sync
+cat > agents/sum.md << 'EOF'
+---
+name: sum
+description: Extracts numbers from input and returns their sum as JSON
+model: haiku
+---
+Extract all numeric values from the input, compute their sum,
+and return ONLY {"sum": <total>}. No explanation.
+EOF
+```
 
-# Start coordinator (terminal 1)
+Start the agents, coordinator, then create and run the app:
+
+```bash
+# Terminal 1: start agents
+uv run python -m skitter agent-runner agents/random-x.md
+uv run python -m skitter agent-runner agents/random-y.md
+uv run python -m skitter agent-runner agents/sum.md
+
+# Terminal 2: start coordinator
 uv run python -m skitter
 
-# Start an agent (terminal 2, see "Agents" section for setup)
-uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
+# Terminal 3: create an app and run it
+uv run python -m skitter run 'create app {
+  "id": "add-numbers",
+  "name": "Add Numbers",
+  "instructions": "Generate two random numbers in parallel, then sum them",
+  "agents": ["random-x", "random-y", "sum"]
+}'
 
-# One-shot request (terminal 3; see "run" section below)
-uv run python -m skitter run "list apps"
+uv run python -m skitter run add-numbers "go"
+# => {"y": 73} ... {"x": 47} ... {"sum": 120}
 ```
 
-The `run` command sends a one-shot A2A request. Without an agent ID it targets the coordinator's runtime API; with one it targets that agent directly:
+The coordinator generates a fan-out/fan-in graph: random-x and random-y run in parallel, then sum receives both results.
 
-```bash
-# Runtime API query
-uv run python -m skitter run "list apps"
+Open `dashboard.html` in a browser to watch requests execute in real time (connects to the broker via WebSocket).
 
-# Direct agent request
-uv run python -m skitter run researcher "summarize the latest MQTT 5.0 features"
-```
-
-Use `chat` for interactive conversations with agents:
+Use `chat` for interactive sessions:
 
 ```bash
 uv run python -m skitter chat
 ```
-
-Open `dashboard.html` in a browser to watch jobs execute in real time (connects directly to the broker via WebSocket).
 
 ## How It Works
 
@@ -80,65 +140,83 @@ Any MQTT v5 Client          MQTT Broker           A2A Agents
                       └────────────────────┘
 ```
 
-**Standalone agents** handle requests directly, no coordinator involved. Clients publish to the agent's request topic, the agent processes it and replies. Any A2A-over-MQTT compliant process works; skitter's agent-runner is just a convenience for wrapping CLI tools.
+**Standalone agents** handle requests directly. Clients publish to the agent's request topic; the agent processes and replies. Any A2A-over-MQTT compliant process works.
 
-**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests to individual agents following the dependency graph, and sends the final result back to the caller.
+**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests following the dependency graph, and returns the final result to the caller.
 
-**Creating composed apps:** send a `create app` request to the coordinator's `skitter` topic with agent IDs and natural language instructions. The coordinator looks up agent capabilities from their discovery cards, calls an LLM to generate an orchestration graph (validated for cycles, missing refs, and next/needs consistency), persists the app, and publishes its discovery card.
+Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
 
 ## Agent Runner
 
-Skitter's built-in agent-runner wraps CLI tools (Claude Code, Codex) as A2A-over-MQTT agents. Agents use native CLI definitions directly, no extra config layer:
+The built-in agent-runner wraps Claude Code and Codex CLI as A2A-over-MQTT agents. It reads native agent definitions directly (`.md` for Claude, `.toml` for Codex). Runtime is inferred from the file extension.
 
-```markdown
-# ~/.claude/agents/researcher.md
----
-name: researcher
-description: Deep research with source citation
-model: sonnet
-memory: user
-tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
----
-You are a research specialist. Be thorough, cite sources.
+Codex agents use `.toml` files:
+
+```toml
+# agents/coder.toml
+name = "coder"
+model = "gpt-5.4-mini"
+developer_instructions = "You write clean, idiomatic code."
 ```
-
-Start an agent-runner by pointing it at the agent file:
 
 ```bash
-uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
-uv run python -m skitter agent-runner ~/.codex/agents/coder.toml
+uv run python -m skitter agent-runner agents/coder.toml
 ```
 
-Each agent-runner publishes a retained discovery card on startup and handles A2A requests independently.
+### Permissions and isolation
 
-## Composed Apps
+**Claude agents** run with `--permission-mode auto` and a filesystem sandbox: writes are restricted to `/tmp`.
 
-Create a multi-agent app by sending agent IDs and instructions to the coordinator:
+**Codex agents** run with `--full-auto`, `--ephemeral`, and `approval_policy=never`. The session is ephemeral and workspace-write sandboxed.
+
+## Running Agents in Docker
+
+`Dockerfile.agent` packages the agent-runner with both Claude Code and Codex binaries. Use it to run agents in isolated containers.
 
 ```bash
-uv run python -m skitter run 'create app {
-  "name": "Deep Research",
-  "instructions": "Research the topic using web sources, then fact-check the findings",
-  "agents": ["researcher", "reviewer"]
-}'
+# Build
+docker build -f Dockerfile.agent -t skitter-agent .
+
+# Run a Claude agent
+# Auth: CLAUDE_CODE_OAUTH_TOKEN (from "claude setup-token") or ANTHROPIC_API_KEY
+docker run --rm \
+  -e MQTT_HOST=your-broker \
+  -e CLAUDE_CODE_OAUTH_TOKEN=... \
+  -v ./agents/researcher.md:/app/agents/researcher.md:ro \
+  skitter-agent /app/agents/researcher.md
+
+# Run a Codex agent
+# Auth: CODEX_API_KEY, or mount ~/.codex/auth.json
+docker run --rm \
+  -e MQTT_HOST=your-broker \
+  -e CODEX_API_KEY=... \
+  -v ./agents/coder.toml:/app/agents/coder.toml:ro \
+  skitter-agent /app/agents/coder.toml
 ```
 
-The coordinator generates and validates an orchestration graph via LLM, persists the app with versioning, and starts accepting requests on the new app's topic.
+The container runs as a non-root user. The entrypoint is `python -m skitter.agent_runner`.
 
-## Deploy to Fly.io
+## Runtime API
 
-Always-on coordinator (~$2/mo) with EMQX Serverless as the broker. See [docs/fly-deployment.md](docs/fly-deployment.md) for the full setup guide.
+The coordinator exposes a runtime API for managing apps and sessions:
+
+```bash
+uv run python -m skitter run "list apps"
+uv run python -m skitter run "get app add-numbers"
+uv run python -m skitter run "list sessions"
+uv run python -m skitter run "get session <session-id>"
+uv run python -m skitter run "cancel session <session-id>"
+uv run python -m skitter run "delete app add-numbers"
+```
 
 ## Why MQTT?
 
-Instead of a monolithic orchestrator, skitter pushes routing and fan-out into the MQTT broker.
+Instead of a monolithic orchestrator, skitter pushes routing and fan-out into the broker.
 
-- **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge script that publishes requests and subscribes to replies.
-- **Run agents anywhere.** Local processes, Docker containers, or cloud machines. As long as they can reach the broker, they work.
-- **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client and watch every request, result, and event in real time.
-- **Cheap cloud deploy.** Always-on coordinator (~$2/mo) on Fly.io, agents billed per-second.
-
-Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
+- **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge that publishes requests and subscribes to replies.
+- **Run agents anywhere.** Local processes, Docker containers, or cloud machines. As long as they reach the broker, they work.
+- **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client to watch every request, result, and event in real time.
+- **Cheap cloud deploy.** Always-on coordinator on Fly.io, agents billed per second.
 
 ## Testing
 
@@ -146,8 +224,8 @@ Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt
 # Unit tests (no broker needed)
 uv run python -m pytest tests/test_unit.py -q
 
-# E2E tests (needs EMQX on localhost, no Docker/LLM API required)
-docker compose up -d   # start local EMQX
+# E2E tests (needs EMQX on localhost; no Docker or LLM API required beyond the broker)
+docker compose up -d
 uv run python -m pytest tests/test_e2e.py -v -s
 ```
 
@@ -155,10 +233,10 @@ E2E tests run the coordinator and agent-runners in-process with mocked CLI and g
 
 ## Limitations
 
-- The built-in agent-runner uses `dangerouslySkipPermissions`; only run in trusted environments
 - No built-in authentication (rely on MQTT broker auth)
 - Single coordinator instance per broker (enforced via retained MQTT lock)
-- Codex `.toml` agent definitions: only `model` is applied at runtime (`sandbox_mode` and other fields are ignored)
+- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime; other fields (`sandbox_mode`, etc.) are ignored
+- A2A Core Conformance only; Extended Conformance features (shared pool dispatch, task handover, binary artifacts, OAuth) are not implemented
 
 ## Contributing
 

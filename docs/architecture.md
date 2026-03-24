@@ -126,8 +126,8 @@ sequenceDiagram
     C->>Co: create app {name, instructions, agents}
     Co->>Co: Look up agent cards from registry
     Co->>LLM: Generate graph (cards + instructions)
-    LLM->>Co: {tasks: [{id, agent, needs, next, description}]}
-    Co->>Co: Validate (cycles, refs, next/needs consistency)
+    LLM->>Co: {tasks: [{id, agent, needs, terminal, description}]}
+    Co->>Co: Validate (cycles, refs, terminal flags)
     Co->>Co: Persist app + version in DB
     Co->>Co: Subscribe to new app's request topic
     Co->>Co: Publish discovery card
@@ -206,7 +206,7 @@ Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
 1. Build prompt from agent capabilities (discovery cards) + user instructions
 2. Call LLM via `skitter/llm.py` (litellm wrapper, lazy import)
-3. Validate: agent refs, task ID uniqueness, next refs, cycles (DFS on `needs` edges), next/needs consistency, terminal tasks
+3. Validate: agent refs, task ID uniqueness, cycles (DFS on `needs` edges), at least one `terminal: true` node, terminal nodes have no dependents
 4. Retry once on validation failure (include error in prompt)
 
 ## Recovery

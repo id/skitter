@@ -407,14 +407,13 @@ class TestCoordinatorSession:
                                 "agent": "researcher",
                                 "description": "Research AI",
                                 "needs": [],
-                                "next": "review",
                             },
                             {
                                 "id": "review",
                                 "agent": "writer",
                                 "description": "Review results",
                                 "needs": ["research"],
-                                "next": "output",
+                                "terminal": True,
                             },
                         ]
                     }
@@ -456,7 +455,7 @@ class TestCoordinatorSession:
                                 "agent": "researcher",
                                 "description": "Research '{topic}'",
                                 "needs": [],
-                                "next": "output",
+                                "terminal": True,
                             }
                         ]
                     }
@@ -492,7 +491,7 @@ class TestCoordinatorSession:
                                 "agent": "researcher",
                                 "description": "Do it",
                                 "needs": [],
-                                "next": "output",
+                                "terminal": True,
                             }
                         ]
                     }
@@ -527,7 +526,7 @@ class TestCoordinatorSession:
                                 "agent": "researcher",
                                 "description": "Do it",
                                 "needs": [],
-                                "next": "output",
+                                "terminal": True,
                             }
                         ]
                     }
@@ -563,7 +562,7 @@ class TestCoordinatorSession:
                                 "agent": "x",
                                 "description": "do",
                                 "needs": [],
-                                "next": "output",
+                                "terminal": True,
                             }
                         ]
                     }
@@ -697,7 +696,7 @@ class TestCoordinatorDispatchCompliance:
                         "agent": "researcher",
                         "description": "Do it",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     }
                 ]
             },
@@ -1607,7 +1606,7 @@ class TestAppCreation:
                         "agent": "researcher",
                         "description": "do stuff",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     }
                 ]
             },
@@ -1635,7 +1634,7 @@ class TestAppCreation:
                         "agent": "researcher",
                         "description": "do stuff",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     }
                 ]
             },
@@ -1995,9 +1994,9 @@ class TestDependencyResolution:
         state = SessionState(
             session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
         )
-        state.graph["a"] = ST(agent="r", description="d", next="b")
-        state.graph["b"] = ST(agent="r", description="d", next="output")
-        state.graph["c"] = ST(agent="r", description="d", next="")
+        state.graph["a"] = ST(agent="r", description="d")
+        state.graph["b"] = ST(agent="r", description="d", terminal=True)
+        state.graph["c"] = ST(agent="r", description="d", terminal=True)
         terminals = _find_terminal_tasks(state)
         assert set(terminals) == {"b", "c"}
 
@@ -2305,14 +2304,13 @@ class TestGraphValidation:
                     "agent": "reader",
                     "description": "Read data",
                     "needs": [],
-                    "next": "analyze",
                 },
                 {
                     "id": "analyze",
                     "agent": "analyzer",
                     "description": "Analyze data",
                     "needs": ["read"],
-                    "next": "output",
+                    "terminal": True,
                 },
             ]
         }
@@ -2328,7 +2326,7 @@ class TestGraphValidation:
         from skitter.graph_gen import GraphValidationError, validate_graph
 
         graph = {
-            "tasks": [{"id": "t1", "agent": "unknown", "needs": [], "next": "output"}]
+            "tasks": [{"id": "t1", "agent": "unknown", "needs": [], "terminal": True}]
         }
         with pytest.raises(GraphValidationError, match="unknown agent"):
             validate_graph(graph, {"reader"})
@@ -2338,8 +2336,8 @@ class TestGraphValidation:
 
         graph = {
             "tasks": [
-                {"id": "t1", "agent": "a", "needs": [], "next": "output"},
-                {"id": "t1", "agent": "a", "needs": [], "next": "output"},
+                {"id": "t1", "agent": "a", "needs": [], "terminal": True},
+                {"id": "t1", "agent": "a", "needs": [], "terminal": True},
             ]
         }
         with pytest.raises(GraphValidationError, match="Duplicate"):
@@ -2350,8 +2348,8 @@ class TestGraphValidation:
 
         graph = {
             "tasks": [
-                {"id": "a", "agent": "x", "needs": ["b"], "next": "b"},
-                {"id": "b", "agent": "y", "needs": ["a"], "next": "output"},
+                {"id": "a", "agent": "x", "needs": ["b"]},
+                {"id": "b", "agent": "y", "needs": ["a"], "terminal": True},
             ]
         }
         with pytest.raises(GraphValidationError, match="Cycle"):
@@ -2360,51 +2358,36 @@ class TestGraphValidation:
     def test_no_terminal_caught(self):
         from skitter.graph_gen import GraphValidationError, validate_graph
 
-        # A graph with no terminal and consistent next/needs requires a cycle,
-        # so it's caught by either the cycle or consistency check.
         graph = {
             "tasks": [
-                {"id": "t1", "agent": "a", "needs": [], "next": "t2"},
-                {"id": "t2", "agent": "b", "needs": ["t1"], "next": "t3"},
-                {"id": "t3", "agent": "c", "needs": ["t2"], "next": "t2"},
+                {"id": "t1", "agent": "a", "needs": []},
+                {"id": "t2", "agent": "b", "needs": ["t1"]},
             ]
         }
-        with pytest.raises(GraphValidationError):
-            validate_graph(graph, {"a", "b", "c"})
+        with pytest.raises(GraphValidationError, match="No terminal"):
+            validate_graph(graph, {"a", "b"})
 
     def test_unknown_need(self):
         from skitter.graph_gen import GraphValidationError, validate_graph
 
         graph = {
             "tasks": [
-                {"id": "t1", "agent": "a", "needs": ["nonexistent"], "next": "output"},
+                {"id": "t1", "agent": "a", "needs": ["nonexistent"], "terminal": True},
             ]
         }
         with pytest.raises(GraphValidationError, match="unknown task"):
             validate_graph(graph, {"a"})
 
-    def test_invalid_next_reference(self):
+    def test_terminal_has_dependents(self):
         from skitter.graph_gen import GraphValidationError, validate_graph
 
         graph = {
             "tasks": [
-                {"id": "t1", "agent": "a", "needs": [], "next": "nonexistent"},
+                {"id": "t1", "agent": "a", "needs": [], "terminal": True},
+                {"id": "t2", "agent": "b", "needs": ["t1"], "terminal": True},
             ]
         }
-        with pytest.raises(GraphValidationError, match="not a valid task ID"):
-            validate_graph(graph, {"a"})
-
-    def test_next_needs_consistency(self):
-        from skitter.graph_gen import GraphValidationError, validate_graph
-
-        # t1.next=t2 but t2.needs is empty — inconsistent
-        graph = {
-            "tasks": [
-                {"id": "t1", "agent": "a", "needs": [], "next": "t2"},
-                {"id": "t2", "agent": "b", "needs": [], "next": "output"},
-            ]
-        }
-        with pytest.raises(GraphValidationError, match="does not list"):
+        with pytest.raises(GraphValidationError, match="must not have dependents"):
             validate_graph(graph, {"a", "b"})
 
 
@@ -2437,14 +2420,13 @@ class TestGraphGeneration:
                         "agent": "reader",
                         "description": "Read sensor data",
                         "needs": [],
-                        "next": "analyze",
                     },
                     {
                         "id": "analyze",
                         "agent": "analyzer",
                         "description": "Analyze the data",
                         "needs": ["read"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -2465,7 +2447,7 @@ class TestGraphGeneration:
 
         from skitter.graph_gen import generate_graph
 
-        fenced = '```json\n{"tasks": [{"id": "t1", "agent": "reader", "description": "do it", "needs": [], "next": "output"}]}\n```'
+        fenced = '```json\n{"tasks": [{"id": "t1", "agent": "reader", "description": "do it", "needs": [], "terminal": true}]}\n```'
 
         with patch("skitter.graph_gen.complete", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = fenced
@@ -2486,7 +2468,7 @@ class TestGraphGeneration:
                         "id": "t1",
                         "agent": "nonexistent",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     }
                 ]
             }
@@ -2499,7 +2481,7 @@ class TestGraphGeneration:
                         "agent": "reader",
                         "description": "Read",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     }
                 ]
             }
@@ -2525,7 +2507,7 @@ class TestGraphGeneration:
                         "id": "t1",
                         "agent": "nonexistent",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     }
                 ]
             }
@@ -2775,14 +2757,13 @@ class TestRuntimeApi:
                     "agent": "reader",
                     "description": "Read",
                     "needs": [],
-                    "next": "analyze",
                 },
                 {
                     "id": "analyze",
                     "agent": "analyzer",
                     "description": "Analyze",
                     "needs": ["read"],
-                    "next": "output",
+                    "terminal": True,
                 },
             ]
         }
@@ -2939,14 +2920,13 @@ class TestRuntimeApiIntegration:
                         "agent": "researcher",
                         "description": "Do research",
                         "needs": [],
-                        "next": "review",
                     },
                     {
                         "id": "review",
                         "agent": "writer",
                         "description": "Review results",
                         "needs": ["research"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             },
@@ -3212,14 +3192,13 @@ class TestRuntimeApiIntegration:
                     "agent": "reader",
                     "description": "Read",
                     "needs": [],
-                    "next": "analyze",
                 },
                 {
                     "id": "analyze",
                     "agent": "analyzer",
                     "description": "Analyze",
                     "needs": ["read"],
-                    "next": "output",
+                    "terminal": True,
                 },
             ]
         }
@@ -3361,7 +3340,7 @@ _SINGLE_STEP_GRAPH = {
             "agent": "researcher",
             "description": "Do it",
             "needs": [],
-            "next": "output",
+            "terminal": True,
         }
     ]
 }
@@ -3488,14 +3467,13 @@ class TestSessionRecovery:
                                 "agent": "agent-a",
                                 "description": "Do A",
                                 "needs": [],
-                                "next": "step-b",
                             },
                             {
                                 "id": "step-b",
                                 "agent": "agent-b",
                                 "description": "Do B",
                                 "needs": ["step-a"],
-                                "next": "output",
+                                "terminal": True,
                             },
                         ]
                     }
@@ -3523,7 +3501,6 @@ class TestSessionRecovery:
                 agent="agent-a",
                 description="Do A",
                 needs="[]",
-                next="step-b",
             )
         )
         self.db.update_task(
@@ -3540,7 +3517,7 @@ class TestSessionRecovery:
                 agent="agent-b",
                 description="Do B",
                 needs='["step-a"]',
-                next="output",
+                terminal="1",
             )
         )
         self.db.update_task(
@@ -3632,14 +3609,13 @@ class TestSessionRecovery:
                                 "agent": "x",
                                 "description": "A",
                                 "needs": [],
-                                "next": "b",
                             },
                             {
                                 "id": "b",
                                 "agent": "y",
                                 "description": "B",
                                 "needs": ["a"],
-                                "next": "output",
+                                "terminal": True,
                             },
                         ]
                     }
@@ -3661,7 +3637,6 @@ class TestSessionRecovery:
                 node_id="a",
                 agent="x",
                 needs="[]",
-                next="b",
             )
         )
         self.db.update_task("sess-2/a", state="completed", result="A result")
@@ -3672,7 +3647,7 @@ class TestSessionRecovery:
                 node_id="b",
                 agent="y",
                 needs='["a"]',
-                next="output",
+                terminal="1",
             )
         )
 

@@ -450,14 +450,13 @@ class TestComposedApp:
                         "agent": aid_a,
                         "description": "Do A",
                         "needs": [],
-                        "next": "step-b",
                     },
                     {
                         "id": "step-b",
                         "agent": aid_b,
                         "description": "Do B",
                         "needs": ["step-a"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -497,7 +496,7 @@ class TestComposedApp:
                         "agent": aid,
                         "description": "Do it",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -583,21 +582,19 @@ class TestComposedApp:
                         "agent": aid_a,
                         "description": "Produce A",
                         "needs": [],
-                        "next": "merge",
                     },
                     {
                         "id": "fork-b",
                         "agent": aid_b,
                         "description": "Produce B",
                         "needs": [],
-                        "next": "merge",
                     },
                     {
                         "id": "merge",
                         "agent": aid_c,
                         "description": "Merge",
                         "needs": ["fork-a", "fork-b"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -639,7 +636,7 @@ class TestCorrelationData:
                         "agent": aid,
                         "description": "Do it",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -724,7 +721,7 @@ class TestCorrelationData:
                         "agent": aid,
                         "description": "Do it",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -824,7 +821,7 @@ class TestCancellation:
                         "agent": aid,
                         "description": "Slow",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -928,7 +925,7 @@ class TestAgentFailure:
                         "agent": aid,
                         "description": "Fail",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -967,14 +964,13 @@ class TestAgentFailure:
                         "agent": aid_a,
                         "description": "Fail",
                         "needs": [],
-                        "next": "step-b",
                     },
                     {
                         "id": "step-b",
                         "agent": aid_b,
                         "description": "OK",
                         "needs": ["step-a"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }

@@ -19,7 +19,7 @@ Output format (no markdown, no explanation — just the JSON object):
       "agent": "agent-id-from-the-list",
       "description": "what this task should do",
       "needs": ["id-of-upstream-task"],
-      "next": "id-of-downstream-task-or-output"
+      "terminal": true
     }
   ]
 }
@@ -27,11 +27,13 @@ Output format (no markdown, no explanation — just the JSON object):
 Rules:
 - Every agent reference must match an agent ID from the provided list.
 - The graph must be a DAG (no cycles).
-- At least one task must have "next": "output" (terminal task).
 - Task IDs must be unique.
 - "needs" lists upstream dependencies (tasks whose results this task requires).
-- "next" is the downstream task or "output" for terminal tasks.
-- If A.next = B, then B.needs MUST include A (consistency rule).
+- Set "terminal": true on tasks whose output should be returned to the caller.
+- At least one task must be terminal.
+- A terminal task must not be listed in any other task's "needs".
+- Every non-terminal task must be listed in at least one other task's "needs".
+- Omit "terminal" (or set it to false) for non-terminal tasks.
 - Use each agent at most once unless the instructions explicitly require multiple uses.
 """
 
@@ -83,12 +85,6 @@ def validate_graph(graph: dict, valid_agent_ids: set[str]) -> None:
             if need not in all_ids:
                 raise GraphValidationError(f"Task '{tid}' needs unknown task '{need}'")
 
-        nxt = t.get("next", "output")
-        if nxt and nxt != "output" and nxt not in all_ids:
-            raise GraphValidationError(
-                f"Task '{tid}' has next='{nxt}' which is not a valid task ID"
-            )
-
     # Check for cycles using DFS on dependency edges
     adj: dict[str, list[str]] = {t.get("id"): t.get("needs", []) for t in tasks}
     visited: set[str] = set()
@@ -108,22 +104,26 @@ def validate_graph(graph: dict, valid_agent_ids: set[str]) -> None:
     for tid in seen:
         _dfs(tid)
 
-    # Validate next/needs consistency: if A.next=B, then B must list A in needs.
-    # The coordinator dispatches based on `needs` only — inconsistency causes
-    # out-of-order execution.
-    needs_of: dict[str, list[str]] = {t["id"]: t.get("needs", []) for t in tasks}
-    for t in tasks:
-        nxt = t.get("next", "output")
-        if nxt and nxt != "output" and t["id"] not in needs_of.get(nxt, []):
-            raise GraphValidationError(
-                f"Task '{t['id']}' has next='{nxt}' but '{nxt}' does not "
-                f"list '{t['id']}' in needs"
-            )
-
     # At least one terminal task
-    terminals = [t for t in tasks if not t.get("next") or t.get("next") == "output"]
-    if not terminals:
-        raise GraphValidationError("No terminal task (next='output' or empty)")
+    terminal_ids = {t["id"] for t in tasks if t.get("terminal")}
+    if not terminal_ids:
+        raise GraphValidationError("No terminal task (set 'terminal': true)")
+
+    # Terminal tasks must not have downstream dependents
+    depended_on = {need for t in tasks for need in t.get("needs", [])}
+    bad = terminal_ids & depended_on
+    if bad:
+        raise GraphValidationError(
+            f"Terminal tasks must not have dependents: {', '.join(sorted(bad))}"
+        )
+
+    # Non-terminal tasks must be depended on by at least one other task
+    non_terminal_sinks = (all_ids - terminal_ids) - depended_on
+    if non_terminal_sinks:
+        raise GraphValidationError(
+            f"Non-terminal tasks with no dependents (dead ends): "
+            f"{', '.join(sorted(non_terminal_sinks))}"
+        )
 
 
 async def generate_graph(

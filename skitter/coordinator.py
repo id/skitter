@@ -77,7 +77,7 @@ class SessionTask:
     agent: str
     description: str
     needs: list[str] = field(default_factory=list)
-    next: str = ""
+    terminal: bool = False
     target: TaskTarget | None = None
     dispatch_correlation: str = ""  # MQTT Correlation Data sent with dispatch
     dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for tasks/cancel
@@ -151,14 +151,14 @@ def _build_context(state: SessionState, task: SessionTask) -> str:
     return "\n\n".join(parts)
 
 
-def _is_terminal(next_val: str) -> bool:
-    """True if the task's 'next' field marks it as a terminal (output) task."""
-    return not next_val or next_val == "output"
+def _is_graph_task_terminal(t: dict) -> bool:
+    """True if the graph task dict has ``terminal: true``."""
+    return bool(t.get("terminal", False))
 
 
 def _find_terminal_tasks(state: SessionState) -> list[str]:
-    """Find tasks whose next is empty or 'output'."""
-    return [tid for tid, task in state.graph.items() if _is_terminal(task.next)]
+    """Find terminal tasks in a session."""
+    return [tid for tid, task in state.graph.items() if task.terminal]
 
 
 # --- Discovery registry ---
@@ -294,13 +294,14 @@ class Coordinator:
             description = safe_format(t.get("description", ""), variables)
             needs = t.get("needs", [])
             agent = t.get("agent", "")
+            terminal = _is_graph_task_terminal(t)
             target = TaskTarget(agent=agent)
 
             state.graph[tid] = SessionTask(
                 agent=agent,
                 description=description,
                 needs=needs,
-                next=t.get("next", ""),
+                terminal=terminal,
                 target=target,
             )
             state.pending.add(tid)
@@ -313,7 +314,7 @@ class Coordinator:
                 agent=agent,
                 description=description,
                 needs=json.dumps(needs),
-                next=t.get("next", ""),
+                terminal="1" if terminal else "",
                 target_json=json.dumps(
                     {"agent": target.agent, "mqtt_host": target.mqtt_host}
                 ),
@@ -938,7 +939,7 @@ class Coordinator:
         error_msg = ""
         if db_session.state == "completed":
             tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.node_id)
-            results = [t.result for t in tasks if _is_terminal(t.next) and t.result]
+            results = [t.result for t in tasks if t.terminal and t.result]
             artifact_text = "\n\n".join(results) if results else ""
             if artifact_text:
                 artifact = make_artifact_event(
@@ -1057,7 +1058,7 @@ class Coordinator:
                     agent=t.agent,
                     description=t.description,
                     needs=needs,
-                    next=t.next,
+                    terminal=bool(t.terminal),
                     target=TaskTarget(agent=t.agent),
                     dispatch_task_id=t.dispatch_task_id,
                 )

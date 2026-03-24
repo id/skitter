@@ -1,6 +1,6 @@
 # Skitter
 
-MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker.
+AI agent orchestrator using A2A-over-MQTT.
 
 Two modes:
 

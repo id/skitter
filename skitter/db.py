@@ -63,7 +63,7 @@ class DBTask:
     agent: str
     description: str = ""
     needs: str = ""
-    next: str = ""
+    terminal: str = ""
     target_json: str = ""
     dispatch_task_id: str = ""
     reply_topic: str = ""
@@ -171,6 +171,13 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE task RENAME COLUMN task_id TO node_id",
         "ALTER TABLE task RENAME COLUMN a2a_task_id TO dispatch_task_id",
     ],
+    # v4: graph model cleanup (Phase 2) — replace next with terminal flag
+    # Old model: next pointed to a downstream task ID, or "output" for terminal tasks.
+    # The validator required next on every task, so empty/NULL means terminal.
+    [
+        "ALTER TABLE task ADD COLUMN terminal TEXT DEFAULT ''",
+        "UPDATE task SET terminal = '1' WHERE next = 'output' OR next = '' OR next IS NULL",
+    ],
 ]
 
 _TASK_UPDATABLE_FIELDS = frozenset(
@@ -238,7 +245,7 @@ def _row_to_task(row) -> DBTask:
         agent=row["agent"],
         description=row["description"] or "",
         needs=row["needs"] or "",
-        next=row["next"] or "",
+        terminal=row["terminal"] or "",
         target_json=row["target_json"] or "",
         dispatch_task_id=row["dispatch_task_id"] or "",
         reply_topic=row["reply_topic"] or "",
@@ -426,7 +433,7 @@ class SqliteDB:
     def create_task(self, task: DBTask) -> None:
         self._conn.execute(
             "INSERT INTO task (id, session_id, node_id, agent, description, "
-            "needs, next, target_json, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "needs, terminal, target_json, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task.id,
                 task.session_id,
@@ -434,7 +441,7 @@ class SqliteDB:
                 task.agent,
                 task.description,
                 task.needs,
-                task.next,
+                task.terminal,
                 task.target_json,
                 task.state,
             ),
@@ -646,7 +653,7 @@ class PostgresDB:
     def create_task(self, task: DBTask) -> None:
         self._exec(
             "INSERT INTO task (id, session_id, node_id, agent, description, "
-            "needs, next, target_json, state) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "needs, terminal, target_json, state) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 task.id,
                 task.session_id,
@@ -654,7 +661,7 @@ class PostgresDB:
                 task.agent,
                 task.description,
                 task.needs,
-                task.next,
+                task.terminal,
                 task.target_json,
                 task.state,
             ),

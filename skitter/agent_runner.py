@@ -4,7 +4,7 @@ Reads a native agent definition (Claude .md or Codex .toml), connects
 to the broker, publishes its discovery card, and handles A2A requests
 by running the CLI tool as a subprocess.
 
-    skitter agent-runner ~/.claude/agents/researcher.md
+    skitter agent-runner .claude/agents/researcher.md
 
 Fully independent — no coordinator, no shared state.
 """

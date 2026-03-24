@@ -11,7 +11,7 @@ Works with any A2A-over-MQTT agent. Ships with a built-in agent-runner that wrap
 
 ## Quickstart (Local)
 
-**Prerequisites:** Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker (only needed to run the local EMQX broker).
+**Prerequisites:** Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker (only needed to run the local EMQX broker), and at least one agent CLI: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex), installed and authenticated.
 
 ```bash
 # Start MQTT broker (Docker required for this step)
@@ -26,9 +26,9 @@ uv sync
 No coordinator needed. Create an agent definition, start an agent-runner, and send it a request.
 
 ```bash
-# Create an agent definition
-mkdir -p agents
-cat > agents/random-x.md << 'EOF'
+# Create an agent definition (Claude discovers agents from .claude/agents/)
+mkdir -p .claude/agents
+cat > .claude/agents/random-x.md << 'EOF'
 ---
 name: random-x
 description: Returns a random number as JSON
@@ -38,7 +38,7 @@ Return ONLY a JSON object {"x": <random 1-100>}. No explanation.
 EOF
 
 # Terminal 1: start the agent
-uv run python -m skitter agent-runner agents/random-x.md
+uv run python -m skitter agent-runner .claude/agents/random-x.md
 
 # Terminal 2: send a request
 uv run python -m skitter run random-x "go"
@@ -63,7 +63,7 @@ export SKITTER_LLM_MODEL=anthropic/claude-sonnet-4-6
 Create two more agents alongside random-x:
 
 ```bash
-cat > agents/random-y.md << 'EOF'
+cat > .claude/agents/random-y.md << 'EOF'
 ---
 name: random-y
 description: Returns a random number as JSON
@@ -72,7 +72,7 @@ model: haiku
 Return ONLY a JSON object {"y": <random 1-100>}. No explanation.
 EOF
 
-cat > agents/sum.md << 'EOF'
+cat > .claude/agents/sum.md << 'EOF'
 ---
 name: sum
 description: Extracts numbers from input and returns their sum as JSON
@@ -87,9 +87,9 @@ Start the agents, coordinator, then create and run the app:
 
 ```bash
 # Terminal 1: start agents
-uv run python -m skitter agent-runner agents/random-x.md
-uv run python -m skitter agent-runner agents/random-y.md
-uv run python -m skitter agent-runner agents/sum.md
+uv run python -m skitter agent-runner .claude/agents/random-x.md
+uv run python -m skitter agent-runner .claude/agents/random-y.md
+uv run python -m skitter agent-runner .claude/agents/sum.md
 
 # Terminal 2: start coordinator
 uv run python -m skitter
@@ -182,8 +182,8 @@ docker build -f Dockerfile.agent -t skitter-agent .
 docker run --rm \
   -e MQTT_HOST=your-broker \
   -e CLAUDE_CODE_OAUTH_TOKEN=... \
-  -v ./agents/researcher.md:/app/agents/researcher.md:ro \
-  skitter-agent /app/agents/researcher.md
+  -v ./.claude/agents/researcher.md:/app/.claude/agents/researcher.md:ro \
+  skitter-agent /app/.claude/agents/researcher.md
 
 # Run a Codex agent
 # Auth: CODEX_API_KEY, or mount ~/.codex/auth.json

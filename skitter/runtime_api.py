@@ -130,11 +130,16 @@ def _list_sessions(db: DB, app_id: str | None = None) -> str:
     )
 
 
+def _resolve_session(db: DB, ref: str):
+    """Look up a session by internal ID or request_task_id."""
+    return db.get_session(ref) or db.get_session_by_request_task_id(ref)
+
+
 def _get_session(db: DB, session_id: str) -> str:
-    session = db.get_session(session_id)
+    session = _resolve_session(db, session_id)
     if not session:
         return json.dumps({"error": f"Session not found: {session_id}"})
-    tasks = db.list_tasks(session_id)
+    tasks = db.list_tasks(session.id)
     return json.dumps(
         {
             "id": session.id,
@@ -144,7 +149,7 @@ def _get_session(db: DB, session_id: str) -> str:
             "completed_at": session.completed_at,
             "tasks": [
                 {
-                    "task_id": t.task_id,
+                    "node_id": t.node_id,
                     "agent": t.agent,
                     "state": t.state,
                     "result": t.result,
@@ -159,13 +164,13 @@ def _get_session(db: DB, session_id: str) -> str:
 
 
 def _cancel_session(db: DB, session_id: str) -> str:
-    session = db.get_session(session_id)
+    session = _resolve_session(db, session_id)
     if not session:
         return json.dumps({"error": f"Session not found: {session_id}"})
     if session.state != "running":
         return json.dumps({"error": f"Session not running (state={session.state})"})
-    db.update_session_state(session_id, "canceled")
-    return json.dumps({CANCEL_KEY: session_id})
+    db.update_session_state(session.id, "canceled")
+    return json.dumps({CANCEL_KEY: session.id})
 
 
 def _delete_app(db: DB, app_id: str) -> str:

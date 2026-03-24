@@ -429,8 +429,9 @@ class TestCoordinatorSession:
             caller_reply_topic="reply/t",
             caller_correlation="corr",
         )
-        # Session ID must equal the requester's Task.id (spec gap 1)
-        assert state.session_id == req.task_id
+        # session_id is now internal; request_task_id holds the requester's Task.id
+        assert state.session_id != req.task_id
+        assert state.request_task_id == req.task_id
         assert "research" in state.graph
         assert "review" in state.graph
         assert state.graph["review"].needs == ["research"]
@@ -581,6 +582,7 @@ class TestCoordinatorSession:
 
         db_session = self.db.get_session(state.session_id)
         assert db_session.context_id == "ctx-explicit-123"
+        assert db_session.request_task_id == req.task_id
 
 
 # --- A2A compliance: agent runner handle_request ---
@@ -662,7 +664,7 @@ class TestAgentRunnerCompliance:
 
 
 class TestCoordinatorDispatchCompliance:
-    """Verify coordinator dispatches with proper Task.id and cancel uses a2a_task_id."""
+    """Verify coordinator dispatches with proper Task.id and cancel uses dispatch_task_id."""
 
     def setup_method(self):
         from skitter.db import SqliteDB
@@ -739,8 +741,138 @@ class TestCoordinatorDispatchCompliance:
         # The dispatched task_id must differ from the session's task_id
         assert dispatched_task_id != req.task_id
 
-        # SessionTask must store the a2a_task_id
-        assert state.graph["step"].a2a_task_id == dispatched_task_id
+        # SessionTask must store the dispatch_task_id
+        assert state.graph["step"].dispatch_task_id == dispatched_task_id
+
+    @pytest.mark.asyncio
+    async def test_dispatch_sets_correlation_data(self):
+        """Dispatched A2A requests must include MQTT Correlation Data."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+
+        # Find the publish call to the agent's request topic
+        dispatch_calls = [
+            call
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatch_calls) == 1
+        props = dispatch_calls[0].kwargs.get("properties")
+        assert props is not None
+        assert state.graph["step"].dispatch_correlation != ""
+
+    @pytest.mark.asyncio
+    async def test_reply_with_correct_correlation_is_accepted(self):
+        """Replies with matching MQTT Correlation Data must be processed."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+        correct_corr = state.graph["step"].dispatch_correlation
+
+        reply_topic = f"$a2a/v1/reply/skitter/default/skitter/{state.session_id}/step"
+        reply_payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": correct_corr,
+                "result": {
+                    "type": "TaskStatusUpdateEvent",
+                    "taskId": state.graph["step"].dispatch_task_id,
+                    "contextId": "",
+                    "status": {"state": "completed"},
+                },
+            }
+        )
+        await sup.handle_reply(reply_topic, reply_payload, correct_corr)
+
+        assert "step" not in state.inflight
+        assert "step" in state.results
+
+    @pytest.mark.asyncio
+    async def test_reply_with_wrong_correlation_is_dropped(self):
+        """Replies with mismatched MQTT Correlation Data must be dropped."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+        assert "step" in state.inflight
+
+        reply_topic = f"$a2a/v1/reply/skitter/default/skitter/{state.session_id}/step"
+        reply_payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "wrong-corr",
+                "result": {
+                    "type": "TaskStatusUpdateEvent",
+                    "taskId": state.graph["step"].dispatch_task_id,
+                    "contextId": "",
+                    "status": {"state": "completed"},
+                },
+            }
+        )
+        await sup.handle_reply(reply_topic, reply_payload, "wrong-corr")
+
+        assert "step" in state.inflight
+
+    @pytest.mark.asyncio
+    async def test_reply_with_missing_correlation_is_dropped(self):
+        """Replies omitting MQTT Correlation Data must be dropped when expected."""
+        sup, mock_client = self._make_coordinator_with_app()
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        await sup.dispatch_ready(state)
+        assert state.graph["step"].dispatch_correlation  # expected is set
+
+        reply_topic = f"$a2a/v1/reply/skitter/default/skitter/{state.session_id}/step"
+        reply_payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "no-corr",
+                "result": {
+                    "type": "TaskStatusUpdateEvent",
+                    "taskId": state.graph["step"].dispatch_task_id,
+                    "contextId": "",
+                    "status": {"state": "completed"},
+                },
+            }
+        )
+        await sup.handle_reply(reply_topic, reply_payload, "")
+
+        assert "step" in state.inflight
 
     @pytest.mark.asyncio
     async def test_cancel_uses_a2a_task_id(self):
@@ -757,8 +889,8 @@ class TestCoordinatorDispatchCompliance:
             caller_correlation="corr-caller",
         )
         await sup.dispatch_ready(state)
-        a2a_task_id = state.graph["step"].a2a_task_id
-        assert a2a_task_id  # must be set
+        dispatch_task_id = state.graph["step"].dispatch_task_id
+        assert dispatch_task_id  # must be set
 
         mock_client.publish.reset_mock()
         await sup._cancel_session_cleanup(state.session_id)
@@ -771,7 +903,7 @@ class TestCoordinatorDispatchCompliance:
         ]
         cancel_msgs = [c for c in cancel_calls if c.get("method") == "tasks/cancel"]
         assert len(cancel_msgs) == 1
-        assert cancel_msgs[0]["params"]["id"] == a2a_task_id
+        assert cancel_msgs[0]["params"]["id"] == dispatch_task_id
 
     @pytest.mark.asyncio
     async def test_handle_request_deduplicates_by_task_id(self):
@@ -780,14 +912,15 @@ class TestCoordinatorDispatchCompliance:
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
-        sup.create_session_from_graph(
+        state = sup.create_session_from_graph(
             graph_json=version.graph_json,
             app_version_id=version.id,
             request=req,
             caller_reply_topic="reply/t",
             caller_correlation="corr",
         )
-        # Session is now registered under req.task_id
+        # Session is now indexed by request_task_id for dedup
+        assert sup._request_task_index[req.task_id] == state.session_id
 
         mock_client.publish.reset_mock()
 
@@ -828,6 +961,7 @@ class TestCoordinatorDispatchCompliance:
         )
         # Simulate completion: remove from in-memory, mark DB as completed
         sup._sessions.pop(state.session_id)
+        sup._request_task_index.pop(state.request_task_id, None)
         self.db.update_session_state(state.session_id, "completed")
         # Store a result on the terminal task
         task_row_id = f"{state.session_id}/step"
@@ -913,6 +1047,7 @@ class TestCoordinatorDispatchCompliance:
         )
         # Move to DB (simulate completion)
         sup._sessions.pop(state.session_id)
+        sup._request_task_index.pop(state.request_task_id, None)
         self.db.update_session_state(state.session_id, "completed")
 
         mock_client.publish.reset_mock()
@@ -1799,15 +1934,19 @@ class TestDependencyResolution:
     def test_variables_field_default(self):
         from skitter.coordinator import SessionState
 
-        state = SessionState(session_id="s1", app_version_id="v1")
+        state = SessionState(
+            session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
+        )
         assert state.variables == {}
 
     def test_compute_ready_no_needs(self):
         from skitter.coordinator import SessionState, SessionTask as ST, _compute_ready
 
-        state = SessionState(session_id="s1", app_version_id="v1")
-        state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
-        state.graph["b"] = ST(task_id="b", agent="r", description="d", needs=["a"])
+        state = SessionState(
+            session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
+        )
+        state.graph["a"] = ST(agent="r", description="d", needs=[])
+        state.graph["b"] = ST(agent="r", description="d", needs=["a"])
         state.pending = {"a", "b"}
         ready = _compute_ready(state)
         assert ready == ["a"]
@@ -1815,9 +1954,11 @@ class TestDependencyResolution:
     def test_compute_ready_after_completion(self):
         from skitter.coordinator import SessionState, SessionTask as ST, _compute_ready
 
-        state = SessionState(session_id="s1", app_version_id="v1")
-        state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
-        state.graph["b"] = ST(task_id="b", agent="r", description="d", needs=["a"])
+        state = SessionState(
+            session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
+        )
+        state.graph["a"] = ST(agent="r", description="d", needs=[])
+        state.graph["b"] = ST(agent="r", description="d", needs=["a"])
         state.results["a"] = "done"
         state.pending = {"b"}
         ready = _compute_ready(state)
@@ -1830,10 +1971,12 @@ class TestDependencyResolution:
             _propagate_failure,
         )
 
-        state = SessionState(session_id="s1", app_version_id="v1")
-        state.graph["a"] = ST(task_id="a", agent="r", description="d", needs=[])
-        state.graph["b"] = ST(task_id="b", agent="r", description="d", needs=["a"])
-        state.graph["c"] = ST(task_id="c", agent="r", description="d", needs=["b"])
+        state = SessionState(
+            session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
+        )
+        state.graph["a"] = ST(agent="r", description="d", needs=[])
+        state.graph["b"] = ST(agent="r", description="d", needs=["a"])
+        state.graph["c"] = ST(agent="r", description="d", needs=["b"])
         state.failed.add("a")
         state.pending = {"b", "c"}
         newly_failed = _propagate_failure(state, "a")
@@ -1849,10 +1992,12 @@ class TestDependencyResolution:
             _find_terminal_tasks,
         )
 
-        state = SessionState(session_id="s1", app_version_id="v1")
-        state.graph["a"] = ST(task_id="a", agent="r", description="d", next="b")
-        state.graph["b"] = ST(task_id="b", agent="r", description="d", next="output")
-        state.graph["c"] = ST(task_id="c", agent="r", description="d", next="")
+        state = SessionState(
+            session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
+        )
+        state.graph["a"] = ST(agent="r", description="d", next="b")
+        state.graph["b"] = ST(agent="r", description="d", next="output")
+        state.graph["c"] = ST(agent="r", description="d", next="")
         terminals = _find_terminal_tasks(state)
         assert set(terminals) == {"b", "c"}
 
@@ -1863,10 +2008,12 @@ class TestDependencyResolution:
             _build_context,
         )
 
-        state = SessionState(session_id="s1", app_version_id="v1")
+        state = SessionState(
+            session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
+        )
         state.results["a"] = "result A"
         state.results["b"] = "result B"
-        task = ST(task_id="c", agent="w", description="d", needs=["a", "b"])
+        task = ST(agent="w", description="d", needs=["a", "b"])
         ctx = _build_context(state, task)
         assert "result A" in ctx
         assert "result B" in ctx
@@ -1960,12 +2107,19 @@ class TestSqliteDB:
 
         self.db.create_app(App(id="a1", name="Test"))
         self.db.create_app_version(AppVersion(id="v1", app_id="a1", version=1))
-        self.db.create_session(DBSession(id="s1", app_version_id="v1", state="running"))
+        self.db.create_session(
+            DBSession(
+                id="s1",
+                app_version_id="v1",
+                request_task_id="rtid-s1",
+                state="running",
+            )
+        )
         self.db.create_task(
             DBTask(
                 id="s1/t1",
                 session_id="s1",
-                task_id="t1",
+                node_id="t1",
                 agent="researcher",
                 state="pending",
             )
@@ -1994,9 +2148,11 @@ class TestSqliteDB:
 
         self.db.create_app(App(id="a1", name="Test"))
         self.db.create_app_version(AppVersion(id="v1", app_id="a1", version=1))
-        self.db.create_session(DBSession(id="s1", app_version_id="v1"))
+        self.db.create_session(
+            DBSession(id="s1", app_version_id="v1", request_task_id="rtid-s1")
+        )
         self.db.create_task(
-            DBTask(id="s1/t1", session_id="s1", task_id="t1", agent="r")
+            DBTask(id="s1/t1", session_id="s1", node_id="t1", agent="r")
         )
         self.db.delete_app("a1")
         assert self.db.get_app_version("v1") is None
@@ -2010,8 +2166,12 @@ class TestSqliteDB:
         self.db.create_app(App(id="a2", name="App2"))
         self.db.create_app_version(AppVersion(id="v1", app_id="a1", version=1))
         self.db.create_app_version(AppVersion(id="v2", app_id="a2", version=1))
-        self.db.create_session(DBSession(id="s1", app_version_id="v1"))
-        self.db.create_session(DBSession(id="s2", app_version_id="v2"))
+        self.db.create_session(
+            DBSession(id="s1", app_version_id="v1", request_task_id="rtid-s1")
+        )
+        self.db.create_session(
+            DBSession(id="s2", app_version_id="v2", request_task_id="rtid-s2")
+        )
 
         all_sessions = self.db.list_sessions()
         assert len(all_sessions) == 2
@@ -2406,13 +2566,18 @@ class TestRuntimeApi:
             )
         )
         self.db.create_session(
-            DBSession(id="s1", app_version_id="app1-v2", state="running")
+            DBSession(
+                id="s1",
+                app_version_id="app1-v2",
+                request_task_id="rtid-s1",
+                state="running",
+            )
         )
         self.db.create_task(
             DBTask(
                 id="s1/research",
                 session_id="s1",
-                task_id="research",
+                node_id="research",
                 agent="researcher",
                 state="pending",
             )
@@ -2422,7 +2587,7 @@ class TestRuntimeApi:
             DBTask(
                 id="s1/review",
                 session_id="s1",
-                task_id="review",
+                node_id="review",
                 agent="writer",
                 state="running",
             )
@@ -2494,11 +2659,21 @@ class TestRuntimeApi:
         assert result["id"] == "s1"
         assert result["state"] == "running"
         assert len(result["tasks"]) == 2
-        task_ids = {t["task_id"] for t in result["tasks"]}
-        assert task_ids == {"research", "review"}
-        research = next(t for t in result["tasks"] if t["task_id"] == "research")
+        node_ids = {t["node_id"] for t in result["tasks"]}
+        assert node_ids == {"research", "review"}
+        research = next(t for t in result["tasks"] if t["node_id"] == "research")
         assert research["state"] == "completed"
         assert research["result"] == "found stuff"
+
+    @pytest.mark.asyncio
+    async def test_get_session_by_request_task_id(self):
+        """get session must resolve by request_task_id (what callers know)."""
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(await handle_query(self.db, "get session rtid-s1"))
+        assert result["id"] == "s1"
+        assert result["state"] == "running"
 
     @pytest.mark.asyncio
     async def test_get_session_not_found(self):
@@ -2513,6 +2688,18 @@ class TestRuntimeApi:
 
         self._populate()
         result = json.loads(await handle_query(self.db, "cancel session s1"))
+        assert result["canceled"] == "s1"
+
+        session = self.db.get_session("s1")
+        assert session.state == "canceled"
+
+    @pytest.mark.asyncio
+    async def test_cancel_session_by_request_task_id(self):
+        """cancel session must resolve by request_task_id."""
+        from skitter.runtime_api import handle_query
+
+        self._populate()
+        result = json.loads(await handle_query(self.db, "cancel session rtid-s1"))
         assert result["canceled"] == "s1"
 
         session = self.db.get_session("s1")
@@ -3236,8 +3423,7 @@ class TestWriteAheadDispatch:
                 db_state_at_publish.append(
                     {
                         "state": task.state,
-                        "request_id": task.request_id,
-                        "a2a_task_id": task.a2a_task_id,
+                        "dispatch_task_id": task.dispatch_task_id,
                         "dispatched_at": task.dispatched_at,
                     }
                 )
@@ -3248,8 +3434,7 @@ class TestWriteAheadDispatch:
         assert len(db_state_at_publish) == 1
         snap = db_state_at_publish[0]
         assert snap["state"] == "running"
-        assert snap["request_id"] != ""
-        assert snap["a2a_task_id"] != ""
+        assert snap["dispatch_task_id"] != ""
         assert snap["dispatched_at"] != ""
 
     @pytest.mark.asyncio
@@ -3321,6 +3506,7 @@ class TestSessionRecovery:
             DBSession(
                 id="sess-1",
                 app_version_id="app1-v1",
+                request_task_id="rtid-1",
                 context_id="ctx-recovery",
                 request_json="{}",
                 variables='{"user_request":"test"}',
@@ -3333,7 +3519,7 @@ class TestSessionRecovery:
             DBTask(
                 id="sess-1/step-a",
                 session_id="sess-1",
-                task_id="step-a",
+                node_id="step-a",
                 agent="agent-a",
                 description="Do A",
                 needs="[]",
@@ -3344,14 +3530,13 @@ class TestSessionRecovery:
             "sess-1/step-a",
             state="completed",
             result="A done",
-            request_id="req-a",
-            a2a_task_id="uuid-a",
+            dispatch_task_id="uuid-a",
         )
         self.db.create_task(
             DBTask(
                 id="sess-1/step-b",
                 session_id="sess-1",
-                task_id="step-b",
+                node_id="step-b",
                 agent="agent-b",
                 description="Do B",
                 needs='["step-a"]',
@@ -3361,8 +3546,7 @@ class TestSessionRecovery:
         self.db.update_task(
             "sess-1/step-b",
             state="running",
-            request_id="req-b",
-            a2a_task_id="uuid-b",
+            dispatch_task_id="uuid-b",
             reply_topic="$a2a/v1/reply/skitter/default/skitter/sess-1/step-b",
             dispatched_at="2026-01-01T00:00:00+00:00",
         )
@@ -3463,13 +3647,18 @@ class TestSessionRecovery:
             )
         )
         self.db.create_session(
-            DBSession(id="sess-2", app_version_id="app2-v1", state="running")
+            DBSession(
+                id="sess-2",
+                app_version_id="app2-v1",
+                request_task_id="rtid-2",
+                state="running",
+            )
         )
         self.db.create_task(
             DBTask(
                 id="sess-2/a",
                 session_id="sess-2",
-                task_id="a",
+                node_id="a",
                 agent="x",
                 needs="[]",
                 next="b",
@@ -3480,7 +3669,7 @@ class TestSessionRecovery:
             DBTask(
                 id="sess-2/b",
                 session_id="sess-2",
-                task_id="b",
+                node_id="b",
                 agent="y",
                 needs='["a"]',
                 next="output",
@@ -3579,8 +3768,8 @@ class TestDedupContextEdgeCases:
         assert "error" not in replies[0]
 
     @pytest.mark.asyncio
-    async def test_identity_session_id_equals_task_id(self):
-        """Current model: session_id = incoming A2A Task.id."""
+    async def test_identity_session_id_is_internal(self):
+        """session_id is coordinator-generated; request_task_id holds requester's Task.id."""
         sup, _ = _make_wired_coordinator_with_app(self.db)
 
         req = A2ARequest(text="go", request_id="r1")
@@ -3593,20 +3782,21 @@ class TestDedupContextEdgeCases:
             caller_correlation="corr",
         )
 
-        assert state.session_id == req.task_id
+        assert state.session_id != req.task_id
+        assert state.request_task_id == req.task_id
 
-        db_session = self.db.get_session(req.task_id)
+        db_session = self.db.get_session(state.session_id)
         assert db_session is not None
-        assert db_session.id == req.task_id
+        assert db_session.request_task_id == req.task_id
 
     @pytest.mark.asyncio
-    async def test_dedup_looks_up_by_task_id(self):
-        """Current dedup: coordinator looks up session by incoming Task.id as key."""
+    async def test_dedup_looks_up_by_request_task_id(self):
+        """Dedup: coordinator looks up session via _request_task_index by incoming Task.id."""
         sup, _ = _make_wired_coordinator_with_app(self.db)
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
-        sup.create_session_from_graph(
+        state = sup.create_session_from_graph(
             graph_json=version.graph_json,
             app_version_id=version.id,
             request=req,
@@ -3614,4 +3804,5 @@ class TestDedupContextEdgeCases:
             caller_correlation="corr",
         )
 
-        assert req.task_id in sup._sessions
+        assert req.task_id in sup._request_task_index
+        assert sup._request_task_index[req.task_id] == state.session_id

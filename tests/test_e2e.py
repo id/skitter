@@ -543,7 +543,7 @@ class TestComposedApp:
                     if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
                         break
 
-        # Coordinator session_id = req.task_id, so all replies must carry it
+        # Coordinator replies carry req.task_id (the original requester's Task.id)
         assert len(task_ids_in_replies) >= 2  # at least submitted + completed
         assert all(tid == task_id for tid in task_ids_in_replies)
 
@@ -616,6 +616,189 @@ class TestComposedApp:
         data = json.loads(result)
         assert data["a"] == num_a
         assert data["b"] == num_b
+
+
+# ---------------------------------------------------------------------------
+# Correlation data validation
+# ---------------------------------------------------------------------------
+
+
+class TestCorrelationData:
+    async def test_replies_carry_correlation_data(
+        self, coordinator, start_agent, mock_graph
+    ):
+        """Agent replies must echo MQTT Correlation Data from the coordinator's dispatch."""
+        aid = f"corr-echo-{uuid.uuid4().hex[:4]}"
+        await start_agent(aid, handler=lambda a, p, s, e: "done")
+
+        mock_graph(
+            {
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": aid,
+                        "description": "Do it",
+                        "needs": [],
+                        "next": "output",
+                    },
+                ]
+            }
+        )
+
+        app_id = await create_test_app([aid], f"Use {aid}")
+        await wait_for_discovery(app_id)
+
+        # Subscribe to the coordinator's internal reply topic to inspect correlation
+        # The coordinator subscribes to $a2a/v1/reply/{org}/{unit}/skitter/{sid}/{nid}
+        # but we don't know the session_id yet. Subscribe with wildcard.
+        spy_topic = "$a2a/v1/reply/skitter/default/skitter/#"
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        req = A2ARequest(
+            text="Go.",
+            request_id=f"app-{uuid.uuid4().hex[:8]}",
+            sender="test",
+        )
+
+        correlation_on_replies: list[str] = []
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-corr-spy-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(spy_topic, qos=1)
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(app_id), req.to_json(), qos=1, properties=props
+            )
+
+            async with asyncio.timeout(15.0):
+                async for msg in client.messages:
+                    topic = str(msg.topic)
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+
+                    # Capture correlation from agent replies to coordinator
+                    if "/reply/skitter/default/skitter/" in topic:
+                        corr_bytes = getattr(msg.properties, "CorrelationData", None)
+                        if corr_bytes:
+                            correlation_on_replies.append(corr_bytes.decode())
+
+                    # Stop when the caller gets the terminal reply
+                    if topic == reply_t:
+                        data = json.loads(payload)
+                        kind, _ = classify_reply(data)
+                        if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                            break
+
+        # Agent replies must carry correlation data
+        assert len(correlation_on_replies) >= 1
+        # All replies for the same dispatch must use the same correlation value
+        assert len(set(correlation_on_replies)) == 1
+
+    async def test_injected_reply_with_wrong_correlation_is_ignored(
+        self, coordinator, start_agent, mock_graph
+    ):
+        """A spoofed reply with wrong correlation must not complete the task."""
+        aid = f"corr-spoof-{uuid.uuid4().hex[:4]}"
+
+        got_prompt = asyncio.Event()
+
+        async def handler_slow(agent, prompt, publish_stream, env):
+            got_prompt.set()
+            await asyncio.sleep(5)
+            return "real-result"
+
+        await start_agent(aid, handler=handler_slow)
+
+        mock_graph(
+            {
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": aid,
+                        "description": "Do it",
+                        "needs": [],
+                        "next": "output",
+                    },
+                ]
+            }
+        )
+
+        app_id = await create_test_app([aid], f"Use {aid}")
+        await wait_for_discovery(app_id)
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        req = A2ARequest(
+            text="Go.",
+            request_id=f"app-{uuid.uuid4().hex[:8]}",
+            sender="test",
+        )
+
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-spoof-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(app_id), req.to_json(), qos=1, properties=props
+            )
+
+            # Wait for the agent to receive the prompt (task is dispatched)
+            async with asyncio.timeout(10.0):
+                await got_prompt.wait()
+
+            # Find the session to build the correct reply topic
+            sessions = list(coordinator._sessions.values())
+            assert len(sessions) == 1
+            state = sessions[0]
+            sid = state.session_id
+
+            # Inject a fake completed reply with wrong correlation
+            spoof_topic = f"$a2a/v1/reply/skitter/default/skitter/{sid}/step"
+            spoof_payload = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "bad-corr",
+                    "result": {
+                        "type": "TaskStatusUpdateEvent",
+                        "taskId": "fake",
+                        "contextId": "",
+                        "status": {"state": "completed"},
+                    },
+                }
+            )
+            spoof_props = make_properties(correlation_data="bad-corr")
+            await client.publish(
+                spoof_topic, spoof_payload, qos=1, properties=spoof_props
+            )
+
+            # The real agent will complete after ~5s; wait for the real result
+            result_text = ""
+            async with asyncio.timeout(15.0):
+                async for msg in client.messages:
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+                    data = json.loads(payload)
+                    kind, content = classify_reply(data)
+                    if kind == REPLY_ARTIFACT:
+                        result_text = content
+                    elif kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                        break
+
+        # The real agent's result must come through, not the spoofed one
+        assert "real-result" in result_text
 
 
 # ---------------------------------------------------------------------------

@@ -3423,6 +3423,8 @@ def _make_wired_coordinator(db):
     mock_client.publish = AsyncMock()
     mock_client.subscribe = AsyncMock()
     sup._client = mock_client
+    # Prevent recover() from opening real MQTT connections for app cards
+    sup._start_app_connection = AsyncMock()
     return sup, mock_client
 
 

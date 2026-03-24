@@ -45,7 +45,7 @@ uv run python -m skitter run random-x "go"
 # => {"x": 73}
 ```
 
-The agent-runner publishes a discovery card on startup and handles A2A requests independently. It supports Claude Code (`.md`) and Codex (`.toml`) agent definitions. Any A2A-over-MQTT compliant process works too.
+The agent-runner reads metadata from the native definition file, publishes a discovery card, and handles A2A requests independently. It supports Claude Code (`.md`) and Codex (`.toml`) definitions. Any A2A-over-MQTT compliant process works too.
 
 ### Create a composed app
 
@@ -148,9 +148,11 @@ Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt
 
 ## Agent Runner
 
-The built-in agent-runner wraps Claude Code and Codex CLI as A2A-over-MQTT agents. It reads native agent definitions directly (`.md` for Claude, `.toml` for Codex). Runtime is inferred from the file extension.
+The built-in agent-runner wraps Claude Code and Codex CLI as A2A-over-MQTT agents. It reads metadata from native definition files (`.md` for Claude, `.toml` for Codex), publishes a discovery card, and delegates execution to the respective CLI tool. Runtime is inferred from the file extension.
 
-Codex agents use `.toml` files:
+Claude agents are references to registered agent names: the runner passes the name to `claude --agent <name>`, and Claude Code resolves the definition from its own registry.
+
+Codex agents carry instructions inline: the runner passes `developer_instructions` and `model` to `codex exec` via CLI flags.
 
 ```toml
 # agents/coder.toml
@@ -235,7 +237,7 @@ E2E tests run the coordinator and agent-runners in-process with mocked CLI and g
 
 - No built-in authentication (rely on MQTT broker auth)
 - Single coordinator instance per broker (enforced via retained MQTT lock)
-- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime; other fields (`sandbox_mode`, etc.) are ignored
+- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime via CLI flags; other fields (`sandbox_mode`, etc.) are ignored
 - A2A Core Conformance only; Extended Conformance features (shared pool dispatch, task handover, binary artifacts, OAuth) are not implemented
 
 ## Contributing

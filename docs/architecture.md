@@ -161,7 +161,7 @@ The agent-runner (`skitter/agent_runner.py`) is a convenience wrapper that turns
 
 What it does:
 
-1. Reads agent definition from native CLI file (`.md` or `.toml`)
+1. Reads metadata from a native CLI definition file (`.md` or `.toml`)
 2. Connects to MQTT, subscribes to its request topic
 3. Publishes retained discovery card
 4. On request: runs the CLI tool as a subprocess, streams events back to caller
@@ -169,7 +169,7 @@ What it does:
 6. Validates Task.id presence; rejects requests without it
 7. Deduplicates by Task.id (in-memory, 5-minute TTL); returns existing task state on duplicates
 
-The agent-runner reads native agent definitions directly: Claude `.md` files (YAML frontmatter) or Codex `.toml` files. No separate skitter config needed. Runtime is inferred from the file extension.
+The agent-runner reads metadata from native definition files and delegates execution to the respective CLI tool. Claude agents are references to registered agent names (resolved by `claude --agent <name>`). Codex agents carry their instructions inline (passed via `codex exec -c developer_instructions=...`). Runtime is inferred from the file extension.
 
 Permissions and isolation:
 - **Claude agents**: `--permission-mode auto` with filesystem sandbox (writes restricted to `/tmp`)

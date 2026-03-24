@@ -12,7 +12,7 @@ MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT brok
 | LLM client (litellm wrapper) | `skitter/llm.py` |
 | Graph generation + validation | `skitter/graph_gen.py` |
 | Runtime API + app creation | `skitter/runtime_api.py` |
-| Pull agent cards from broker | `skitter/pull.py` |
+| Pull discovery cards from broker (JSON) | `skitter/pull.py` |
 | A2A protocol (message types, topics, validation, requester helper) | `skitter/a2a.py` |
 | MQTT v5 transport (connection, properties) | `skitter/mqtt.py` |
 | Config loading (~/.skitter/), dataclasses | `skitter/config.py` |
@@ -38,7 +38,7 @@ Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. 
 
 - **Immutable sessions.** Persisted once by coordinator in DB, never mutated. Per-task status tracked separately.
 - **Namespace separation.** `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery, events).
-- **Native sub-agents.** Agent identity owned by `~/.claude/agents/*.md` / `~/.codex/agents/*.toml`, not skitter. No separate skitter agent config.
+- **Native sub-agents.** Agent identity owned by the external runtime (Claude Code or Codex). Skitter reads metadata from native definition files (`~/.claude/agents/*.md`, `~/.codex/agents/*.toml`) but the files are resolved and executed by the respective CLI tools. No separate skitter agent config.
 - **Independent agents.** Agents are any A2A-over-MQTT compliant process. The coordinator doesn't spawn or manage them.
 - **A2A protocol compliance.** All protocol-facing code must conform to [A2A v1.0.0](https://github.com/a2aproject/A2A/blob/main/specification/a2a.proto) and the [A2A-over-MQTT v0.1 binding](https://github.com/emqx/mqtt-for-ai/blob/main/a2a-over-mqtt/specification/0.1/basic/mqtt_transport.md). Use `/a2a-compliance` to validate after protocol changes.
 
@@ -76,5 +76,5 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 - No built-in authentication (rely on broker auth)
 - Single coordinator per broker (enforced via retained MQTT lock)
 - No timeout for coordinator-dispatched tasks (only recovery tasks get 120s timeout); requester-side `send_and_wait` has retry/timeout profile
-- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime; `sandbox_mode` and other fields are not passed to `codex exec` (always uses `--full-auto`)
+- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime via CLI flags; other fields (`sandbox_mode`, etc.) are not passed to `codex exec` (always uses `--full-auto`)
 - A2A-over-MQTT: Core Conformance only; Extended Conformance features (shared pool dispatch, task handover, binary artifacts, UBSP, broker-managed status, OAuth) are not implemented

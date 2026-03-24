@@ -1784,14 +1784,14 @@ class TestAgentRunnerCli:
             name="Researcher",
             runtime="claude",
             model="sonnet",
-            agent_file="researcher.md",
+            claude_agent="researcher",
         )
         cmd = _build_cli_cmd(agent, "test prompt")
         assert cmd[0] == "claude"
         assert "-p" in cmd
         assert "test prompt" in cmd
         assert "--agent" in cmd
-        assert "researcher" in cmd  # agent file without .md
+        assert "researcher" in cmd
         assert "--model" in cmd
         assert "sonnet" in cmd
         assert cmd[cmd.index("--permission-mode") + 1] == "auto"
@@ -1816,14 +1816,14 @@ class TestAgentRunnerCli:
         assert cmd[cmd.index("--color") + 1] == "never"
         assert "--full-auto" in cmd
 
-    def test_build_codex_cmd_with_system_prompt(self):
+    def test_build_codex_cmd_with_instructions(self):
         from skitter.agent_runner import _build_cli_cmd
 
         agent = AgentDef(
             id="coder",
             name="Coder",
             runtime="codex",
-            system_prompt="You are a senior developer.",
+            codex_instructions="You are a senior developer.",
         )
         cmd = _build_cli_cmd(agent, "write tests")
         assert "-c" in cmd
@@ -1835,7 +1835,7 @@ class TestAgentRunnerCli:
         assert len(dev_instr_args) == 1
         assert dev_instr_args[0] == "developer_instructions=You are a senior developer."
 
-    def test_build_codex_cmd_no_system_prompt(self):
+    def test_build_codex_cmd_no_instructions(self):
         from skitter.agent_runner import _build_cli_cmd
 
         agent = AgentDef(id="coder", name="Coder", runtime="codex")
@@ -1846,12 +1846,12 @@ class TestAgentRunnerCli:
         ]
         assert len(dev_instr_args) == 0
 
-    def test_build_claude_cmd_default_agent_file(self):
+    def test_build_claude_cmd_default_agent_name(self):
         from skitter.agent_runner import _build_cli_cmd
 
         agent = AgentDef(id="researcher", name="Researcher", runtime="claude")
         cmd = _build_cli_cmd(agent, "test")
-        # When agent_file is empty, uses agent.id
+        # When claude_agent is empty, uses agent.id
         idx = cmd.index("--agent")
         assert cmd[idx + 1] == "researcher"
 
@@ -1888,7 +1888,7 @@ class TestLoadAgent:
         assert agent.description == "Deep research"
         assert agent.model == "sonnet"
         assert agent.runtime == "claude"
-        assert agent.agent_file == "researcher"
+        assert agent.claude_agent == "researcher"
 
     def test_load_claude_agent_minimal(self, tmp_path):
         (tmp_path / "simple.md").write_text("---\nname: simple\n---\nBe brief.\n")
@@ -1899,6 +1899,18 @@ class TestLoadAgent:
         assert agent.description == ""
         assert agent.model == ""
         assert agent.runtime == "claude"
+        assert agent.claude_agent == "simple"
+
+    def test_load_claude_agent_name_differs_from_filename(self, tmp_path):
+        """claude_agent should use frontmatter name, not filename stem."""
+        (tmp_path / "my-copy.md").write_text(
+            "---\nname: researcher\ndescription: Research\n---\nDo research.\n"
+        )
+        from skitter.agent_runner import load_agent
+
+        agent = load_agent(str(tmp_path / "my-copy.md"))
+        assert agent.id == "researcher"
+        assert agent.claude_agent == "researcher"
 
     def test_load_codex_agent(self, tmp_path):
         (tmp_path / "coder.toml").write_text(
@@ -1911,8 +1923,66 @@ class TestLoadAgent:
         assert agent.id == "coder"
         assert agent.runtime == "codex"
         assert agent.model == "gpt-5.1-codex-mini"
-        assert "senior developer" in agent.description
-        assert agent.system_prompt == "You are a senior developer."
+        assert agent.description == "You are a senior developer."
+        assert agent.codex_instructions == "You are a senior developer."
+
+
+# --- Pull (save cards) ---
+
+
+class TestPullCards:
+    def test_save_card(self, tmp_path):
+        from skitter.pull import save_cards
+
+        cards = [
+            {
+                "_agent_id": "researcher",
+                "name": "Researcher",
+                "description": "Deep research",
+                "capabilities": {"streaming": True},
+                "skills": [{"id": "researcher", "name": "Researcher"}],
+            }
+        ]
+        written = save_cards(cards, tmp_path)
+        assert len(written) == 1
+        data = json.loads((tmp_path / "researcher.json").read_text())
+        assert data["name"] == "Researcher"
+        assert data["description"] == "Deep research"
+        assert data["capabilities"] == {"streaming": True}
+        # Internal fields should be stripped
+        assert "_agent_id" not in data
+
+    def test_skip_skitter_agent(self, tmp_path):
+        from skitter.pull import save_cards
+
+        cards = [{"_agent_id": "skitter", "name": "Skitter Runtime"}]
+        written = save_cards(cards, tmp_path)
+        assert written == []
+
+    def test_save_workflow_cards(self, tmp_path):
+        from skitter.pull import save_cards
+
+        cards = [
+            {
+                "_agent_id": "pipeline",
+                "name": "Pipeline",
+                "metadata": {"tasks": [{"id": "t1"}]},
+            }
+        ]
+        written = save_cards(cards, tmp_path)
+        assert len(written) == 1
+        data = json.loads((tmp_path / "pipeline.json").read_text())
+        assert data["name"] == "Pipeline"
+        assert data["metadata"]["tasks"] == [{"id": "t1"}]
+
+    def test_skip_existing_file(self, tmp_path):
+        from skitter.pull import save_cards
+
+        (tmp_path / "researcher.json").write_text("{}\n")
+        cards = [{"_agent_id": "researcher", "name": "Researcher"}]
+        written = save_cards(cards, tmp_path)
+        assert written == []
+        assert (tmp_path / "researcher.json").read_text() == "{}\n"
 
 
 # --- Safe format ---

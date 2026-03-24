@@ -2,13 +2,14 @@
 
 import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from skitter.config import AgentDef
 from skitter.coordinator import _parse_agent_id_from_topic
 from skitter.a2a import (
+    A2A_UNIT,
     A2ARequest,
     A2A_REQUEST_EXPIRED,
     A2A_RESPONDER_UNAVAILABLE,
@@ -2713,9 +2714,6 @@ class TestCoordinatorRuntimeRouting:
         await sup._publish_event("session_created", "sess1")
 
 
-# --- Phase 3.3 Verification ---
-
-
 class TestRuntimeApiIntegration:
     """Integration tests: create app, run session lifecycle, verify events + queries."""
 
@@ -3167,3 +3165,453 @@ class TestRuntimeApiIntegration:
         artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert "not found" in result["error"].lower()
+
+
+_SINGLE_STEP_GRAPH = {
+    "tasks": [
+        {
+            "id": "step",
+            "agent": "researcher",
+            "description": "Do it",
+            "needs": [],
+            "next": "output",
+        }
+    ]
+}
+
+
+def _make_wired_coordinator(db):
+    """Create a Coordinator with a mocked MQTT client (publish + subscribe)."""
+    from skitter.coordinator import Coordinator
+
+    sup = Coordinator(db)
+    mock_client = MagicMock()
+    mock_client.publish = AsyncMock()
+    mock_client.subscribe = AsyncMock()
+    sup._client = mock_client
+    return sup, mock_client
+
+
+def _make_wired_coordinator_with_app(db):
+    """Create a Coordinator with mocked client and a single-step test app."""
+    from skitter.runtime_api import create_app
+
+    sup, mock_client = _make_wired_coordinator(db)
+    create_app(db, app_id="test-app", name="Test", graph=_SINGLE_STEP_GRAPH)
+    return sup, mock_client
+
+
+class TestWriteAheadDispatch:
+    """Verify write-ahead persistence: DB task is updated before MQTT publish."""
+
+    def setup_method(self):
+        from skitter.db import SqliteDB
+
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    @pytest.mark.asyncio
+    async def test_db_updated_before_publish(self):
+        """DB task must have dispatch info persisted before MQTT publish fires."""
+        sup, mock_client = _make_wired_coordinator_with_app(self.db)
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        sid = state.session_id
+
+        db_state_at_publish: list[dict] = []
+
+        async def capture_publish(topic, payload, **kwargs):
+            if "/request/" in str(topic) and "researcher" in str(topic):
+                task = self.db.get_task(f"{sid}/step")
+                db_state_at_publish.append(
+                    {
+                        "state": task.state,
+                        "request_id": task.request_id,
+                        "a2a_task_id": task.a2a_task_id,
+                        "dispatched_at": task.dispatched_at,
+                    }
+                )
+
+        mock_client.publish = AsyncMock(side_effect=capture_publish)
+        await sup.dispatch_ready(state)
+
+        assert len(db_state_at_publish) == 1
+        snap = db_state_at_publish[0]
+        assert snap["state"] == "running"
+        assert snap["request_id"] != ""
+        assert snap["a2a_task_id"] != ""
+        assert snap["dispatched_at"] != ""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_persists_reply_topic(self):
+        """Write-ahead must persist the reply_topic for recovery."""
+        sup, mock_client = _make_wired_coordinator_with_app(self.db)
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        sid = state.session_id
+        await sup.dispatch_ready(state)
+
+        task = self.db.get_task(f"{sid}/step")
+        assert task.reply_topic != ""
+        assert f"/{A2A_UNIT}/" in task.reply_topic
+
+
+class TestSessionRecovery:
+    """Characterize the coordinator's recovery behavior on startup."""
+
+    def setup_method(self):
+        from skitter.db import SqliteDB
+
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    def _seed_running_session(self):
+        """Seed DB with a running session: one completed task, one dispatched."""
+        from skitter.db import App, AppVersion, DBSession, DBTask
+
+        self.db.create_app(App(id="app1", name="App", card_json='{"name":"App"}'))
+        self.db.create_app_version(
+            AppVersion(
+                id="app1-v1",
+                app_id="app1",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "step-a",
+                                "agent": "agent-a",
+                                "description": "Do A",
+                                "needs": [],
+                                "next": "step-b",
+                            },
+                            {
+                                "id": "step-b",
+                                "agent": "agent-b",
+                                "description": "Do B",
+                                "needs": ["step-a"],
+                                "next": "output",
+                            },
+                        ]
+                    }
+                ),
+            )
+        )
+        self.db.create_session(
+            DBSession(
+                id="sess-1",
+                app_version_id="app1-v1",
+                context_id="ctx-recovery",
+                request_json="{}",
+                variables='{"user_request":"test"}',
+                caller_reply_topic="reply/caller",
+                caller_correlation="corr-caller",
+                state="running",
+            )
+        )
+        self.db.create_task(
+            DBTask(
+                id="sess-1/step-a",
+                session_id="sess-1",
+                task_id="step-a",
+                agent="agent-a",
+                description="Do A",
+                needs="[]",
+                next="step-b",
+            )
+        )
+        self.db.update_task(
+            "sess-1/step-a",
+            state="completed",
+            result="A done",
+            request_id="req-a",
+            a2a_task_id="uuid-a",
+        )
+        self.db.create_task(
+            DBTask(
+                id="sess-1/step-b",
+                session_id="sess-1",
+                task_id="step-b",
+                agent="agent-b",
+                description="Do B",
+                needs='["step-a"]',
+                next="output",
+            )
+        )
+        self.db.update_task(
+            "sess-1/step-b",
+            state="running",
+            request_id="req-b",
+            a2a_task_id="uuid-b",
+            reply_topic="$a2a/v1/reply/skitter/default/skitter/sess-1/step-b",
+            dispatched_at="2026-01-01T00:00:00+00:00",
+        )
+
+    @pytest.mark.asyncio
+    async def test_recover_rehydrates_session(self):
+        """Recovery must reconstruct in-memory session state from DB."""
+        self._seed_running_session()
+        sup, _ = _make_wired_coordinator(self.db)
+        await sup.recover()
+
+        assert "sess-1" in sup._sessions
+        state = sup._sessions["sess-1"]
+        assert state.context_id == "ctx-recovery"
+        assert state.caller_reply_topic == "reply/caller"
+        assert state.caller_correlation == "corr-caller"
+        assert "step-a" in state.graph
+        assert "step-b" in state.graph
+
+    @pytest.mark.asyncio
+    async def test_recover_completed_task_in_results(self):
+        """Completed tasks must be in state.results after recovery."""
+        self._seed_running_session()
+        sup, _ = _make_wired_coordinator(self.db)
+        await sup.recover()
+
+        state = sup._sessions["sess-1"]
+        assert "step-a" in state.results
+        assert state.results["step-a"] == "A done"
+        assert "step-a" not in state.pending
+        assert "step-a" not in state.inflight
+
+    @pytest.mark.asyncio
+    async def test_recover_running_dispatched_task_is_inflight(self):
+        """Running+dispatched tasks must be in state.inflight after recovery."""
+        self._seed_running_session()
+        sup, _ = _make_wired_coordinator(self.db)
+        await sup.recover()
+
+        state = sup._sessions["sess-1"]
+        assert "step-b" in state.inflight
+        assert "step-b" not in state.pending
+
+    @pytest.mark.asyncio
+    async def test_recover_resubscribes_reply_topics(self):
+        """Recovery must resubscribe to reply topics for inflight tasks."""
+        self._seed_running_session()
+        sup, mock_client = _make_wired_coordinator(self.db)
+        await sup.recover()
+
+        subscribe_topics = [
+            str(call.args[0]) for call in mock_client.subscribe.call_args_list
+        ]
+        expected = "$a2a/v1/reply/skitter/default/skitter/sess-1/step-b"
+        assert expected in subscribe_topics
+
+    @pytest.mark.asyncio
+    async def test_recover_skips_completed_sessions(self):
+        """Completed sessions must not be rehydrated."""
+        self._seed_running_session()
+        self.db.update_session_state("sess-1", "completed")
+        sup, _ = _make_wired_coordinator(self.db)
+        await sup.recover()
+
+        assert "sess-1" not in sup._sessions
+
+    @pytest.mark.asyncio
+    async def test_recover_dispatches_newly_ready_tasks(self):
+        """Recovery must dispatch pending tasks whose dependencies are met."""
+        from skitter.db import App, AppVersion, DBSession, DBTask
+
+        self.db.create_app(App(id="app2", name="App2"))
+        self.db.create_app_version(
+            AppVersion(
+                id="app2-v1",
+                app_id="app2",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "a",
+                                "agent": "x",
+                                "description": "A",
+                                "needs": [],
+                                "next": "b",
+                            },
+                            {
+                                "id": "b",
+                                "agent": "y",
+                                "description": "B",
+                                "needs": ["a"],
+                                "next": "output",
+                            },
+                        ]
+                    }
+                ),
+            )
+        )
+        self.db.create_session(
+            DBSession(id="sess-2", app_version_id="app2-v1", state="running")
+        )
+        self.db.create_task(
+            DBTask(
+                id="sess-2/a",
+                session_id="sess-2",
+                task_id="a",
+                agent="x",
+                needs="[]",
+                next="b",
+            )
+        )
+        self.db.update_task("sess-2/a", state="completed", result="A result")
+        self.db.create_task(
+            DBTask(
+                id="sess-2/b",
+                session_id="sess-2",
+                task_id="b",
+                agent="y",
+                needs='["a"]',
+                next="output",
+            )
+        )
+
+        sup, mock_client = _make_wired_coordinator(self.db)
+        await sup.recover()
+
+        state = sup._sessions["sess-2"]
+        assert "b" in state.inflight
+        assert "b" not in state.pending
+
+        dispatched = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "y" in str(call.args[0])
+        ]
+        assert len(dispatched) == 1
+        assert dispatched[0]["method"] == "message/send"
+
+    @pytest.mark.asyncio
+    async def test_recover_timeout_fails_inflight_task(self):
+        """Recovered inflight tasks that get no reply within timeout must fail."""
+        self._seed_running_session()
+        sup, _ = _make_wired_coordinator(self.db)
+        await sup.recover()
+
+        state = sup._sessions["sess-1"]
+        assert "step-b" in state.inflight
+
+        with patch("skitter.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await sup._timeout_inflight(state, "step-b", timeout=120.0)
+
+        assert "step-b" in state.failed
+        assert "step-b" not in state.inflight
+
+        task = self.db.get_task("sess-1/step-b")
+        assert task.state == "failed"
+        assert "timed out" in task.error.lower()
+
+
+class TestDedupContextEdgeCases:
+    """Characterize context_id edge cases in dedup: empty context = untracked."""
+
+    def setup_method(self):
+        from skitter.db import SqliteDB
+
+        self.db = SqliteDB(":memory:")
+
+    def teardown_method(self):
+        self.db.close()
+
+    def _create_session(self, sup, context_id):
+        version = self.db.get_current_version("test-app")
+        req = A2ARequest(text="go", request_id="r1", context_id=context_id)
+        sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+        return req
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stored_ctx,incoming_ctx",
+        [
+            ("", "ctx-new"),
+            ("ctx-original", ""),
+            ("", ""),
+        ],
+        ids=["stored-empty", "incoming-empty", "both-empty"],
+    )
+    async def test_dedup_empty_context_allows_dedup(self, stored_ctx, incoming_ctx):
+        """Empty context_id on either side allows dedup (untracked context)."""
+        sup, mock_client = _make_wired_coordinator_with_app(self.db)
+        req = self._create_session(sup, stored_ctx)
+
+        mock_client.publish.reset_mock()
+        dup = A2ARequest(
+            text="retry",
+            request_id="r2",
+            task_id=req.task_id,
+            context_id=incoming_ctx,
+        )
+        await sup.handle_request(dup, "reply/t2", "corr-2", "test-app")
+
+        replies = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if str(call.args[0]) == "reply/t2"
+        ]
+        assert len(replies) == 1
+        assert "error" not in replies[0]
+
+    @pytest.mark.asyncio
+    async def test_identity_session_id_equals_task_id(self):
+        """Current model: session_id = incoming A2A Task.id."""
+        sup, _ = _make_wired_coordinator_with_app(self.db)
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+
+        assert state.session_id == req.task_id
+
+        db_session = self.db.get_session(req.task_id)
+        assert db_session is not None
+        assert db_session.id == req.task_id
+
+    @pytest.mark.asyncio
+    async def test_dedup_looks_up_by_task_id(self):
+        """Current dedup: coordinator looks up session by incoming Task.id as key."""
+        sup, _ = _make_wired_coordinator_with_app(self.db)
+
+        req = A2ARequest(text="go", request_id="r1")
+        version = self.db.get_current_version("test-app")
+        sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+        )
+
+        assert req.task_id in sup._sessions

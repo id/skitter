@@ -27,6 +27,7 @@ def build_card(
     card: dict = {
         "name": agent.name,
         "description": agent.description,
+        "url": url,
         "version": "0.1.0",
         "supportedInterfaces": [
             {

@@ -1669,6 +1669,7 @@ class TestBuildCard:
         assert card["name"] == "Researcher"
         assert card["description"] == "Deep research with citations"
         assert card["version"] == "0.1.0"
+        assert "url" in card
         # supportedInterfaces replaces top-level url/protocolVersion per A2A v1.0.0
         ifaces = card["supportedInterfaces"]
         assert len(ifaces) == 1
@@ -1723,6 +1724,7 @@ class TestBuildCard:
 
         agent = AgentDef(id="test", name="Test")
         card = build_card(agent, url="mqtt://custom:1883")
+        assert card["url"] == "mqtt://custom:1883"
         assert card["supportedInterfaces"][0]["url"] == "mqtt://custom:1883"
 
     def test_card_skills_have_tags(self):

@@ -23,9 +23,9 @@ from skitter.db import (
 from skitter.discovery import is_workflow_card, parse_card
 from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
-    CANCEL_KEY,
-    CREATE_APP_KEY,
-    DELETE_APP_KEY,
+    CancelSessionResult,
+    CreateAppResult,
+    DeleteAppResult,
     handle_query as runtime_query,
     runtime_card,
 )
@@ -603,27 +603,24 @@ class Coordinator:
 
         Caller must pass a validated A2ARequest (v5 props and Task.id already checked).
         """
-        result_json = await runtime_query(self._db, req.text, self._registry)
+        result = await runtime_query(self._db, req.text, self._registry)
 
-        # Post-action hooks (cancel cleanup, app registration)
         try:
-            result = json.loads(result_json)
-            if CANCEL_KEY in result:
-                await self._cancel_session_cleanup(result[CANCEL_KEY])
-            if CREATE_APP_KEY in result:
-                await self._register_new_app(result[CREATE_APP_KEY])
-            if DELETE_APP_KEY in result:
-                await self._delete_app_cleanup(result[DELETE_APP_KEY])
+            if isinstance(result, CancelSessionResult):
+                await self._cancel_session_cleanup(result.session_id)
+            elif isinstance(result, CreateAppResult):
+                await self._start_app_connection(result.app_id, result.card_json)
+            elif isinstance(result, DeleteAppResult):
+                await self._delete_app_cleanup(result.app_id)
         except Exception:
             log.exception("Runtime query post-action failed")
 
-        # Reply to the query caller
         await self._publish_completed(
             reply_topic,
             correlation,
             req.task_id,
             req.context_id or "",
-            artifact_text=result_json,
+            artifact_text=json.dumps(result.to_dict()),
         )
 
     async def _cancel_session_cleanup(self, session_id: str) -> None:
@@ -681,14 +678,6 @@ class Coordinator:
             await self._client.publish(
                 state.caller_reply_topic, event, qos=1, properties=props
             )
-
-    async def _register_new_app(self, app_info: dict) -> None:
-        """Subscribe to a newly created app's request topic and publish its card."""
-        app_id = app_info.get("app_id", "")
-        card = app_info.get("card")
-        if not app_id or not card:
-            return
-        await self._start_app_connection(app_id, json.dumps(card))
 
     async def _delete_app_cleanup(self, app_id: str) -> None:
         """Clear retained discovery card and tear down the app's MQTT connection."""

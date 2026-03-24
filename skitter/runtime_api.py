@@ -1,7 +1,8 @@
 """Runtime state query handler.
 
 Registered as ``skitter`` — handles structured queries and
-returns JSON results in standard A2A TaskStatusUpdateEvent replies.
+returns typed result objects. JSON serialization happens at the
+coordinator's reply boundary.
 
 Queries:
     list apps           → all apps with current version info
@@ -17,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import uuid
@@ -32,9 +35,74 @@ if TYPE_CHECKING:
 log = logging.getLogger("skitter.runtime_api")
 
 AGENT_ID = "skitter"
-CANCEL_KEY = "canceled"
-CREATE_APP_KEY = "created_app"
-DELETE_APP_KEY = "deleted_app"
+
+
+# --- Typed result objects ---
+
+
+class QueryResult(ABC):
+    """Base for runtime query results."""
+
+    @abstractmethod
+    def to_dict(self) -> dict: ...
+
+
+@dataclass
+class DataResult(QueryResult):
+    """Generic data result (list, get queries)."""
+
+    data: dict
+
+    def to_dict(self) -> dict:
+        return self.data
+
+
+@dataclass
+class ErrorResult(QueryResult):
+    """Query failed."""
+
+    message: str
+
+    def to_dict(self) -> dict:
+        return {"error": self.message}
+
+
+@dataclass
+class CancelSessionResult(QueryResult):
+    """Session canceled; coordinator should clean up."""
+
+    session_id: str
+
+    def to_dict(self) -> dict:
+        return {"canceled": self.session_id}
+
+
+@dataclass
+class CreateAppResult(QueryResult):
+    """App created; coordinator should register MQTT connection."""
+
+    app_id: str
+    version: int
+    card_json: str
+
+    def to_dict(self) -> dict:
+        return {
+            "created_app": {
+                "app_id": self.app_id,
+                "version": self.version,
+                "card": json.loads(self.card_json),
+            }
+        }
+
+
+@dataclass
+class DeleteAppResult(QueryResult):
+    """App deleted; coordinator should tear down MQTT connection."""
+
+    app_id: str
+
+    def to_dict(self) -> dict:
+        return {"deleted_app": self.app_id}
 
 
 def runtime_card() -> dict:
@@ -49,11 +117,11 @@ def runtime_card() -> dict:
 
 async def handle_query(
     db: DB, text: str, registry: DiscoveryRegistry | None = None
-) -> str:
-    """Parse a query command and return a JSON result string."""
+) -> QueryResult:
+    """Parse a query command and return a typed result."""
     parts = text.strip().split(None, 2)
     if not parts:
-        return json.dumps({"error": "Empty query"})
+        return ErrorResult("Empty query")
 
     verb = parts[0].lower()
     noun = parts[1].lower() if len(parts) > 1 else ""
@@ -74,15 +142,15 @@ async def handle_query(
     if verb == "delete" and noun == "app" and arg:
         return _delete_app(db, arg)
 
-    return json.dumps({"error": f"Unknown query: {text.strip()}"})
+    return ErrorResult(f"Unknown query: {text.strip()}")
 
 
-def _list_apps(db: DB) -> str:
+def _list_apps(db: DB) -> DataResult:
     apps = db.list_apps()
-    result = []
+    items = []
     for app in apps:
         current = db.get_current_version(app.id)
-        result.append(
+        items.append(
             {
                 "id": app.id,
                 "name": app.name,
@@ -91,16 +159,16 @@ def _list_apps(db: DB) -> str:
                 "current_version_id": current.id if current else None,
             }
         )
-    return json.dumps({"apps": result})
+    return DataResult(data={"apps": items})
 
 
-def _get_app(db: DB, app_id: str) -> str:
+def _get_app(db: DB, app_id: str) -> QueryResult:
     app = db.get_app(app_id)
     if not app:
-        return json.dumps({"error": f"App not found: {app_id}"})
+        return ErrorResult(f"App not found: {app_id}")
     versions = db.list_app_versions(app_id)
-    return json.dumps(
-        {
+    return DataResult(
+        data={
             "id": app.id,
             "name": app.name,
             "description": app.description,
@@ -112,10 +180,10 @@ def _get_app(db: DB, app_id: str) -> str:
     )
 
 
-def _list_sessions(db: DB, app_id: str | None = None) -> str:
+def _list_sessions(db: DB, app_id: str | None = None) -> DataResult:
     sessions = db.list_sessions(app_id=app_id)
-    return json.dumps(
-        {
+    return DataResult(
+        data={
             "sessions": [
                 {
                     "id": s.id,
@@ -135,13 +203,13 @@ def _resolve_session(db: DB, ref: str):
     return db.get_session(ref) or db.get_session_by_request_task_id(ref)
 
 
-def _get_session(db: DB, session_id: str) -> str:
+def _get_session(db: DB, session_id: str) -> QueryResult:
     session = _resolve_session(db, session_id)
     if not session:
-        return json.dumps({"error": f"Session not found: {session_id}"})
+        return ErrorResult(f"Session not found: {session_id}")
     tasks = db.list_tasks(session.id)
-    return json.dumps(
-        {
+    return DataResult(
+        data={
             "id": session.id,
             "app_version_id": session.app_version_id,
             "state": session.state,
@@ -163,27 +231,27 @@ def _get_session(db: DB, session_id: str) -> str:
     )
 
 
-def _cancel_session(db: DB, session_id: str) -> str:
+def _cancel_session(db: DB, session_id: str) -> QueryResult:
     session = _resolve_session(db, session_id)
     if not session:
-        return json.dumps({"error": f"Session not found: {session_id}"})
+        return ErrorResult(f"Session not found: {session_id}")
     if session.state != "running":
-        return json.dumps({"error": f"Session not running (state={session.state})"})
+        return ErrorResult(f"Session not running (state={session.state})")
     db.update_session_state(session.id, "canceled")
-    return json.dumps({CANCEL_KEY: session.id})
+    return CancelSessionResult(session_id=session.id)
 
 
-def _delete_app(db: DB, app_id: str) -> str:
+def _delete_app(db: DB, app_id: str) -> QueryResult:
     app = db.get_app(app_id)
     if not app:
-        return json.dumps({"error": f"App not found: {app_id}"})
+        return ErrorResult(f"App not found: {app_id}")
     running = [s for s in db.list_sessions(app_id=app_id) if s.state == "running"]
     if running:
-        return json.dumps(
-            {"error": f"App has {len(running)} running session(s); cancel them first"}
+        return ErrorResult(
+            f"App has {len(running)} running session(s); cancel them first"
         )
     db.delete_app(app_id)
-    return json.dumps({DELETE_APP_KEY: app_id})
+    return DeleteAppResult(app_id=app_id)
 
 
 def create_app(
@@ -247,32 +315,32 @@ def create_app(
 
 async def _handle_create_app(
     db: DB, arg: str, registry: DiscoveryRegistry | None
-) -> str:
+) -> QueryResult:
     """Create a composed app from agent IDs + natural language instructions."""
     try:
         spec = json.loads(arg)
     except json.JSONDecodeError as e:
-        return json.dumps({"error": f"Invalid JSON: {e}"})
+        return ErrorResult(f"Invalid JSON: {e}")
 
     name = spec.get("name", "")
     if not name:
-        return json.dumps({"error": "Missing 'name' in create app spec"})
+        return ErrorResult("Missing 'name' in create app spec")
 
     instructions = spec.get("instructions", "")
     if not instructions:
-        return json.dumps({"error": "Missing 'instructions' in create app spec"})
+        return ErrorResult("Missing 'instructions' in create app spec")
 
     agent_ids = spec.get("agents", [])
     if not agent_ids:
-        return json.dumps({"error": "Missing 'agents' in create app spec"})
+        return ErrorResult("Missing 'agents' in create app spec")
 
     if not registry:
-        return json.dumps({"error": "No discovery registry available"})
+        return ErrorResult("No discovery registry available")
 
     app_id = spec.get("id", None)
 
     # Look up agent cards from registry.
-    # NOTE: registry presence doesn't guarantee the agent is online —
+    # NOTE: registry presence doesn't guarantee the agent is online;
     # discovery cards are retained on the broker after disconnect.
     # Online/offline status is tracked broker-side via LWT.
     cards = []
@@ -285,16 +353,16 @@ async def _handle_create_app(
             missing.append(aid)
 
     if missing:
-        return json.dumps({"error": f"Agents not found: {', '.join(missing)}"})
+        return ErrorResult(f"Agents not found: {', '.join(missing)}")
 
     # Generate orchestration graph via LLM
     try:
         graph = await generate_graph(instructions, cards)
     except GraphValidationError as e:
-        return json.dumps({"error": f"Graph generation failed: {e}"})
+        return ErrorResult(f"Graph generation failed: {e}")
     except Exception:
         log.exception("Unexpected error generating graph")
-        return json.dumps({"error": "Graph generation failed unexpectedly"})
+        return ErrorResult("Graph generation failed unexpectedly")
 
     description = spec.get("description", "")
     app, version, card_json = create_app(
@@ -307,12 +375,8 @@ async def _handle_create_app(
         graph=graph,
     )
 
-    return json.dumps(
-        {
-            CREATE_APP_KEY: {
-                "app_id": app.id,
-                "version": version.version,
-                "card": json.loads(card_json),
-            }
-        }
+    return CreateAppResult(
+        app_id=app.id,
+        version=version.version,
+        card_json=card_json,
     )

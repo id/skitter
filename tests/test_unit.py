@@ -103,8 +103,8 @@ class TestA2ARequest:
                 "method": "message/send",
                 "params": {
                     "message": {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": "hi"}],
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "hi"}],
                         "taskId": "t1",
                         "contextId": "ctx-explicit",
                     }
@@ -127,15 +127,14 @@ class TestStatusEvent:
         d = json.loads(event)
         assert d["jsonrpc"] == "2.0"
         assert d["id"] == "req-1"
-        assert d["result"]["type"] == "TaskStatusUpdateEvent"
-        assert d["result"]["taskId"] == "sess-abc123"
-        assert d["result"]["status"]["state"] == "working"
-        msg = d["result"]["status"]["message"]
-        assert msg["role"] == "agent"
-        assert msg["parts"] == [{"type": "text", "text": "hello"}]
+        su = d["result"]["statusUpdate"]
+        assert su["taskId"] == "sess-abc123"
+        assert su["status"]["state"] == "TASK_STATE_WORKING"
+        msg = su["status"]["message"]
+        assert msg["role"] == "ROLE_AGENT"
+        assert msg["parts"] == [{"text": "hello"}]
         assert "messageId" in msg  # REQUIRED per A2A v1.0.0 proto
-        assert d["result"]["metadata"]["task_name"] == "research"
-        assert "artifact" not in d["result"]
+        assert su["metadata"]["task_name"] == "research"
 
         kind, content = classify_reply(d)
         assert kind == REPLY_TEXT
@@ -150,8 +149,9 @@ class TestStatusEvent:
             metadata={"type": "tool_use", "task_name": "research"},
         )
         d = json.loads(event)
-        assert d["result"]["metadata"]["type"] == "tool_use"
-        assert d["result"]["metadata"]["task_name"] == "research"
+        su = d["result"]["statusUpdate"]
+        assert su["metadata"]["type"] == "tool_use"
+        assert su["metadata"]["task_name"] == "research"
 
         kind, content = classify_reply(d)
         assert kind == REPLY_TOOL
@@ -167,8 +167,9 @@ class TestStatusEvent:
         status_event = make_status_event("req-2", "sess-def456", "completed")
         da = json.loads(artifact_event)
         ds = json.loads(status_event)
-        assert ds["result"]["status"]["state"] == "completed"
-        assert da["result"]["artifact"]["parts"][0]["text"] == "Final answer"
+        assert ds["result"]["statusUpdate"]["status"]["state"] == "TASK_STATE_COMPLETED"
+        au = da["result"]["artifactUpdate"]
+        assert au["artifact"]["parts"][0]["text"] == "Final answer"
 
         kind_a, content_a = classify_reply(da)
         assert kind_a == REPLY_ARTIFACT
@@ -200,9 +201,10 @@ class TestStatusEvent:
             "jsonrpc": "2.0",
             "id": "req-4",
             "result": {
-                "type": "TaskStatusUpdateEvent",
-                "taskId": "sess-xyz",
-                "status": {"state": "failed"},
+                "statusUpdate": {
+                    "taskId": "sess-xyz",
+                    "status": {"state": "TASK_STATE_FAILED"},
+                },
             },
         }
         kind, content = classify_reply(d)
@@ -237,23 +239,23 @@ class TestStatusEvent:
             "req-1", "sess-1", "working", message="hi", context_id="ctx-123"
         )
         d = json.loads(event)
-        assert d["result"]["contextId"] == "ctx-123"
+        assert d["result"]["statusUpdate"]["contextId"] == "ctx-123"
 
     def test_context_id_always_present(self):
         """contextId is REQUIRED per A2A v1.0.0 proto, always emitted."""
         event = make_status_event("req-1", "sess-1", "working", message="hi")
         d = json.loads(event)
-        assert d["result"]["contextId"] == ""
+        assert d["result"]["statusUpdate"]["contextId"] == ""
 
     def test_artifact_event_has_context_id(self):
         """contextId is REQUIRED on TaskArtifactUpdateEvent per proto."""
         event = make_artifact_event("req-1", "t1", "result", context_id="ctx-1")
         d = json.loads(event)
-        assert d["result"]["contextId"] == "ctx-1"
+        assert d["result"]["artifactUpdate"]["contextId"] == "ctx-1"
         # Also present when empty
         event2 = make_artifact_event("req-1", "t1", "result")
         d2 = json.loads(event2)
-        assert d2["result"]["contextId"] == ""
+        assert d2["result"]["artifactUpdate"]["contextId"] == ""
 
     def test_input_required_is_stream_final(self):
         """input-required MUST be treated as stream-final (A2A-over-MQTT spec)."""
@@ -263,14 +265,15 @@ class TestStatusEvent:
             "jsonrpc": "2.0",
             "id": "req-1",
             "result": {
-                "type": "TaskStatusUpdateEvent",
-                "taskId": "t1",
-                "contextId": "ctx-1",
-                "status": {
-                    "state": "input-required",
-                    "message": {
-                        "role": "agent",
-                        "parts": [{"type": "text", "text": "What is your name?"}],
+                "statusUpdate": {
+                    "taskId": "t1",
+                    "contextId": "ctx-1",
+                    "status": {
+                        "state": "TASK_STATE_INPUT_REQUIRED",
+                        "message": {
+                            "role": "ROLE_AGENT",
+                            "parts": [{"text": "What is your name?"}],
+                        },
                     },
                 },
             },
@@ -287,10 +290,11 @@ class TestStatusEvent:
             "jsonrpc": "2.0",
             "id": "req-1",
             "result": {
-                "type": "TaskStatusUpdateEvent",
-                "taskId": "t1",
-                "contextId": "",
-                "status": {"state": "auth-required"},
+                "statusUpdate": {
+                    "taskId": "t1",
+                    "contextId": "",
+                    "status": {"state": "TASK_STATE_AUTH_REQUIRED"},
+                },
             },
         }
         kind, content = classify_reply(d)
@@ -624,8 +628,9 @@ class TestAgentRunnerCompliance:
         for raw in published:
             data = json.loads(raw)
             result = data.get("result", {})
-            if result.get("type") == "TaskStatusUpdateEvent":
-                assert result["taskId"] == task_id
+            su = result.get("statusUpdate")
+            if su:
+                assert su["taskId"] == task_id
 
     @pytest.mark.asyncio
     async def test_stream_qos_is_1(self):
@@ -793,10 +798,11 @@ class TestCoordinatorDispatchCompliance:
                 "jsonrpc": "2.0",
                 "id": correct_corr,
                 "result": {
-                    "type": "TaskStatusUpdateEvent",
-                    "taskId": state.graph["step"].dispatch_task_id,
-                    "contextId": "",
-                    "status": {"state": "completed"},
+                    "statusUpdate": {
+                        "taskId": state.graph["step"].dispatch_task_id,
+                        "contextId": "",
+                        "status": {"state": "TASK_STATE_COMPLETED"},
+                    },
                 },
             }
         )
@@ -828,10 +834,11 @@ class TestCoordinatorDispatchCompliance:
                 "jsonrpc": "2.0",
                 "id": "wrong-corr",
                 "result": {
-                    "type": "TaskStatusUpdateEvent",
-                    "taskId": state.graph["step"].dispatch_task_id,
-                    "contextId": "",
-                    "status": {"state": "completed"},
+                    "statusUpdate": {
+                        "taskId": state.graph["step"].dispatch_task_id,
+                        "contextId": "",
+                        "status": {"state": "TASK_STATE_COMPLETED"},
+                    },
                 },
             }
         )
@@ -862,10 +869,11 @@ class TestCoordinatorDispatchCompliance:
                 "jsonrpc": "2.0",
                 "id": "no-corr",
                 "result": {
-                    "type": "TaskStatusUpdateEvent",
-                    "taskId": state.graph["step"].dispatch_task_id,
-                    "contextId": "",
-                    "status": {"state": "completed"},
+                    "statusUpdate": {
+                        "taskId": state.graph["step"].dispatch_task_id,
+                        "contextId": "",
+                        "status": {"state": "TASK_STATE_COMPLETED"},
+                    },
                 },
             }
         )
@@ -939,8 +947,9 @@ class TestCoordinatorDispatchCompliance:
             if str(call.args[0]) == "reply/t2"
         ]
         assert len(replies) == 1
-        assert replies[0]["result"]["status"]["state"] == "working"
-        assert replies[0]["result"]["taskId"] == req.task_id
+        su = replies[0]["result"]["statusUpdate"]
+        assert su["status"]["state"] == "TASK_STATE_WORKING"
+        assert su["taskId"] == req.task_id
         # Still only one session
         assert len(sup._sessions) == 1
 
@@ -983,17 +992,13 @@ class TestCoordinatorDispatchCompliance:
         ]
         # Dedup replays artifact + completed status for terminal sessions
         assert len(replies) == 2
-        artifact_reply = next(
-            r for r in replies if r["result"]["type"] == "TaskArtifactUpdateEvent"
-        )
-        status_reply = next(
-            r for r in replies if r["result"]["type"] == "TaskStatusUpdateEvent"
-        )
-        assert status_reply["result"]["status"]["state"] == "completed"
-        assert status_reply["result"]["taskId"] == req.task_id
-        assert (
-            "final answer" in artifact_reply["result"]["artifact"]["parts"][0]["text"]
-        )
+        artifact_reply = next(r for r in replies if "artifactUpdate" in r["result"])
+        status_reply = next(r for r in replies if "statusUpdate" in r["result"])
+        su = status_reply["result"]["statusUpdate"]
+        assert su["status"]["state"] == "TASK_STATE_COMPLETED"
+        assert su["taskId"] == req.task_id
+        au = artifact_reply["result"]["artifactUpdate"]
+        assert "final answer" in au["artifact"]["parts"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_context_id_mismatch_returns_error(self):
@@ -1213,10 +1218,14 @@ class TestCoordinatorDispatchCompliance:
         submitted = [
             c
             for c in ack_calls
-            if c.get("result", {}).get("status", {}).get("state") == "submitted"
+            if c.get("result", {})
+            .get("statusUpdate", {})
+            .get("status", {})
+            .get("state")
+            == "TASK_STATE_SUBMITTED"
         ]
         assert len(submitted) == 1
-        assert submitted[0]["result"]["contextId"] == "ctx-ack-test"
+        assert submitted[0]["result"]["statusUpdate"]["contextId"] == "ctx-ack-test"
 
 
 # --- A2A compliance: backoff calculation ---
@@ -1272,8 +1281,8 @@ class TestValidateA2ARequest:
                 "method": "message/send",
                 "params": {
                     "message": {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": "hello"}],
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "hello"}],
                         "taskId": task_id,
                     }
                 },
@@ -3129,14 +3138,12 @@ class TestRuntimeApiIntegration:
         ]
         assert len(reply_calls) == 2
         parsed = [json.loads(c.args[1]) for c in reply_calls]
-        artifact_reply = next(
-            r for r in parsed if r["result"]["type"] == "TaskArtifactUpdateEvent"
-        )
-        status_reply = next(
-            r for r in parsed if r["result"]["type"] == "TaskStatusUpdateEvent"
-        )
-        assert status_reply["result"]["status"]["state"] == "completed"
-        artifact = artifact_reply["result"]["artifact"]["parts"][0]["text"]
+        artifact_reply = next(r for r in parsed if "artifactUpdate" in r["result"])
+        status_reply = next(r for r in parsed if "statusUpdate" in r["result"])
+        su = status_reply["result"]["statusUpdate"]
+        assert su["status"]["state"] == "TASK_STATE_COMPLETED"
+        au = artifact_reply["result"]["artifactUpdate"]
+        artifact = au["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert len(result["apps"]) == 1
         assert result["apps"][0]["id"] == "test-app"
@@ -3171,10 +3178,9 @@ class TestRuntimeApiIntegration:
         ]
         assert len(reply_calls) == 2
         parsed = [json.loads(c.args[1]) for c in reply_calls]
-        artifact_reply = next(
-            r for r in parsed if r["result"]["type"] == "TaskArtifactUpdateEvent"
-        )
-        artifact = artifact_reply["result"]["artifact"]["parts"][0]["text"]
+        artifact_reply = next(r for r in parsed if "artifactUpdate" in r["result"])
+        au = artifact_reply["result"]["artifactUpdate"]
+        artifact = au["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert result["id"] == sid
         assert result["state"] == "running"
@@ -3342,10 +3348,11 @@ class TestRuntimeApiIntegration:
         ]
         assert len(reply_calls) == 2
         artifact_call = next(
-            c for c in reply_calls if "TaskArtifactUpdateEvent" in str(c.args[1])
+            c for c in reply_calls if "artifactUpdate" in str(c.args[1])
         )
         reply_data = json.loads(artifact_call.args[1])
-        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        au = reply_data["result"]["artifactUpdate"]
+        artifact = au["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert result["deleted_app"] == "test-app"
 
@@ -3380,7 +3387,8 @@ class TestRuntimeApiIntegration:
             if str(call.args[0]) == "reply/q"
         ]
         reply_data = json.loads(reply_calls[0].args[1])
-        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        au = reply_data["result"]["artifactUpdate"]
+        artifact = au["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert "running session" in result["error"]
 
@@ -3398,7 +3406,8 @@ class TestRuntimeApiIntegration:
             if str(call.args[0]) == "reply/q"
         ]
         reply_data = json.loads(reply_calls[0].args[1])
-        artifact = reply_data["result"]["artifact"]["parts"][0]["text"]
+        au = reply_data["result"]["artifactUpdate"]
+        artifact = au["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert "not found" in result["error"].lower()
 

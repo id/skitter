@@ -245,6 +245,87 @@ class TestAgentRunner:
         terminal = [(k, c) for k, c in messages if k == REPLY_TERMINAL]
         assert terminal
 
+    async def test_wire_format_matches_proto3_json(self, start_agent):
+        """Raw wire JSON must use proto3 conventions: SCREAMING_SNAKE_CASE enums,
+        statusUpdate/artifactUpdate oneof wrappers, no Part type discriminator."""
+        aid = f"test-wire-{uuid.uuid4().hex[:4]}"
+
+        async def handler(agent, prompt, publish_stream, env):
+            await publish_stream("text", "working")
+            return "done"
+
+        await start_agent(aid, handler=handler)
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        req = A2ARequest(
+            text="Wire format test",
+            request_id=f"w-{uuid.uuid4().hex[:8]}",
+            sender="test",
+        )
+
+        raw_messages: list[dict] = []
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-wire-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(aid), req.to_json(), qos=1, properties=props
+            )
+
+            async with asyncio.timeout(10.0):
+                async for msg in client.messages:
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+                    data = json.loads(payload)
+                    raw_messages.append(data)
+                    kind, _ = classify_reply(data)
+                    if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                        break
+
+        # Must have status updates and at least one artifact
+        status_msgs = [m for m in raw_messages if "statusUpdate" in m.get("result", {})]
+        artifact_msgs = [
+            m for m in raw_messages if "artifactUpdate" in m.get("result", {})
+        ]
+        assert len(status_msgs) >= 2  # submitted + completed at minimum
+        assert len(artifact_msgs) >= 1
+
+        # No message should use the old type-discriminator format
+        for m in raw_messages:
+            result = m.get("result", {})
+            assert "type" not in result, (
+                f"Old format 'type' key found in result: {result}"
+            )
+
+        # Verify enum values are SCREAMING_SNAKE_CASE
+        for m in status_msgs:
+            su = m["result"]["statusUpdate"]
+            state = su["status"]["state"]
+            assert state.startswith("TASK_STATE_"), f"State not proto enum: {state}"
+            # If status has a message, verify role and part format
+            msg_obj = su["status"].get("message")
+            if msg_obj:
+                assert msg_obj["role"].startswith("ROLE_"), (
+                    f"Role not proto enum: {msg_obj['role']}"
+                )
+                for part in msg_obj["parts"]:
+                    assert "type" not in part, f"Part has type discriminator: {part}"
+
+        # Verify artifact parts have no type discriminator
+        for m in artifact_msgs:
+            au = m["result"]["artifactUpdate"]
+            for part in au["artifact"]["parts"]:
+                assert "type" not in part, (
+                    f"Artifact part has type discriminator: {part}"
+                )
+
     async def test_reply_echoes_requester_task_id(self, start_agent):
         """All reply events must carry the requester's taskId (spec gap 1)."""
         aid = f"test-taskid-{uuid.uuid4().hex[:4]}"
@@ -286,8 +367,9 @@ class TestAgentRunner:
                         continue
                     data = json.loads(payload)
                     result = data.get("result", {})
-                    if result.get("type") == "TaskStatusUpdateEvent":
-                        task_ids_in_replies.append(result.get("taskId", ""))
+                    su = result.get("statusUpdate")
+                    if su:
+                        task_ids_in_replies.append(su.get("taskId", ""))
                     kind, _ = classify_reply(data)
                     if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
                         break
@@ -311,8 +393,8 @@ class TestAgentRunner:
                 "method": "message/send",
                 "params": {
                     "message": {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": "hello"}],
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "hello"}],
                         "taskId": "",
                     }
                 },
@@ -416,8 +498,9 @@ class TestAgentRunner:
                         continue
                     data = json.loads(raw)
                     result = data.get("result", {})
-                    state = result.get("status", {}).get("state", "")
-                    if state == "completed":
+                    su = result.get("statusUpdate", {})
+                    state = su.get("status", {}).get("state", "")
+                    if state == "TASK_STATE_COMPLETED":
                         break
 
         assert call_count == 1  # handler was NOT called again
@@ -536,8 +619,9 @@ class TestComposedApp:
                         continue
                     data = json.loads(payload)
                     result = data.get("result", {})
-                    if result.get("type") == "TaskStatusUpdateEvent":
-                        task_ids_in_replies.append(result.get("taskId", ""))
+                    su = result.get("statusUpdate")
+                    if su:
+                        task_ids_in_replies.append(su.get("taskId", ""))
                     kind, _ = classify_reply(data)
                     if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
                         break
@@ -768,10 +852,11 @@ class TestCorrelationData:
                     "jsonrpc": "2.0",
                     "id": "bad-corr",
                     "result": {
-                        "type": "TaskStatusUpdateEvent",
-                        "taskId": "fake",
-                        "contextId": "",
-                        "status": {"state": "completed"},
+                        "statusUpdate": {
+                            "taskId": "fake",
+                            "contextId": "",
+                            "status": {"state": "TASK_STATE_COMPLETED"},
+                        },
                     },
                 }
             )

@@ -63,6 +63,24 @@ def topic_coordinator_lock() -> str:
     return f"{_PREFIX}/lock/{A2A_ORG}/{A2A_UNIT}/coordinator"
 
 
+# --- Proto JSON wire format mapping (A2A v1.0.0 Section 5.5) ---
+# Callers use short names internally; these maps convert at the wire boundary.
+
+_STATE_TO_WIRE = {
+    "submitted": "TASK_STATE_SUBMITTED",
+    "working": "TASK_STATE_WORKING",
+    "completed": "TASK_STATE_COMPLETED",
+    "failed": "TASK_STATE_FAILED",
+    "canceled": "TASK_STATE_CANCELED",
+    "input-required": "TASK_STATE_INPUT_REQUIRED",
+    "auth-required": "TASK_STATE_AUTH_REQUIRED",
+    "rejected": "TASK_STATE_REJECTED",
+}
+
+_WIRE_TO_STATE = {v: k for k, v in _STATE_TO_WIRE.items()}
+
+_ROLE_TO_WIRE = {"user": "ROLE_USER", "agent": "ROLE_AGENT"}
+
 # --- A2A error codes (section: Mandatory Binding-Specific Error Mapping) ---
 
 A2A_REQUEST_EXPIRED = -32003
@@ -119,29 +137,35 @@ def make_status_event(
 ) -> str:
     """Build a TaskStatusUpdateEvent JSON-RPC response.
 
-    Per A2A v1.0.0 proto: TaskStatusUpdateEvent carries task_id, context_id,
-    status (TaskStatus), and event-level metadata. TaskStatus contains state,
-    an optional Message object, and timestamp.
+    Per A2A v1.0.0 proto: StreamResponse wraps TaskStatusUpdateEvent via the
+    ``statusUpdate`` oneof field. TaskStatusUpdateEvent carries taskId,
+    contextId, status (TaskStatus), and event-level metadata. TaskStatus
+    contains state (SCREAMING_SNAKE_CASE enum) and an optional Message object.
 
-    message (str) is wrapped into a proper A2A Message object with role=agent.
-    metadata (dict) is placed on the event envelope (not inside status).
+    ``state`` accepts short internal names ("submitted", "working", ...);
+    they are mapped to proto enum names on the wire.
+
+    ``message`` is wrapped into a proper A2A Message object with ROLE_AGENT.
+    ``metadata`` is placed on the event envelope (not inside status).
     """
-    status: dict = {"state": state}
+    wire_state = _STATE_TO_WIRE.get(state, state)
+    status: dict = {"state": wire_state}
     if message:
         status["message"] = {
             "messageId": uuid.uuid4().hex,
-            "role": "agent",
-            "parts": [{"type": "text", "text": message}],
+            "role": _ROLE_TO_WIRE["agent"],
+            "parts": [{"text": message}],
         }
-    result: dict = {
-        "type": "TaskStatusUpdateEvent",
+    event: dict = {
         "taskId": task_id,
         "contextId": context_id,
         "status": status,
     }
     if metadata:
-        result["metadata"] = metadata
-    return json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
+        event["metadata"] = metadata
+    return json.dumps(
+        {"jsonrpc": "2.0", "id": request_id, "result": {"statusUpdate": event}}
+    )
 
 
 def make_artifact_event(
@@ -156,22 +180,23 @@ def make_artifact_event(
 ) -> str:
     """Build a TaskArtifactUpdateEvent JSON-RPC response.
 
-    Per A2A v1.0.0 proto: delivers result content as an Artifact object,
-    separate from status updates.
+    Per A2A v1.0.0 proto: StreamResponse wraps TaskArtifactUpdateEvent via the
+    ``artifactUpdate`` oneof field. Delivers result content as an Artifact.
     """
-    result: dict = {
-        "type": "TaskArtifactUpdateEvent",
+    event: dict = {
         "taskId": task_id,
         "contextId": context_id,
         "artifact": {
             "artifactId": artifact_id or uuid.uuid4().hex[:12],
-            "parts": [{"type": "text", "text": artifact_text}],
+            "parts": [{"text": artifact_text}],
         },
         "lastChunk": last_chunk,
     }
     if metadata:
-        result["metadata"] = metadata
-    return json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
+        event["metadata"] = metadata
+    return json.dumps(
+        {"jsonrpc": "2.0", "id": request_id, "result": {"artifactUpdate": event}}
+    )
 
 
 # --- Reply classification ---
@@ -212,33 +237,35 @@ def classify_reply(data: dict) -> tuple[str, str]:
     kind is one of: REPLY_TEXT, REPLY_TOOL, REPLY_ARTIFACT, REPLY_TERMINAL,
     REPLY_INPUT_REQUIRED, REPLY_FAILED, REPLY_ERROR, or "" for unrecognized.
 
-    REPLY_ARTIFACT is returned for TaskArtifactUpdateEvent (content = artifact text).
-    REPLY_TERMINAL is returned for completed TaskStatusUpdateEvent (content = message text).
-    REPLY_INPUT_REQUIRED is returned for input-required/auth-required (stream-final, task not terminal).
-    REPLY_FAILED is returned for failed/canceled/rejected tasks (content = error message).
+    Parses proto3 JSON StreamResponse: result contains either ``statusUpdate``
+    or ``artifactUpdate`` as the oneof wrapper key.
     """
     if "error" in data:
         err = data["error"]
         return REPLY_ERROR, err.get("message", str(err))
 
     result = data.get("result", {})
-    event_type = result.get("type", "")
 
-    if event_type == "TaskArtifactUpdateEvent":
-        parts = result.get("artifact", {}).get("parts", [])
+    # Artifact update (StreamResponse.artifact_update)
+    artifact_update = result.get("artifactUpdate")
+    if artifact_update:
+        parts = artifact_update.get("artifact", {}).get("parts", [])
         text = parts[0].get("text", "") if parts else ""
         return REPLY_ARTIFACT, text
 
-    if event_type != "TaskStatusUpdateEvent":
+    # Status update (StreamResponse.status_update)
+    status_update = result.get("statusUpdate")
+    if not status_update:
         return "", ""
 
-    status = result.get("status", {})
-    state = status.get("state", "")
-    # Event-level metadata (A2A v1.0.0); fall back to status.metadata for compat
-    meta = result.get("metadata") or status.get("metadata") or {}
+    status = status_update.get("status", {})
+    wire_state = status.get("state", "")
+    state = _WIRE_TO_STATE.get(wire_state, wire_state)
+    # Event-level metadata; fall back to status.metadata for compat
+    meta = status_update.get("metadata") or status.get("metadata") or {}
 
     if state == "submitted":
-        task_id = result.get("taskId", "")
+        task_id = status_update.get("taskId", "")
         return REPLY_SUBMITTED, task_id
 
     if state == "working":
@@ -292,8 +319,8 @@ class A2ARequest:
             metadata["variables"] = self.variables
         message: dict = {
             "messageId": uuid.uuid4().hex,
-            "role": "user",
-            "parts": [{"type": "text", "text": self.text}],
+            "role": _ROLE_TO_WIRE["user"],
+            "parts": [{"text": self.text}],
             "taskId": self.task_id,
             "contextId": self.context_id,
         }

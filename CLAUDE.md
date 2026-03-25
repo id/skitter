@@ -65,7 +65,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 2. **Staff-engineer review**: run the `staff-engineer` agent. Fix all findings.
 3. **Lint and format**: `uvx ruff format` and `uvx ruff check` on changed files.
 4. **Unit tests**: `uv run python -m pytest tests/test_unit.py -q`.
-5. **E2E tests**: `uv run python -m pytest tests/test_e2e.py -v -s` (needs EMQX on localhost).
+5. **E2E tests**: `docker compose up -d --wait && uv run python -m pytest tests/test_e2e.py -v -s`. Always run E2E tests together with unit tests; do not skip them.
 6. **A2A compliance**: if protocol-facing code changed, run `/a2a-compliance`.
 7. **Dashboard**: verify `dashboard.html` still works if session state or topics changed.
 8. **Docs and env files**: update `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `.env.example`, and `.env.cloud.example` if behavior, config, env vars, or CLI usage changed.

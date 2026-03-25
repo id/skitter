@@ -4,959 +4,771 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Skitter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
   <style>
     :root {
-      --bg: #ffffff;
-      --bg-alt: #f7f8fa;
-      --bg-hover: #f0f1f4;
-      --border: #e2e4e9;
-      --border-light: #eef0f3;
-      --text: #1a1d23;
-      --text-sec: #5f6672;
-      --text-dim: #9ba3b0;
+      --bg: #fafaf9;
+      --bg-card: #ffffff;
+      --bg-sidebar: #f5f5f4;
+      --bg-hover: #edeceb;
+      --border: #d6d3d1;
+      --border-light: #e7e5e4;
+      --text: #1c1917;
+      --text-sec: #57534e;
+      --text-dim: #a8a29e;
       --blue: #2563eb;
-      --green: #16a34a;
-      --amber: #d97706;
-      --red: #dc2626;
-      --mono: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
-      --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --green: #15803d;
+      --amber: #b45309;
+      --red: #b91c1c;
+      --blue-bg: #eff6ff;
+      --green-bg: #f0fdf4;
+      --amber-bg: #fffbeb;
+      --red-bg: #fef2f2;
+      --sans: 'Outfit', system-ui, sans-serif;
+      --mono: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
     body { font-family: var(--sans); font-size: 13px; color: var(--text); background: var(--bg); }
-    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
     /* Layout */
-    #app { display: flex; height: 100vh; }
-    #sidebar { width: 260px; min-width: 260px; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-alt); }
-    #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-card); flex-shrink: 0; }
+    #body { display: flex; flex: 1; overflow: hidden; }
+    #sidebar { width: 240px; min-width: 240px; border-right: 1px solid var(--border); background: var(--bg-sidebar); display: flex; flex-direction: column; overflow: hidden; }
+    #main { flex: 1; overflow-y: auto; padding: 16px; }
 
-    /* Sidebar header */
-    .side-hdr { padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-    .side-hdr h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
-    .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
-    .conn-dot.on { background: var(--green); }
-
-    /* Sidebar tabs */
-    .side-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-    .side-tab { flex: 1; padding: 8px; font-size: 11px; font-weight: 500; text-align: center; color: var(--text-dim); cursor: pointer; border-bottom: 2px solid transparent; transition: all .15s; }
-    .side-tab:hover { color: var(--text-sec); }
-    .side-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
-
-    /* Sidebar panels */
-    .side-panel { flex: 1; overflow-y: auto; display: none; }
-    .side-panel.active { display: block; }
-
-    /* Session list */
-    .sess-item { padding: 10px 16px; cursor: pointer; border-left: 3px solid transparent; transition: all .1s; }
-    .sess-item:hover { background: var(--bg-hover); }
-    .sess-item.active { background: var(--bg); border-left-color: var(--blue); }
-    .sess-id { font-size: 11px; font-family: var(--mono); color: var(--text-sec); display: flex; align-items: center; gap: 6px; }
-    .sess-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-    .sess-dot.running { background: var(--blue); animation: pulse 2s ease-in-out infinite; }
-    .sess-dot.done { background: var(--green); }
+    /* Header */
+    .hdr-title { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+    .hdr-org { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+    .hdr-spacer { flex: 1; }
+    .hdr-status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-sec); }
+    .hdr-status + .hdr-status { margin-left: 12px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot-off { background: var(--red); }
+    .dot-on { background: var(--green); }
+    .dot-pulse { background: var(--blue); animation: pulse 2s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
-    .sess-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-    .sess-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; }
-    .sess-time { font-size: 10px; color: var(--text-dim); font-family: var(--mono); }
-    .sess-del { font-size: 10px; color: var(--text-dim); background: none; border: none; cursor: pointer; padding: 0 2px; font-family: var(--sans); }
-    .sess-del:hover { color: var(--red); }
-    .sess-clear { font-size: 10px; color: var(--text-dim); background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; padding: 2px 8px; font-family: var(--sans); }
-    .sess-clear:hover { color: var(--red); border-color: var(--red); }
+    .hdr-btn { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; font-size: 11px; font-family: var(--sans); color: var(--text-sec); cursor: pointer; }
+    .hdr-btn:hover { background: var(--bg-hover); color: var(--text); }
 
-    /* Agent/workflow list */
-    .config-item { padding: 10px 16px; border-bottom: 1px solid var(--border-light); cursor: pointer; border-left: 3px solid transparent; transition: all .1s; }
-    .config-item:last-child { border-bottom: none; }
-    .config-item:hover { background: var(--bg-hover); }
-    .config-item.active { background: var(--bg); border-left-color: var(--blue); }
-    .config-name { font-size: 12px; font-weight: 600; }
-    .config-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-    .config-badge { display: inline-block; font-size: 10px; font-family: var(--mono); padding: 1px 5px; border-radius: 3px; background: var(--bg-hover); color: var(--text-sec); margin-left: 6px; }
+    /* Sidebar */
+    .side-section { border-bottom: 1px solid var(--border-light); }
+    .side-section:last-child { border-bottom: none; flex: 1; overflow-y: auto; }
+    .side-hdr { padding: 10px 14px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+    .side-empty { padding: 12px 14px; font-size: 11px; color: var(--text-dim); }
 
-    /* Compose view (main area) */
-    .compose-view { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 40px; }
-    .compose-card { width: 100%; max-width: 560px; }
-    .compose-card-hdr { margin-bottom: 20px; }
-    .compose-card-name { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
-    .compose-card-type { font-size: 11px; font-family: var(--mono); color: var(--blue); background: #eff6ff; padding: 2px 8px; border-radius: 4px; margin-left: 10px; vertical-align: middle; }
-    .compose-card-desc { font-size: 13px; line-height: 1.6; color: var(--text-sec); margin-top: 8px; }
-    .compose-card-props { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-    .compose-prop { font-size: 11px; padding: 3px 10px; border-radius: 4px; background: var(--bg-alt); border: 1px solid var(--border); color: var(--text-sec); }
-    .compose-prop span { font-weight: 600; color: var(--text); }
-    .compose-input-wrap { position: relative; margin-top: 20px; }
-    .compose-textarea { width: 100%; padding: 12px 14px; padding-right: 48px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; font-family: var(--sans); resize: none; min-height: 48px; max-height: 200px; outline: none; color: var(--text); line-height: 1.5; transition: border-color .15s; }
-    .compose-textarea::placeholder { color: var(--text-dim); }
-    .compose-textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.08); }
-    .compose-send { position: absolute; right: 8px; bottom: 8px; width: 32px; height: 32px; border: none; background: var(--blue); color: #fff; border-radius: 8px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: opacity .15s; }
-    .compose-send:hover { opacity: .85; }
-    .compose-send:disabled { opacity: .3; cursor: default; }
-    .compose-hint { font-size: 11px; color: var(--text-dim); margin-top: 8px; text-align: right; }
-    .compose-vars { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
-    .compose-var label { display: block; font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
-    .compose-var input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: var(--sans); outline: none; color: var(--text); transition: border-color .15s; }
-    .compose-var input::placeholder { color: var(--text-dim); }
-    .compose-var input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.08); }
-    .compose-tasks { margin-top: 14px; border: 1px solid var(--border-light); border-radius: 8px; overflow: hidden; }
-    .compose-tasks-hdr { font-size: 11px; font-weight: 600; color: var(--text-sec); padding: 8px 12px; background: var(--bg-alt); border-bottom: 1px solid var(--border-light); }
-    .compose-task { padding: 8px 12px; font-size: 12px; line-height: 1.5; border-bottom: 1px solid var(--border-light); }
-    .compose-task:last-child { border-bottom: none; }
-    .compose-task-id { font-family: var(--mono); font-weight: 600; color: var(--text); }
-    .compose-task-agent { font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-left: 6px; }
-    .compose-task-desc { color: var(--text-sec); margin-top: 2px; }
+    /* Agent/App items */
+    .side-item { padding: 7px 14px; cursor: default; transition: background .1s; }
+    .side-item:hover { background: var(--bg-hover); }
+    .side-item-name { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+    .side-item-name .dot { width: 6px; height: 6px; }
+    .side-item-desc { font-size: 11px; color: var(--text-dim); margin-top: 1px; padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .side-item-detail { display: none; padding: 6px 14px 8px 26px; font-size: 10px; color: var(--text-sec); line-height: 1.6; }
+    .side-item-detail .detail-row { display: flex; gap: 6px; }
+    .side-item-detail .detail-label { color: var(--text-dim); min-width: 60px; font-family: var(--mono); }
+    .side-item.expanded .side-item-detail { display: block; }
+    .side-item-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; padding-left: 12px; }
+    .tag { font-size: 10px; font-family: var(--mono); padding: 1px 5px; border-radius: 3px; background: var(--bg-hover); color: var(--text-sec); }
 
-    /* Session result */
-    .session-result { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
-    .session-result-hdr { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--green); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
-    .session-result-hdr .result-actions { margin-left: auto; display: flex; gap: 4px; }
-    .result-act { font-size: 10px; font-weight: 500; color: var(--text-dim); background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; cursor: pointer; text-transform: none; letter-spacing: 0; }
-    .result-act:hover { color: var(--text); border-color: var(--text-dim); }
-    .session-result-text { font-size: 13px; line-height: 1.7; color: var(--text); max-height: 400px; overflow-y: auto; }
-    .session-result-text h1, .session-result-text h2, .session-result-text h3, .session-result-text h4 { margin: 12px 0 6px; font-weight: 600; color: var(--text); }
-    .session-result-text h1 { font-size: 18px; } .session-result-text h2 { font-size: 15px; } .session-result-text h3 { font-size: 13px; }
-    .session-result-text p { margin: 6px 0; }
-    .session-result-text ul, .session-result-text ol { margin: 6px 0; padding-left: 20px; }
-    .session-result-text li { margin: 3px 0; }
-    .session-result-text code { font-family: var(--mono); font-size: 12px; background: var(--bg-hover); padding: 1px 5px; border-radius: 3px; }
-    .session-result-text pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0; overflow-x: auto; }
-    .session-result-text pre code { background: none; padding: 0; }
-    .session-result-text blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--text-sec); margin: 8px 0; }
-    .session-result-text a { color: var(--blue); text-decoration: none; }
-    .session-result-text a:hover { text-decoration: underline; }
-    .session-result-text table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
-    .session-result-text th, .session-result-text td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
-    .session-result-text th { background: var(--bg-hover); font-weight: 600; }
-    .session-result-text hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+    /* Sessions */
+    .sessions-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); gap: 4px; text-align: center; padding: 40px; }
+    .sessions-empty-title { font-size: 14px; font-weight: 500; }
+    .sessions-empty-hint { font-size: 12px; }
 
-    /* Main header */
-    .main-hdr { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-shrink: 0; background: var(--bg); }
-    .main-hdr h2 { font-size: 14px; font-weight: 600; }
-    .main-hdr .badge { font-size: 10px; font-family: var(--mono); padding: 2px 8px; border-radius: 4px; }
-    .badge-workflow { background: #eff6ff; color: var(--blue); }
-    .badge-agent { background: #f0fdf4; color: var(--green); }
+    .session-card { background: var(--bg-card); border: 1px solid var(--border-light); border-radius: 6px; padding: 14px 16px; margin-bottom: 10px; transition: opacity .2s; }
+    .session-card.terminal { opacity: 0.65; }
+    .session-card.terminal:hover { opacity: 1; }
+    .session-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .session-app { font-size: 13px; font-weight: 600; }
+    .session-id { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+    .session-badge { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 3px; }
+    .session-badge.running { background: var(--blue-bg); color: var(--blue); }
+    .session-badge.completed { background: var(--green-bg); color: var(--green); }
+    .session-badge.failed { background: var(--red-bg); color: var(--red); }
+    .session-time { font-family: var(--mono); font-size: 10px; color: var(--text-dim); margin-left: auto; }
+    .session-error { font-size: 11px; color: var(--red); margin-top: 6px; padding: 6px 8px; background: var(--red-bg); border-radius: 3px; }
 
-    /* Task grid */
-    #task-area { flex: 1; overflow: auto; padding: 16px 20px; }
-    .task-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    .col-hdr { display: flex; align-items: center; gap: 6px; padding: 0 0 8px; }
-    .col-hdr h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
-    .col-hdr .cnt { font-size: 10px; font-weight: 600; color: var(--text-dim); background: var(--bg-hover); padding: 1px 7px; border-radius: 10px; }
-    .col-dot { width: 7px; height: 7px; border-radius: 50%; }
-    .col-dot.pending { background: var(--text-dim); }
-    .col-dot.running { background: var(--blue); }
-    .col-dot.done { background: var(--green); }
+    /* DAG */
+    .dag { display: flex; align-items: stretch; gap: 0; padding: 4px 0; overflow-x: auto; }
+    .dag-level { display: flex; flex-direction: column; gap: 6px; }
+    .dag-arrow { display: flex; align-items: center; padding: 0 8px; color: var(--border); font-size: 16px; flex-shrink: 0; user-select: none; }
+    .dag-task { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border-light); border-radius: 4px; font-size: 11px; white-space: nowrap; background: var(--bg); transition: border-color .15s; position: relative; }
+    .dag-task:hover { border-color: var(--border); }
+    .dag-task .dot { width: 6px; height: 6px; }
+    .dag-task-id { font-weight: 500; }
+    .dag-task-agent { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+    .dag-task.failed { border-color: var(--red); background: var(--red-bg); }
+    .dag-task-error { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; font-size: 10px; color: var(--red); padding: 2px 6px; background: var(--red-bg); border-radius: 2px; white-space: normal; max-width: 200px; z-index: 1; display: none; }
+    .dag-task.failed:hover .dag-task-error { display: block; }
+    .dag-task-tooltip { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 4px; font-size: 10px; color: var(--text-sec); background: var(--bg-card); border: 1px solid var(--border); border-radius: 3px; padding: 4px 8px; white-space: normal; max-width: 250px; z-index: 2; box-shadow: 0 2px 6px rgba(0,0,0,.08); }
+    .dag-task:hover .dag-task-tooltip { display: block; }
 
-    .task-col { display: flex; flex-direction: column; gap: 8px; }
+    /* No-graph fallback */
+    .session-minimal { font-size: 12px; color: var(--text-sec); padding: 4px 0; }
+    .session-tasks-inline { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .task-chip { font-size: 10px; font-family: var(--mono); padding: 2px 7px; border-radius: 3px; display: flex; align-items: center; gap: 4px; }
+    .task-chip .dot { width: 5px; height: 5px; }
+    .task-chip.pending { background: var(--bg-hover); color: var(--text-sec); }
+    .task-chip.running { background: var(--blue-bg); color: var(--blue); }
+    .task-chip.completed { background: var(--green-bg); color: var(--green); }
+    .task-chip.failed { background: var(--red-bg); color: var(--red); }
 
-    /* Task cards */
-    .card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: all .1s; border-left: 3px solid var(--text-dim); }
-    .card:hover { border-color: var(--border); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
-    .card.selected { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
-    .card.running { border-left-color: var(--blue); }
-    .card.done { border-left-color: var(--green); }
-    .card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-    .card-id { font-size: 12px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .card-model { font-size: 10px; font-family: var(--mono); color: var(--blue); background: #eff6ff; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; }
-    .card-agent { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; display: flex; align-items: center; gap: 5px; }
-    .card-desc { font-size: 11px; color: var(--text-sec); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .card-preview { font-size: 10px; font-family: var(--mono); color: var(--text-dim); background: var(--bg-alt); border-radius: 4px; padding: 3px 6px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .card-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 10px; }
-    .card-tokens { color: var(--text-dim); }
-    .card-cost { color: var(--amber); font-weight: 500; }
-    .stop-btn { font-size: 10px; font-weight: 500; color: var(--red); background: #fef2f2; border: 1px solid #fecaca; padding: 2px 8px; border-radius: 4px; cursor: pointer; margin-left: auto; }
-    .stop-btn:hover { background: #fee2e2; }
+    /* Event log */
+    #event-log { border-top: 1px solid var(--border); background: var(--bg-card); flex-shrink: 0; overflow: hidden; transition: height .2s ease; height: 28px; }
+    #event-log.open { height: 220px; }
+    .log-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 16px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 500; color: var(--text-sec); border-bottom: 1px solid var(--border-light); }
+    .log-toggle:hover { background: var(--bg-hover); }
+    .log-toggle-arrow { font-size: 9px; transition: transform .2s; }
+    #event-log.open .log-toggle-arrow { transform: rotate(180deg); }
+    .log-count { font-family: var(--mono); font-size: 10px; color: var(--text-dim); background: var(--bg-hover); padding: 0 5px; border-radius: 3px; }
+    .log-body { overflow-y: auto; height: calc(100% - 29px); }
+    .log-row { display: flex; gap: 10px; padding: 2px 16px; font-size: 11px; font-family: var(--mono); border-bottom: 1px solid var(--bg); line-height: 1.7; }
+    .log-row:hover { background: var(--bg); }
+    .log-time { color: var(--text-dim); flex-shrink: 0; width: 65px; }
+    .log-type { flex-shrink: 0; width: 130px; font-weight: 500; }
+    .log-type.session_created { color: var(--blue); }
+    .log-type.task_started { color: var(--amber); }
+    .log-type.task_completed { color: var(--green); }
+    .log-type.task_failed { color: var(--red); }
+    .log-type.session_completed { color: var(--green); }
+    .log-type.session_failed { color: var(--red); }
+    .log-type.agent_dead { color: var(--red); }
+    .log-detail { color: var(--text-sec); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    .stream-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); display: inline-block; animation: pulse 1s ease-in-out infinite; }
+    /* Settings dialog */
+    dialog { border: 1px solid var(--border); border-radius: 6px; padding: 20px; max-width: 380px; width: 90%; font-family: var(--sans); font-size: 13px; }
+    dialog::backdrop { background: rgba(0,0,0,.15); }
+    .dlg-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+    .dlg-field { margin-bottom: 10px; }
+    .dlg-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-sec); margin-bottom: 3px; }
+    .dlg-input { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--bg); }
+    .dlg-input:focus { outline: none; border-color: var(--blue); }
+    .dlg-row { display: flex; gap: 10px; }
+    .dlg-row > .dlg-field { flex: 1; }
+    .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .dlg-btn { padding: 6px 14px; border-radius: 4px; font-size: 12px; font-family: var(--sans); cursor: pointer; }
+    .dlg-btn-cancel { background: var(--bg); border: 1px solid var(--border); color: var(--text-sec); }
+    .dlg-btn-cancel:hover { background: var(--bg-hover); }
+    .dlg-btn-primary { background: var(--text); border: none; color: var(--bg-card); }
+    .dlg-btn-primary:hover { opacity: .85; }
 
-    /* Empty state */
-    .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); gap: 6px; }
-    .empty-title { font-size: 14px; font-weight: 500; }
-    .empty-hint { font-size: 12px; }
-
-    /* Detail panel */
-    #detail { border-top: 1px solid var(--border); background: var(--bg-alt); overflow-y: auto; flex-shrink: 0; max-height: 0; transition: max-height .2s ease; }
-    #detail.open { max-height: 45vh; }
-    #detail.expanded { max-height: 85vh; }
-    #detail-inner { padding: 16px 20px; }
-    .det-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-    .det-hdr h2 { font-size: 15px; font-weight: 600; }
-    .det-close { margin-left: auto; background: none; border: 1px solid var(--border); color: var(--text-dim); cursor: pointer; font-size: 11px; padding: 3px 10px; border-radius: 4px; }
-    .det-close:hover { background: var(--bg-hover); color: var(--text); }
-    .det-section { margin-bottom: 12px; }
-    .det-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); margin-bottom: 4px; }
-    .det-text { font-size: 12px; line-height: 1.6; color: var(--text-sec); white-space: pre-wrap; word-wrap: break-word; }
-    .det-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-y: auto; }
-    .det-result-md { font-size: 13px; line-height: 1.7; color: var(--text); max-height: 60vh; overflow-y: auto; }
-    .det-result-md p { margin: 0 0 8px; }
-    .det-result-md h1, .det-result-md h2, .det-result-md h3 { margin: 12px 0 6px; font-weight: 600; }
-    .det-result-md h1 { font-size: 16px; } .det-result-md h2 { font-size: 14px; } .det-result-md h3 { font-size: 13px; }
-    .det-result-md ul, .det-result-md ol { margin: 6px 0; padding-left: 20px; }
-    .det-result-md li { margin: 3px 0; }
-    .det-result-md code { font-family: var(--mono); background: var(--bg-alt); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
-    .det-result-md pre { background: var(--bg-alt); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 11px; margin: 8px 0; }
-    .det-result-md pre code { background: none; padding: 0; }
-    .det-result-md blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--text-sec); margin: 8px 0; }
-    .det-result-md a { color: var(--blue); text-decoration: none; }
-    .det-result-md a:hover { text-decoration: underline; }
-    .det-result-md table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
-    .det-result-md th, .det-result-md td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
-    .det-result-md th { background: var(--bg-hover); font-weight: 600; }
-    .det-result-actions { display: flex; gap: 6px; margin-top: 8px; }
-    .det-act { background: none; border: 1px solid var(--border); color: var(--text-sec); cursor: pointer; font-size: 11px; padding: 3px 10px; border-radius: 4px; font-family: var(--sans); }
-    .det-act:hover { background: var(--bg-hover); color: var(--text); }
-    .det-stream { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; max-height: 250px; overflow-y: auto; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--text-sec); white-space: pre-wrap; word-wrap: break-word; }
-    .det-stream .tool { color: var(--blue); }
-    .det-stream .err { color: var(--red); }
-    .det-deps { display: flex; flex-wrap: wrap; gap: 4px; }
-    .dep-tag { font-size: 11px; padding: 2px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text-sec); cursor: pointer; }
-    .dep-tag:hover { border-color: var(--blue); color: var(--blue); }
-    .det-meta { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
-
-    .badge-status { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 4px; }
-    .badge-status.pending { background: #f3f4f6; color: var(--text-dim); }
-    .badge-status.running { background: #eff6ff; color: var(--blue); }
-    .badge-status.done { background: #f0fdf4; color: var(--green); }
-    .badge-status.failed { background: #fef2f2; color: var(--red); }
-
-    /* Responsive */
-    @media (max-width: 768px) {
+    @media (max-width: 640px) {
       #sidebar { display: none; }
-      .task-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div id="app">
-    <aside id="sidebar">
-      <div class="side-hdr">
-        <h1>Skitter</h1>
-        <button id="settings-btn" onclick="showSettings()" style="display:flex;align-items:center;gap:5px;padding:4px 10px;border:1px solid var(--border);border-radius:5px;background:var(--bg);cursor:pointer;font-size:11px;font-family:var(--sans);color:var(--text-sec);transition:all .15s;">
-          <span class="conn-dot" id="conn-dot" title="Disconnected"></span>
-          <span>Connect</span>
-          <span style="font-size:12px;line-height:1">&#9881;</span>
-        </button>
+    <div id="header">
+      <span class="hdr-title">Skitter</span>
+      <span class="hdr-org" id="hdr-org">skitter/default</span>
+      <span class="hdr-spacer"></span>
+      <span class="hdr-status" id="hdr-mqtt">
+        <span class="dot dot-off" id="dot-mqtt"></span>
+        <span id="lbl-mqtt">Disconnected</span>
+      </span>
+      <span class="hdr-status" id="hdr-coord">
+        <span class="dot dot-off" id="dot-coord"></span>
+        <span id="lbl-coord">Coordinator</span>
+      </span>
+      <button class="hdr-btn" onclick="showSettings()">Settings</button>
+    </div>
+    <div id="body">
+      <aside id="sidebar">
+        <div class="side-section" id="sec-agents">
+          <div class="side-hdr">Agents</div>
+          <div id="agent-list"></div>
+        </div>
+        <div class="side-section" id="sec-apps">
+          <div class="side-hdr">Apps</div>
+          <div id="app-list"></div>
+        </div>
+      </aside>
+      <div id="main">
+        <div id="sessions"></div>
       </div>
-      <div class="side-tabs">
-        <div class="side-tab active" data-tab="sessions">Sessions</div>
-        <div class="side-tab" data-tab="agents">Agents</div>
-        <div class="side-tab" data-tab="workflows">Workflows</div>
+    </div>
+    <div id="event-log">
+      <div class="log-toggle" onclick="toggleLog()">
+        <span class="log-toggle-arrow">&#9660;</span>
+        Event Log
+        <span class="log-count" id="log-count">0</span>
       </div>
-      <div class="side-panel active" id="panel-sessions"></div>
-      <div class="side-panel" id="panel-agents"></div>
-      <div class="side-panel" id="panel-workflows"></div>
-    </aside>
-    <div id="main">
-      <div class="main-hdr" id="main-hdr">
-        <h2 id="hdr-title">No session selected</h2>
-      </div>
-      <div id="activity-panel" style="display:none;flex:1;overflow-y:auto;padding:12px 20px;font-family:var(--mono);font-size:11px;line-height:1.6;"></div>
-      <div id="task-area"></div>
-      <div id="detail"><div id="detail-inner"></div></div>
+      <div class="log-body" id="log-body"></div>
     </div>
   </div>
 
-  <!-- Settings dialog -->
-  <dialog id="settings-dlg" style="border:1px solid var(--border);border-radius:8px;padding:24px;max-width:400px;width:90%;font-family:var(--sans);font-size:13px;">
-    <h3 style="margin-bottom:16px;font-size:15px;">Broker Settings</h3>
-    <label style="display:block;margin-bottom:4px;font-weight:500;">Broker URL</label>
-    <input id="cfg-url" type="text" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:12px;margin-bottom:12px;" placeholder="ws://localhost:8083/mqtt">
-    <div style="display:flex;gap:12px;margin-bottom:12px;">
-      <div style="flex:1"><label style="display:block;margin-bottom:4px;font-weight:500;">Username</label><input id="cfg-user" type="text" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;"></div>
-      <div style="flex:1"><label style="display:block;margin-bottom:4px;font-weight:500;">Password</label><input id="cfg-pass" type="password" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;"></div>
+  <dialog id="settings-dlg">
+    <div class="dlg-title">Broker Settings</div>
+    <div class="dlg-field">
+      <label class="dlg-label">WebSocket URL</label>
+      <input class="dlg-input" id="cfg-url" type="text" placeholder="ws://localhost:8083/mqtt">
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
-      <button onclick="document.getElementById('settings-dlg').close()" style="padding:6px 14px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;font-size:12px;">Cancel</button>
-      <button onclick="saveSettings()" style="padding:6px 14px;border:none;border-radius:4px;background:var(--blue);color:white;cursor:pointer;font-size:12px;">Save & Reconnect</button>
+    <div class="dlg-row">
+      <div class="dlg-field">
+        <label class="dlg-label">Username</label>
+        <input class="dlg-input" id="cfg-user" type="text">
+      </div>
+      <div class="dlg-field">
+        <label class="dlg-label">Password</label>
+        <input class="dlg-input" id="cfg-pass" type="password">
+      </div>
+    </div>
+    <div class="dlg-row">
+      <div class="dlg-field">
+        <label class="dlg-label">Org</label>
+        <input class="dlg-input" id="cfg-org" type="text" placeholder="skitter">
+      </div>
+      <div class="dlg-field">
+        <label class="dlg-label">Unit</label>
+        <input class="dlg-input" id="cfg-unit" type="text" placeholder="default">
+      </div>
+    </div>
+    <div class="dlg-actions">
+      <button class="dlg-btn dlg-btn-cancel" onclick="document.getElementById('settings-dlg').close()">Cancel</button>
+      <button class="dlg-btn dlg-btn-primary" onclick="saveSettings()">Save &amp; Reconnect</button>
     </div>
   </dialog>
 
   <script>
-    // --- Broker config (persisted in localStorage) ---
-    const DEFAULT_BROKER_URL = 'ws://localhost:8083/mqtt';
+    // ── State ──────────────────────────────────────────────
 
-    function loadBrokerConfig() {
+    const S = {
+      connected: false,
+      coordinatorAlive: false,
+      org: 'skitter',
+      unit: 'default',
+      agents: new Map(),   // id -> { card, alive }
+      apps: new Map(),     // id -> card
+      sessions: new Map(), // session_id -> session object
+      events: [],          // event log entries
+      logOpen: false,
+    };
+
+    const MAX_SESSIONS = 50;
+    const MAX_EVENTS = 200;
+    let mqttClient = null;
+
+    // ── Config (localStorage) ──────────────────────────────
+
+    const DEFAULTS = { url: 'ws://localhost:8083/mqtt', username: '', password: '', org: 'skitter', unit: 'default' };
+
+    function loadConfig() {
       return {
-        url: localStorage.getItem('skitter_broker_url') || DEFAULT_BROKER_URL,
-        username: localStorage.getItem('skitter_broker_user') || '',
-        password: localStorage.getItem('skitter_broker_pass') || '',
+        url: localStorage.getItem('sk_url') || DEFAULTS.url,
+        username: localStorage.getItem('sk_user') || DEFAULTS.username,
+        password: localStorage.getItem('sk_pass') || DEFAULTS.password,
+        org: localStorage.getItem('sk_org') || DEFAULTS.org,
+        unit: localStorage.getItem('sk_unit') || DEFAULTS.unit,
       };
     }
 
     function showSettings() {
-      const cfg = loadBrokerConfig();
-      document.getElementById('cfg-url').value = cfg.url;
-      document.getElementById('cfg-user').value = cfg.username;
-      document.getElementById('cfg-pass').value = cfg.password;
+      const c = loadConfig();
+      document.getElementById('cfg-url').value = c.url;
+      document.getElementById('cfg-user').value = c.username;
+      document.getElementById('cfg-pass').value = c.password;
+      document.getElementById('cfg-org').value = c.org;
+      document.getElementById('cfg-unit').value = c.unit;
       document.getElementById('settings-dlg').showModal();
     }
 
     function saveSettings() {
-      const url = document.getElementById('cfg-url').value.trim() || DEFAULT_BROKER_URL;
-      const user = document.getElementById('cfg-user').value.trim();
-      const pass = document.getElementById('cfg-pass').value;
-      localStorage.setItem('skitter_broker_url', url);
-      localStorage.setItem('skitter_broker_user', user);
-      localStorage.setItem('skitter_broker_pass', pass);
+      localStorage.setItem('sk_url', document.getElementById('cfg-url').value.trim() || DEFAULTS.url);
+      localStorage.setItem('sk_user', document.getElementById('cfg-user').value.trim());
+      localStorage.setItem('sk_pass', document.getElementById('cfg-pass').value);
+      localStorage.setItem('sk_org', document.getElementById('cfg-org').value.trim() || DEFAULTS.org);
+      localStorage.setItem('sk_unit', document.getElementById('cfg-unit').value.trim() || DEFAULTS.unit);
       document.getElementById('settings-dlg').close();
-      // Reconnect
-      if (mqttClient) { mqttClient.end(true); }
-      connect();
+      if (mqttClient) mqttClient.end(true);
+      initConnection();
     }
 
-    const state = {
-      connected: false,
-      sessions: new Map(),
-      taskStatus: new Map(),
-      taskResults: new Map(),
-      streamChunks: new Map(),
-      activityLog: [],  // global stream log [{ts, sid, task, type, content}]
-      showActivity: false,
-      agentCards: new Map(),
-      workflowCards: new Map(),
-      selectedSessionId: null,
-      selectedTaskId: null,
-      composeTarget: null, // { type: 'agent'|'workflow', id: string }
-      pendingSelect: false, // auto-select next new session
-    };
-    let mqttClient = null;
-    let streamRenderPending = false;
+    // ── Utilities ──────────────────────────────────────────
 
-    // --- Utilities ---
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '\u2026' : s; }
-    function fmtAgo(sec) {
+    function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '...' : s; }
+    function shortId(id) { return id ? id.slice(0, 8) : ''; }
+
+    function fmtTime(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return '';
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function fmtAgo(iso) {
+      if (!iso) return '';
+      const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
       if (sec < 0 || isNaN(sec)) return '';
       if (sec < 10) return 'just now';
       if (sec < 60) return sec + 's ago';
       if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
       if (sec < 86400) return Math.floor(sec / 3600) + 'h ago';
-      return null; // caller should fall back to date
-    }
-    function fmtTime(ts) {
-      if (!ts) return '';
-      const d = new Date(ts * 1000);
-      const ago = Math.floor((Date.now() - d.getTime()) / 1000);
-      return fmtAgo(ago) || d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    }
-    function isActive(s) {
-      return Object.values(s.tasks).some(t => {
-        const ts = state.taskStatus.get(`${s.session_id}/${t.id}`);
-        return (ts || t.status) !== 'done';
-      });
+      return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
     }
 
-    function latestStream(sid, task) {
-      const ch = state.streamChunks.get(`${sid}/${task.id}`);
-      if (!ch || !ch.length) return null;
-      for (let i = ch.length - 1; i >= 0; i--) if (ch[i].type === 'text') return ch[i].content;
-      return ch[ch.length - 1].content;
-    }
+    // ── MQTT ───────────────────────────────────────────────
 
-    function findSessionForTask(task, sessionId) {
-      if (sessionId) { const s = state.sessions.get(sessionId); if (s && s.tasks[task]) return sessionId; }
-      for (const [sid, s] of state.sessions) if (s.tasks[task]) return sid;
-      return null;
-    }
+    function initConnection() {
+      const cfg = loadConfig();
+      S.org = cfg.org;
+      S.unit = cfg.unit;
+      S.connected = false;
+      S.coordinatorAlive = false;
+      S.agents.clear();
+      S.apps.clear();
+      S.sessions.clear();
+      S.events = [];
 
-    function scheduleStreamRender() {
-      if (!streamRenderPending) { streamRenderPending = true; setTimeout(() => { renderTasks(); renderDetail(); if (state.showActivity) renderActivity(); streamRenderPending = false; }, 400); }
-    }
+      document.getElementById('hdr-org').textContent = `${S.org}/${S.unit}`;
+      renderAll();
 
-    function toggleActivity() {
-      state.showActivity = !state.showActivity;
-      const panel = document.getElementById('activity-panel');
-      const taskArea = document.getElementById('task-area');
-      const detail = document.getElementById('detail');
-      if (state.showActivity) {
-        panel.style.display = 'block';
-        taskArea.style.display = 'none';
-        detail.style.display = 'none';
-        renderActivity();
-      } else {
-        panel.style.display = 'none';
-        taskArea.style.display = '';
-        detail.style.display = '';
-      }
-      renderHeader();
-    }
-
-    function renderActivity() {
-      const panel = document.getElementById('activity-panel');
-      if (!state.activityLog.length) {
-        panel.innerHTML = '<div style="color:var(--text-dim);padding:20px;text-align:center;">No activity yet. Stream events from running tasks will appear here.</div>';
-        return;
-      }
-      let h = '';
-      const entries = state.activityLog.slice(-200);
-      for (const e of entries) {
-        const time = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
-        const label = `<span style="color:var(--text-dim)">${time}</span> <span style="color:var(--blue);font-weight:500">${esc(e.task)}</span> `;
-        if (e.type === 'tool_use') {
-          h += label + `<span style="color:var(--blue)">[${esc(e.content)}]</span>\n`;
-        } else {
-          h += label + esc(e.content) + '\n';
-        }
-      }
-      panel.innerHTML = `<pre style="margin:0;white-space:pre-wrap;word-wrap:break-word;">${h}</pre>`;
-      panel.scrollTop = panel.scrollHeight;
-    }
-
-    // --- MQTT ---
-    function connect() {
-      const cfg = loadBrokerConfig();
       const clientId = 'skitter-dash-' + Math.random().toString(16).slice(2, 10);
       const opts = { protocolVersion: 5, reconnectPeriod: 3000, connectTimeout: 10000, clean: true, clientId };
       if (cfg.username) { opts.username = cfg.username; opts.password = cfg.password; }
+
       mqttClient = mqtt.connect(cfg.url, opts);
-      mqttClient.on('connect', () => { state.connected = true; renderConn(); mqttClient.subscribe('$a2a/v1/#', { qos: 1 }); });
-      mqttClient.on('close', () => { state.connected = false; renderConn(); });
+
+      mqttClient.on('connect', () => {
+        S.connected = true;
+        renderHeader();
+        const pfx = '$a2a/v1';
+        mqttClient.subscribe(`${pfx}/discovery/${S.org}/${S.unit}/+`, { qos: 1 });
+        mqttClient.subscribe(`${pfx}/event/${S.org}/${S.unit}/+`, { qos: 1 });
+        mqttClient.subscribe(`${pfx}/lock/${S.org}/${S.unit}/coordinator`, { qos: 1 });
+      });
+
+      mqttClient.on('close', () => {
+        S.connected = false;
+        S.coordinatorAlive = false;
+        renderHeader();
+      });
+
       mqttClient.on('error', e => console.error('MQTT:', e));
       mqttClient.on('message', onMessage);
     }
 
     function onMessage(topic, payload) {
       const raw = payload.toString();
-      const p = topic.split('/');
+      const parts = topic.split('/');
+      // $a2a/v1/<type>/<org>/<unit>/<id>
+      if (parts.length < 6) return;
+      const type = parts[2];
+      const id = parts[5];
 
-      // --- A2A protocol topics ($a2a/v1/...) ---
+      if (type === 'discovery') handleDiscovery(id, raw);
+      else if (type === 'event') handleEvent(id, raw);
+      else if (type === 'lock') handleLock(raw);
+    }
 
-      // Reply (TaskStatusUpdateEvent + TaskArtifactUpdateEvent)
-      if (p[2] === 'reply' && raw) {
-        try {
-          const m = JSON.parse(raw);
-          const r = m.result || {};
-          if (r.type === 'TaskArtifactUpdateEvent') {
-            const sid = r.taskId;
-            const meta = r.metadata || {};
-            const taskName = meta.task_name || '';
-            const text = ((r.artifact || {}).parts || [])[0]?.text || '';
-            if (text && sid && taskName) {
-              state.taskResults.set(`${sid}/${taskName}`, text);
-            }
-            renderSessions(); renderTasks(); renderDetail();
-          } else if (r.type === 'TaskStatusUpdateEvent') {
-            const sid = r.taskId;
-            const status = r.status || {};
-            const st = status.state;
-            const meta = r.metadata || status.metadata || {};
-            const taskName = meta.task_name || '';
-            const msgObj = status.message || {};
-            const msg = typeof msgObj === 'string' ? msgObj : ((msgObj.parts || [])[0]?.text || '');
-            const msgType = meta.type || 'text';
+    // ── Discovery ──────────────────────────────────────────
 
-            if (st === 'submitted') {
-              renderAll();
-            } else if (st === 'working' && msg && sid && taskName) {
-              const k = `${sid}/${taskName}`;
-              if (!state.streamChunks.has(k)) state.streamChunks.set(k, []);
-              const ch = state.streamChunks.get(k);
-              const entry = { task: taskName, type: msgType, content: msg, ts: new Date().toISOString(), sid };
-              ch.push(entry);
-              if (ch.length > 200) ch.splice(0, ch.length - 200);
-              state.activityLog.push(entry);
-              if (state.activityLog.length > 500) state.activityLog.splice(0, state.activityLog.length - 500);
-              scheduleStreamRender();
-            } else if (st === 'completed' || st === 'failed' || st === 'canceled' || st === 'rejected') {
-              if (sid && taskName) {
-                state.taskStatus.set(`${sid}/${taskName}`, 'done');
-              }
-              renderSessions(); renderTasks(); renderDetail();
-            }
-          }
-          if (m.error) { renderDetail(); }
-        } catch(e) {}
+    function handleDiscovery(agentId, raw) {
+      if (agentId === 'skitter') return; // skip coordinator card
+      if (!raw) {
+        S.agents.delete(agentId);
+        S.apps.delete(agentId);
+        renderSidebar();
         return;
       }
-
-      // Discovery
-      if (p[2] === 'discovery' && raw) {
-        try {
-          const card = JSON.parse(raw);
-          const cardId = p[5];
-          if (cardId === 'skitter') return;
-          if (card.metadata && card.metadata.tasks) {
-            state.workflowCards.set(cardId, card);
-            renderWorkflows();
-          } else {
-            state.agentCards.set(cardId, card);
-            renderAgents();
-          }
-        } catch(e) {}
-        return;
-      }
-    }
-
-    // --- Cancel ---
-    function cancelTask(sid, taskName) {
-      if (!mqttClient || !state.connected) return;
-      const s = state.sessions.get(sid);
-      if (!s) return;
-      const t = s.tasks[taskName];
-      if (!t) return;
-      mqttClient.publish(`$a2a/v1/request/skitter/default/${t.agent}/cancel`, JSON.stringify({
-        jsonrpc: '2.0', method: 'tasks/cancel', params: { session_id: sid, task: taskName, reason: 'Cancelled from dashboard' }, id: crypto.randomUUID(),
-      }), { qos: 1 });
-    }
-    function cancelAll(sid) {
-      const s = state.sessions.get(sid);
-      if (!s) return;
-      for (const [name, t] of Object.entries(s.tasks)) if (t.status === 'running') cancelTask(sid, name);
-    }
-
-    // --- Delete sessions ---
-    function deleteSession(sid) {
-      if (!mqttClient || !state.connected) return;
-      const s = state.sessions.get(sid);
-      // Clean up in-memory state for this session
-      if (s) {
-        for (const task of Object.keys(s.tasks)) {
-          const k = `${sid}/${task}`;
-          state.taskStatus.delete(k);
-          state.taskResults.delete(k);
-          state.streamChunks.delete(k);
-        }
-      }
-      state.sessions.delete(sid);
-      if (state.selectedSessionId === sid) { state.selectedSessionId = null; state.selectedTaskId = null; }
-      renderAll();
-    }
-    function clearAllSessions() {
-      for (const sid of [...state.sessions.keys()]) deleteSession(sid);
-    }
-
-    // --- Send (kept for /agent and /workflow text commands if needed) ---
-
-    // --- Render ---
-    function renderConn() {
-      const dot = document.getElementById('conn-dot');
-      dot.className = 'conn-dot' + (state.connected ? ' on' : '');
-      dot.title = state.connected ? 'Connected' : 'Disconnected';
-    }
-
-    function renderSessions() {
-      const el = document.getElementById('panel-sessions');
-      if (state.sessions.size === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No sessions yet</span></div>'; return; }
-      const sorted = [...state.sessions].sort((a, b) => (b[1].created_at || 0) - (a[1].created_at || 0));
-      let h = state.sessions.size > 1 ? '<div style="padding:6px 16px;text-align:right"><button class="sess-clear" onclick="clearAllSessions()">Clear all</button></div>' : '';
-      for (const [sid, s] of sorted) {
-        const active = isActive(s);
-        h += `<div class="sess-item${sid === state.selectedSessionId ? ' active' : ''}" data-sid="${esc(sid)}">
-          <div class="sess-id"><span class="sess-dot ${active ? 'running' : 'done'}"></span>${esc(sid)}</div>
-          <div class="sess-label">${esc(trunc(s.label || '', 50))}</div>
-          <div class="sess-meta"><span class="sess-time">${fmtTime(s.created_at)}</span><button class="sess-del" onclick="event.stopPropagation();deleteSession('${esc(sid)}')">&times;</button></div>
-        </div>`;
-      }
-      el.innerHTML = h;
-      el.querySelectorAll('.sess-item').forEach(el => el.addEventListener('click', () => {
-        state.selectedSessionId = el.dataset.sid; state.selectedTaskId = null; state.composeTarget = null; renderAll();
-      }));
-    }
-
-    function renderAgents() {
-      const el = document.getElementById('panel-agents');
-      const standalone = [...state.agentCards];
-      if (standalone.length === 0) { el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No agents discovered</span></div>'; return; }
-      let h = '';
-      for (const [id, c] of standalone) {
-        const active = state.composeTarget && state.composeTarget.type === 'agent' && state.composeTarget.id === id;
-        h += `<div class="config-item${active ? ' active' : ''}" data-agent-id="${esc(id)}">
-          <div class="config-name">${esc(id)}${c.version ? `<span class="config-badge">v${esc(c.version)}</span>` : ''}</div>
-          <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
-        </div>`;
-      }
-      el.innerHTML = h;
-      el.querySelectorAll('.config-item').forEach(item => item.addEventListener('click', () => {
-        const id = item.dataset.agentId;
-        if (state.composeTarget && state.composeTarget.type === 'agent' && state.composeTarget.id === id) {
-          state.composeTarget = null;
+      try {
+        const card = JSON.parse(raw);
+        if (card.metadata && card.metadata.tasks) {
+          S.apps.set(agentId, card);
         } else {
-          state.composeTarget = { type: 'agent', id };
-          state.selectedSessionId = null; state.selectedTaskId = null;
+          const existing = S.agents.get(agentId);
+          S.agents.set(agentId, { card, alive: existing ? existing.alive : true });
         }
-        renderAll();
-      }));
+        renderSidebar();
+      } catch (e) { /* ignore malformed cards */ }
     }
 
-    function renderWorkflows() {
-      const el = document.getElementById('panel-workflows');
-      if (state.workflowCards.size === 0) {
-        el.innerHTML = '<div class="empty" style="padding:40px 0"><span class="empty-hint">No workflows discovered</span></div>';
-        return;
-      }
-      let h = '';
-      for (const [id, c] of state.workflowCards) {
-        const active = state.composeTarget && state.composeTarget.type === 'workflow' && state.composeTarget.id === id;
-        h += `<div class="config-item${active ? ' active' : ''}" data-workflow-id="${esc(id)}">
-          <div class="config-name">${esc(id)}${c.version ? `<span class="config-badge">v${esc(c.version)}</span>` : ''}</div>
-          <div class="config-meta">${esc(c.name || '')}${c.description ? ' \u2014 ' + esc(trunc(c.description, 80)) : ''}</div>
-        </div>`;
-      }
-      el.innerHTML = h;
-      el.querySelectorAll('.config-item').forEach(item => item.addEventListener('click', () => {
-        const id = item.dataset.workflowId;
-        if (state.composeTarget && state.composeTarget.type === 'workflow' && state.composeTarget.id === id) {
-          state.composeTarget = null;
-        } else {
-          state.composeTarget = { type: 'workflow', id };
-          state.selectedSessionId = null; state.selectedTaskId = null;
+    // ── Events ─────────────────────────────────────────────
+
+    function handleEvent(agentId, raw) {
+      if (!raw) return;
+      try {
+        const data = JSON.parse(raw);
+        const ev = data.event;
+
+        // Agent LWT: dead event
+        if (ev === 'dead' && data.agent) {
+          const agent = S.agents.get(data.agent);
+          if (agent) { agent.alive = false; renderSidebar(); }
+          addLogEntry({ type: 'agent_dead', detail: data.agent, time: data.timestamp });
+          return;
         }
-        renderAll();
-      }));
+
+        // Agent alive (reconnect publishes alive event or fresh card)
+        if (ev === 'alive' && data.agent) {
+          const agent = S.agents.get(data.agent);
+          if (agent) { agent.alive = true; renderSidebar(); }
+          return;
+        }
+
+        // Coordinator lifecycle events (published on skitter's event topic)
+        if (agentId === 'skitter') handleCoordinatorEvent(data);
+      } catch (e) { /* ignore */ }
     }
+
+    function handleCoordinatorEvent(data) {
+      const ev = data.event;
+      const sid = data.session_id;
+      const d = data.data || {};
+
+      switch (ev) {
+        case 'session_created': {
+          const session = {
+            app_id: d.app_id || '',
+            app_name: d.app_name || d.app_id || '',
+            state: 'running',
+            graph: d.graph || [],
+            tasks: new Map(),
+            created: data.timestamp,
+            error: '',
+          };
+          for (const t of session.graph) {
+            session.tasks.set(t.id, { agent: t.agent, state: 'pending', error: '', description: t.description || '' });
+          }
+          S.sessions.set(sid, session);
+          pruneOldSessions();
+          break;
+        }
+        case 'task_started': {
+          const sess = S.sessions.get(sid);
+          if (sess) {
+            const tid = data.task_id;
+            let task = sess.tasks.get(tid);
+            if (!task) {
+              task = { agent: d.agent || '', state: 'pending', error: '', description: '' };
+              sess.tasks.set(tid, task);
+            }
+            task.state = 'running';
+            if (d.agent) task.agent = d.agent;
+          }
+          break;
+        }
+        case 'task_completed': {
+          const sess = S.sessions.get(sid);
+          if (sess) {
+            const task = sess.tasks.get(data.task_id);
+            if (task) task.state = 'completed';
+          }
+          break;
+        }
+        case 'task_failed': {
+          const sess = S.sessions.get(sid);
+          if (sess) {
+            const task = sess.tasks.get(data.task_id);
+            if (task) { task.state = 'failed'; task.error = d.error || ''; }
+          }
+          break;
+        }
+        case 'session_completed': {
+          const sess = S.sessions.get(sid);
+          if (sess) sess.state = 'completed';
+          break;
+        }
+        case 'session_failed': {
+          const sess = S.sessions.get(sid);
+          if (sess) { sess.state = 'failed'; sess.error = d.error || ''; }
+          break;
+        }
+      }
+
+      addLogEntry({
+        type: ev,
+        session_id: sid || '',
+        task_id: data.task_id || '',
+        agent: d.agent || '',
+        error: d.error || '',
+        app_id: d.app_id || '',
+        time: data.timestamp,
+      });
+
+      renderSessions();
+    }
+
+    function handleLock(raw) {
+      S.coordinatorAlive = !!raw;
+      renderHeader();
+    }
+
+    // ── Log ────────────────────────────────────────────────
+
+    function addLogEntry(entry) {
+      S.events.push(entry);
+      if (S.events.length > MAX_EVENTS) S.events.splice(0, S.events.length - MAX_EVENTS);
+      renderLog();
+    }
+
+    function pruneOldSessions() {
+      if (S.sessions.size <= MAX_SESSIONS) return;
+      // Remove oldest terminal sessions first
+      const sorted = [...S.sessions.entries()].sort((a, b) => {
+        const aT = a[1].state !== 'running' ? 0 : 1;
+        const bT = b[1].state !== 'running' ? 0 : 1;
+        if (aT !== bT) return aT - bT;
+        return (new Date(a[1].created || 0)) - (new Date(b[1].created || 0));
+      });
+      while (S.sessions.size > MAX_SESSIONS) {
+        S.sessions.delete(sorted.shift()[0]);
+      }
+    }
+
+    // ── DAG computation ────────────────────────────────────
+
+    function computeLevels(graph) {
+      const levels = {};
+      const taskMap = {};
+      for (const t of graph) taskMap[t.id] = t;
+
+      function visit(id) {
+        if (id in levels) return levels[id];
+        const t = taskMap[id];
+        if (!t || !t.needs || t.needs.length === 0) { levels[id] = 0; return 0; }
+        let max = 0;
+        for (const n of t.needs) max = Math.max(max, visit(n) + 1);
+        levels[id] = max;
+        return max;
+      }
+
+      for (const t of graph) visit(t.id);
+      return levels;
+    }
+
+    function groupByLevel(graph, levels) {
+      const groups = [];
+      for (const t of graph) {
+        const lv = levels[t.id] || 0;
+        while (groups.length <= lv) groups.push([]);
+        groups[lv].push(t);
+      }
+      return groups;
+    }
+
+    // ── Render: Header ─────────────────────────────────────
 
     function renderHeader() {
-      const hdr = document.getElementById('main-hdr');
-      const s = state.sessions.get(state.selectedSessionId);
-      if (!s) {
-        if (state.composeTarget) {
-          const label = state.composeTarget.id;
-          const badge = state.composeTarget.type;
-          hdr.innerHTML = `<h2>${esc(label)}</h2><span class="badge badge-${badge}">${badge}</span>`;
-        } else {
-          hdr.innerHTML = '<h2 style="color:var(--text-dim)">Skitter Dashboard</h2>';
-        }
-        return;
-      }
+      const dotMqtt = document.getElementById('dot-mqtt');
+      const lblMqtt = document.getElementById('lbl-mqtt');
+      const dotCoord = document.getElementById('dot-coord');
+      const lblCoord = document.getElementById('lbl-coord');
 
-      const type = s.workflow_id ? 'workflow' : 'agent';
-      const typeLabel = s.workflow_id || s.agent_id || '';
-      const running = Object.values(s.tasks).filter(t => t.status === 'running');
-      const stopAll = running.length > 0 ? `<button class="stop-btn" onclick="cancelAll('${esc(state.selectedSessionId)}')">Stop all</button>` : '';
-
-      const actStyle = state.showActivity
-        ? 'background:var(--blue);color:white;border-color:var(--blue)'
-        : 'background:var(--bg);color:var(--text-sec);border-color:var(--border)';
-      const actBtn = `<button onclick="toggleActivity()" style="margin-left:auto;padding:4px 10px;border:1px solid;border-radius:4px;cursor:pointer;font-size:11px;font-family:var(--sans);${actStyle}">Activity</button>`;
-
-      hdr.innerHTML = `<h2>${esc(state.selectedSessionId)}</h2>
-        <span class="badge badge-${type}">${esc(typeLabel)}</span>
-        ${stopAll}${actBtn}`;
+      dotMqtt.className = 'dot ' + (S.connected ? 'dot-on' : 'dot-off');
+      lblMqtt.textContent = S.connected ? 'Connected' : 'Disconnected';
+      dotCoord.className = 'dot ' + (S.coordinatorAlive ? 'dot-on' : 'dot-off');
+      lblCoord.textContent = S.coordinatorAlive ? 'Coordinator up' : 'Coordinator down';
     }
 
-    function renderComposeView() {
-      const area = document.getElementById('task-area');
-      const t = state.composeTarget;
-      if (!t) {
-        area.innerHTML = '<div class="empty"><div class="empty-title">Select an agent or workflow</div><div class="empty-hint">Browse the sidebar to get started</div></div>';
+    // ── Render: Sidebar ────────────────────────────────────
+
+    function renderSidebar() {
+      renderAgentList();
+      renderAppList();
+    }
+
+    function renderAgentList() {
+      const el = document.getElementById('agent-list');
+      if (S.agents.size === 0) {
+        el.innerHTML = '<div class="side-empty">No agents discovered</div>';
         return;
       }
-
-      const isAgent = t.type === 'agent';
-      const card = isAgent ? state.agentCards.get(t.id) : state.workflowCards.get(t.id);
-      if (!card) return;
-
-      const name = card.name || t.id;
-      const desc = card.description || '';
-      const typeBadge = isAgent ? 'agent' : 'workflow';
-
-      let propsHtml = '';
-      if (card.version) propsHtml += `<span class="compose-prop"><span>Version</span> ${esc(card.version)}</span>`;
-      if (card.skills && card.skills.length) propsHtml += `<span class="compose-prop"><span>Skills</span> ${card.skills.map(s => s.name).join(', ')}</span>`;
-      const cardUrl = card.supportedInterfaces && card.supportedInterfaces[0] ? card.supportedInterfaces[0].url : card.url;
-      if (cardUrl) propsHtml += `<span class="compose-prop"><span>URL</span> ${esc(cardUrl)}</span>`;
-
-      const tasks = card.metadata && card.metadata.tasks;
-      const tasksHtml = tasks && tasks.length ? `<div class="compose-tasks">
-        <div class="compose-tasks-hdr">Tasks</div>
-        ${tasks.map(tk => `<div class="compose-task"><span class="compose-task-id">${esc(tk.id)}</span><span class="compose-task-agent">${esc(tk.agent)}</span><div class="compose-task-desc">${esc(tk.description)}</div></div>`).join('')}
-      </div>` : '';
-
-      const varNames = card.metadata && card.metadata.variables && card.metadata.variables.length ? card.metadata.variables : null;
-      const varsHtml = varNames ? `<div class="compose-vars">${varNames.map(v =>
-        `<div class="compose-var"><label for="var-${esc(v)}">${esc(v)}</label><input id="var-${esc(v)}" type="text" placeholder="Enter ${esc(v)}..." /></div>`
-      ).join('')}</div>` : '';
-
-      const inputHtml = `${tasksHtml}${varsHtml}<div class="compose-input-wrap" style="margin-top:${tasksHtml || varsHtml ? '12' : '20'}px">
-          <textarea class="compose-textarea" id="compose-text" placeholder="${varsHtml ? 'Session label (optional)...' : `Message ${esc(name)}...`}" rows="3"></textarea>
-          <button class="compose-send" id="compose-btn" title="Send (Enter)">&#9654;</button>
-        </div>
-        <div class="compose-hint">Enter to send, Shift+Enter for newline</div>`;
-
-      area.innerHTML = `<div class="compose-view">
-        <div class="compose-card">
-          <div class="compose-card-hdr">
-            <div><span class="compose-card-name">${esc(name)}</span><span class="compose-card-type">${typeBadge}</span></div>
-            ${desc ? `<div class="compose-card-desc">${esc(desc)}</div>` : ''}
-            ${propsHtml ? `<div class="compose-card-props">${propsHtml}</div>` : ''}
+      let h = '';
+      for (const [id, { card, alive }] of S.agents) {
+        const dotClass = alive ? 'dot-on' : 'dot-off';
+        const desc = card.description || '';
+        const skills = (card.skills || []).map(s => s.tags || []).flat();
+        h += `<div class="side-item" onclick="this.classList.toggle('expanded')">
+          <div class="side-item-name"><span class="dot ${dotClass}"></span>${esc(card.name || id)}</div>
+          ${desc ? `<div class="side-item-desc">${esc(trunc(desc, 60))}</div>` : ''}
+          <div class="side-item-detail">
+            <div class="detail-row"><span class="detail-label">id</span>${esc(id)}</div>
+            ${card.version ? `<div class="detail-row"><span class="detail-label">version</span>${esc(card.version)}</div>` : ''}
+            ${desc ? `<div class="detail-row"><span class="detail-label">desc</span>${esc(desc)}</div>` : ''}
+            ${card.capabilities ? `<div class="detail-row"><span class="detail-label">caps</span>${esc(Object.entries(card.capabilities).filter(([,v])=>v).map(([k])=>k).join(', ') || 'none')}</div>` : ''}
           </div>
-          ${inputHtml}
-        </div>
-      </div>`;
-
-      const textarea = document.getElementById('compose-text');
-      const btn = document.getElementById('compose-btn');
-
-      if (textarea) {
-        textarea.addEventListener('input', () => {
-          textarea.style.height = 'auto';
-          textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
-        });
-        textarea.addEventListener('keydown', e => {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitCompose(); }
-        });
-        textarea.focus();
+          ${skills.length ? `<div class="side-item-tags">${skills.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+        </div>`;
       }
-      if (btn) btn.addEventListener('click', submitCompose);
+      el.innerHTML = h;
     }
 
-    function submitCompose() {
-      const textarea = document.getElementById('compose-text');
-      const text = textarea ? textarea.value.trim() : '';
-      const t = state.composeTarget;
-      if (!t || !mqttClient || !state.connected) return;
-
-      const card = t.type === 'workflow' ? state.workflowCards.get(t.id) : null;
-      const varNames = card && card.metadata && card.metadata.variables;
-      const hasVars = varNames && varNames.length;
-
-      if (!text && !hasVars) return;
-
-      const requestId = 'dash-' + crypto.randomUUID().slice(0, 8);
-      const replyTopic = `$a2a/v1/reply/skitter/default/dashboard/${crypto.randomUUID().slice(0,8)}`;
-      const metadata = { sender: 'dashboard' };
-      if (hasVars) {
-        const vars = {};
-        for (const v of varNames) {
-          const el = document.getElementById(`var-${v}`);
-          if (el) vars[v] = el.value.trim();
-        }
-        metadata.variables = vars;
+    function renderAppList() {
+      const el = document.getElementById('app-list');
+      if (S.apps.size === 0) {
+        el.innerHTML = '<div class="side-empty">No apps registered</div>';
+        return;
       }
-      const rpcMsg = {
-        jsonrpc: '2.0', id: requestId, method: 'tasks/send',
-        params: {
-          message: { role: 'user', parts: [{ type: 'text', text }] },
-          metadata,
-        },
-      };
-
-      const target = t.id;
-      mqttClient.publish(`$a2a/v1/request/skitter/default/${target}`, JSON.stringify(rpcMsg), {
-        qos: 1, properties: { responseTopic: replyTopic, correlationData: new TextEncoder().encode(requestId) },
-      });
-
-      // Session ID will be assigned by the coordinator — auto-select when it arrives
-      state.pendingSelect = true;
-      state.composeTarget = null;
-      // Switch to sessions tab
-      document.querySelectorAll('.side-tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.side-panel').forEach(p => p.classList.remove('active'));
-      document.querySelector('.side-tab[data-tab="sessions"]').classList.add('active');
-      document.getElementById('panel-sessions').classList.add('active');
-      renderAll();
+      let h = '';
+      for (const [id, card] of S.apps) {
+        const tasks = (card.metadata && card.metadata.tasks) || [];
+        const desc = card.description || '';
+        h += `<div class="side-item" onclick="this.classList.toggle('expanded')">
+          <div class="side-item-name">${esc(card.name || id)}</div>
+          <div class="side-item-desc">${tasks.length} task${tasks.length !== 1 ? 's' : ''}${desc ? ' \u00b7 ' + esc(trunc(desc, 40)) : ''}</div>
+          <div class="side-item-detail">
+            <div class="detail-row"><span class="detail-label">id</span>${esc(id)}</div>
+            ${card.version ? `<div class="detail-row"><span class="detail-label">version</span>${esc(card.version)}</div>` : ''}
+            ${desc ? `<div class="detail-row"><span class="detail-label">desc</span>${esc(desc)}</div>` : ''}
+            ${tasks.map(t => `<div class="detail-row"><span class="detail-label">${esc(t.id)}</span>${esc(t.agent)}${t.description ? ': ' + esc(trunc(t.description, 50)) : ''}</div>`).join('')}
+          </div>
+        </div>`;
+      }
+      el.innerHTML = h;
     }
 
-    function renderTasks() {
-      const area = document.getElementById('task-area');
-      const s = state.sessions.get(state.selectedSessionId);
-      if (!s) { renderComposeView(); return; }
+    // ── Render: Sessions ───────────────────────────────────
 
-      const sid = state.selectedSessionId;
-      // Merge per-task status from retained topics over session's embedded status
-      const tasks = Object.values(s.tasks).map(t => {
-        const ts = state.taskStatus.get(`${sid}/${t.id}`);
-        return ts ? { ...t, status: ts } : t;
+    function renderSessions() {
+      const el = document.getElementById('sessions');
+
+      if (S.sessions.size === 0) {
+        el.innerHTML = `<div class="sessions-empty">
+          <div class="sessions-empty-title">No active sessions</div>
+          <div class="sessions-empty-hint">Run a composed app to see activity here</div>
+        </div>`;
+        return;
+      }
+
+      // Sort: running first, then by creation time (newest first)
+      const sorted = [...S.sessions.entries()].sort((a, b) => {
+        const aR = a[1].state === 'running' ? 0 : 1;
+        const bR = b[1].state === 'running' ? 0 : 1;
+        if (aR !== bR) return aR - bR;
+        return (new Date(b[1].created || 0)) - (new Date(a[1].created || 0));
       });
-      const pending = tasks.filter(t => t.status === 'pending' || t.status === 'waiting');
-      const running = tasks.filter(t => t.status === 'running');
-      const done = tasks.filter(t => t.status === 'done');
 
-      function card(t) {
-        const sel = t.id === state.selectedTaskId;
-        let streamInd = '', preview = '';
-        if (t.status === 'running') {
-          const hasChunks = state.streamChunks.has(`${sid}/${t.id}`);
-          if (hasChunks) {
-            streamInd = '<span class="stream-dot"></span> ';
-            const lt = latestStream(sid, t);
-            if (lt) preview = `<div class="card-preview">${esc(trunc(lt, 60))}</div>`;
+      let h = '';
+      for (const [sid, sess] of sorted) {
+        const terminal = sess.state !== 'running';
+        const appLabel = sess.app_name || sess.app_id || '';
+
+        h += `<div class="session-card${terminal ? ' terminal' : ''}">
+          <div class="session-hdr">
+            ${appLabel ? `<span class="session-app">${esc(appLabel)}</span>` : ''}
+            <span class="session-id">${esc(shortId(sid))}</span>
+            <span class="session-badge ${sess.state}">${esc(sess.state)}</span>
+            <span class="session-time">${esc(fmtAgo(sess.created))}</span>
+          </div>
+          ${renderDag(sess)}
+          ${sess.error ? `<div class="session-error">${esc(trunc(sess.error, 200))}</div>` : ''}
+        </div>`;
+      }
+      el.innerHTML = h;
+    }
+
+    function renderDag(sess) {
+      // If we have graph data, render as a proper DAG
+      if (sess.graph.length > 0) {
+        const levels = computeLevels(sess.graph);
+        const groups = groupByLevel(sess.graph, levels);
+
+        let h = '<div class="dag">';
+        for (let i = 0; i < groups.length; i++) {
+          if (i > 0) h += '<div class="dag-arrow">\u2192</div>';
+          h += '<div class="dag-level">';
+          for (const t of groups[i]) {
+            const taskState = sess.tasks.get(t.id);
+            const st = taskState ? taskState.state : 'pending';
+            const agent = taskState ? taskState.agent : t.agent;
+            const error = taskState ? taskState.error : '';
+            const desc = t.description || '';
+            const dotClass = st === 'running' ? 'dot-pulse' : st === 'completed' ? 'dot-on' : st === 'failed' ? 'dot-off' : '';
+
+            h += `<div class="dag-task ${st}">
+              <span class="dot ${dotClass}"></span>
+              <span class="dag-task-id">${esc(t.id)}</span>
+              ${agent ? `<span class="dag-task-agent">${esc(agent)}</span>` : ''}
+              ${desc ? `<div class="dag-task-tooltip">${esc(desc)}</div>` : ''}
+              ${error ? `<div class="dag-task-error">${esc(trunc(error, 120))}</div>` : ''}
+            </div>`;
           }
+          h += '</div>';
         }
-        if (t.status === 'done' && !preview) {
-          const tr = state.taskResults.get(`${sid}/${t.id}`);
-          if (tr) preview = `<div class="card-preview">${esc(trunc(tr, 60))}</div>`;
-        }
-        let foot = '<div class="card-foot">';
-        if (t.status === 'running') {
-          foot += `<button class="stop-btn" onclick="event.stopPropagation();cancelTask('${esc(sid)}','${esc(t.id)}')">Stop</button>`;
-        }
-        foot += '</div>';
+        h += '</div>';
+        return h;
+      }
 
-        return `<div class="card ${t.status}${sel ? ' selected' : ''}" data-tid="${esc(t.id)}">
-          <div class="card-top"><span class="card-id">${streamInd}${esc(t.id)}</span>${t.model ? `<span class="card-model">${esc(t.model)}</span>` : ''}</div>
-          <div class="card-agent">${esc(t.agent)}</div>
-          <div class="card-desc">${esc(trunc(t.description, 100))}</div>
-          ${preview}${foot}
+      // Fallback: no graph data, just show task chips from events
+      if (sess.tasks.size > 0) {
+        let h = '<div class="session-tasks-inline">';
+        for (const [tid, task] of sess.tasks) {
+          const dotClass = task.state === 'running' ? 'dot-pulse' : task.state === 'completed' ? 'dot-on' : task.state === 'failed' ? 'dot-off' : '';
+          h += `<span class="task-chip ${task.state}"><span class="dot ${dotClass}"></span>${esc(tid)}${task.agent ? ' \u00b7 ' + esc(task.agent) : ''}</span>`;
+        }
+        h += '</div>';
+        return h;
+      }
+
+      return '<div class="session-minimal">Waiting for tasks...</div>';
+    }
+
+    // ── Render: Event Log ──────────────────────────────────
+
+    function renderLog() {
+      document.getElementById('log-count').textContent = S.events.length;
+
+      if (!S.logOpen) return;
+
+      const el = document.getElementById('log-body');
+      let h = '';
+      // Render newest first
+      for (let i = S.events.length - 1; i >= 0; i--) {
+        const e = S.events[i];
+        const time = fmtTime(e.time);
+        const type = e.type || '';
+
+        let detail = '';
+        if (e.session_id) detail += shortId(e.session_id);
+        if (e.task_id) detail += ' / ' + e.task_id;
+        if (e.agent) detail += ' \u2192 ' + e.agent;
+        if (e.app_id) detail += ' (' + e.app_id + ')';
+        if (e.error) detail += ' : ' + trunc(e.error, 80);
+        if (e.detail) detail = e.detail;
+
+        h += `<div class="log-row">
+          <span class="log-time">${esc(time)}</span>
+          <span class="log-type ${esc(type)}">${esc(type)}</span>
+          <span class="log-detail">${esc(detail)}</span>
         </div>`;
       }
-
-      let resultHtml = '';
-      const sessionResult = getSessionResult();
-      if (sessionResult) {
-        resultHtml = `<div class="session-result">
-          <div class="session-result-hdr">Result<span class="result-actions"><button class="result-act" onclick="copyResult()">Copy</button><button class="result-act" onclick="downloadResult()">Download</button></span></div>
-          <div class="session-result-text">${marked.parse(sessionResult)}</div>
-        </div>`;
-      }
-
-      area.innerHTML = `${resultHtml}<div class="task-grid">
-        <div><div class="col-hdr"><span class="col-dot pending"></span><h3>Pending</h3><span class="cnt">${pending.length}</span></div><div class="task-col">${pending.map(card).join('')}</div></div>
-        <div><div class="col-hdr"><span class="col-dot running"></span><h3>Running</h3><span class="cnt">${running.length}</span></div><div class="task-col">${running.map(card).join('')}</div></div>
-        <div><div class="col-hdr"><span class="col-dot done"></span><h3>Done</h3><span class="cnt">${done.length}</span></div><div class="task-col">${done.map(card).join('')}</div></div>
-      </div>`;
-
-      area.querySelectorAll('.card').forEach(c => c.addEventListener('click', () => {
-        state.selectedTaskId = c.dataset.tid; renderTaskSelection(); renderDetail();
-      }));
-      renderTaskSelection();
+      el.innerHTML = h || '<div style="padding:12px 16px;color:var(--text-dim);font-size:11px;">No events yet</div>';
     }
 
-    function renderTaskSelection() {
-      document.querySelectorAll('.card').forEach(c => c.classList.toggle('selected', c.dataset.tid === state.selectedTaskId));
+    function toggleLog() {
+      S.logOpen = !S.logOpen;
+      document.getElementById('event-log').classList.toggle('open', S.logOpen);
+      if (S.logOpen) renderLog();
     }
 
-    function renderDetail() {
-      const panel = document.getElementById('detail');
-      const inner = document.getElementById('detail-inner');
-      const s = state.sessions.get(state.selectedSessionId);
-      if (!s || !state.selectedTaskId) { panel.classList.remove('open'); return; }
-      const t = s.tasks[state.selectedTaskId];
-      if (!t) { panel.classList.remove('open'); return; }
-      panel.classList.add('open');
+    // ── Render all ─────────────────────────────────────────
 
-      const sid = state.selectedSessionId;
-      const mergedStatus = state.taskStatus.get(`${sid}/${t.id}`) || t.status;
-      const result = state.taskResults.get(`${sid}/${t.id}`) || null;
-      const stopBtn = mergedStatus === 'running' ? `<button class="stop-btn" onclick="cancelTask('${esc(sid)}','${esc(t.id)}')">Stop</button>` : '';
-
-      let h = `<div class="det-hdr">
-        <h2>${esc(t.id)}</h2>
-        <span class="config-badge">${esc(t.agent)}</span>
-        ${t.model ? `<span class="card-model">${esc(t.model)}</span>` : ''}
-        <span class="badge-status ${mergedStatus}">${esc(mergedStatus)}</span>
-        ${stopBtn}
-        <button class="det-close det-expand" onclick="toggleExpand()">Expand</button>
-        <button class="det-close" onclick="closeDetail()">Close</button>
-      </div>`;
-
-      h += `<div class="det-section"><div class="det-label">Description</div><div class="det-text">${esc(t.description)}</div></div>`;
-
-      // Stream log (live while running, full log when done)
-      const chunks = state.streamChunks.get(`${sid}/${t.id}`);
-      if (chunks && chunks.length) {
-        const isRunning = mergedStatus === 'running';
-        let sh = '';
-        for (const c of chunks.slice(isRunning ? -50 : -200)) {
-          if (c.type === 'text') sh += esc(c.content);
-          else if (c.type === 'tool_use') sh += `<span class="tool">[${esc(c.content)}]</span>\n`;
-        }
-        const label = isRunning ? '<span class="stream-dot"></span> Live Output' : 'Activity Log';
-        h += `<div class="det-section"><div class="det-label">${label}</div><div class="det-stream">${sh}</div></div>`;
-      }
-
-      if (result) h += `<div class="det-section"><div class="det-label">Result</div><div class="det-box"><div class="det-result-md">${marked.parse(result)}</div></div><div class="det-result-actions"><button class="det-act" onclick="copyTaskResult()">Copy</button><button class="det-act" onclick="downloadTaskResult()">Download</button></div></div>`;
-
-      if (t.needs && t.needs.length) {
-        h += `<div class="det-section"><div class="det-label">Dependencies</div><div class="det-deps">${t.needs.map(d => `<span class="dep-tag" data-dep="${esc(d)}">${esc(d)}</span>`).join('')}</div></div>`;
-      }
-
-      h += `<div class="det-section"><div class="det-meta">task: ${esc(t.id)}</div></div>`;
-      inner.innerHTML = h;
-
-      // Sync expand button text
-      const expBtn = inner.querySelector('.det-expand');
-      if (expBtn) expBtn.textContent = panel.classList.contains('expanded') ? 'Collapse' : 'Expand';
-
-      inner.querySelectorAll('.dep-tag').forEach(tag => tag.addEventListener('click', () => {
-        state.selectedTaskId = tag.dataset.dep; renderTaskSelection(); renderDetail();
-      }));
+    function renderAll() {
+      renderHeader();
+      renderSidebar();
+      renderSessions();
+      renderLog();
     }
 
-    function closeDetail() { state.selectedTaskId = null; const d = document.getElementById('detail'); d.classList.remove('open', 'expanded'); renderTaskSelection(); }
-    function toggleExpand() {
-      const d = document.getElementById('detail');
-      d.classList.toggle('expanded');
-      const btn = d.querySelector('.det-expand');
-      if (btn) btn.textContent = d.classList.contains('expanded') ? 'Collapse' : 'Expand';
-    }
+    // ── Periodic refresh for relative times ────────────────
 
-    function getSessionResult() {
-      const s = state.sessions.get(state.selectedSessionId);
-      if (!s) return '';
-      // Session result from immutable spec
-      if (s.result) return s.result;
-      // Derive from terminal task's per-task result
-      const sid = state.selectedSessionId;
-      const terminal = Object.values(s.tasks).find(t => t.next === 'output');
-      if (terminal) {
-        const r = state.taskResults.get(`${sid}/${terminal.id}`);
-        if (r) return r;
-      }
-      return '';
-    }
-    function getSelectedTaskResult() {
-      const s = state.sessions.get(state.selectedSessionId);
-      if (!s || !state.selectedTaskId) return '';
-      const t = s.tasks[state.selectedTaskId];
-      if (!t) return '';
-      return state.taskResults.get(`${state.selectedSessionId}/${t.id}`) || '';
-    }
-    function copyTaskResult() {
-      const md = getSelectedTaskResult();
-      if (!md) return;
-      navigator.clipboard.writeText(md).then(() => {
-        const btn = document.querySelector('.det-act');
-        if (btn) { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1500); }
-      });
-    }
-    function downloadTaskResult() {
-      const md = getSelectedTaskResult();
-      if (!md) return;
-      const name = state.selectedTaskId || 'result';
-      const blob = new Blob([md], { type: 'text/markdown' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${name}.md`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
-    function copyResult() {
-      const md = getSessionResult();
-      if (!md) return;
-      navigator.clipboard.writeText(md).then(() => {
-        const btn = document.querySelector('.result-act');
-        if (btn) { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1500); }
-      });
-    }
-    function downloadResult() {
-      const md = getSessionResult();
-      if (!md) return;
-      const sid = state.selectedSessionId || 'result';
-      const blob = new Blob([md], { type: 'text/markdown' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${sid}.md`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
+    setInterval(() => {
+      if (S.sessions.size > 0) renderSessions();
+    }, 30000);
 
-    function renderAll() { renderSessions(); renderAgents(); renderWorkflows(); renderHeader(); renderTasks(); renderDetail(); }
+    // ── Init ───────────────────────────────────────────────
 
-    // --- Tab switching ---
-    document.querySelectorAll('.side-tab').forEach(tab => tab.addEventListener('click', () => {
-      document.querySelectorAll('.side-tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.side-panel').forEach(p => p.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
-    }));
-
-    // --- Init ---
-    connect();
-    renderAll();
+    initConnection();
   </script>
 </body>
 </html>

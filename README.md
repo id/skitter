@@ -119,30 +119,24 @@ uv run python -m skitter chat
 ## How It Works
 
 ```
-Any MQTT v5 Client          MQTT Broker           A2A Agents
-(CLI, dashboard,          (local or EMQX)      (any implementation)
- Telegram bot, etc.)
-                      ┌────────────────────┐
-                      │                    │
- Standalone agent     │                    │    ┌───────────┐
-─────────────────────>│  request topic  ───────>│ Agent A   │
- (direct to agent)    │                    │    │ (sonnet)  │──> result
-                      │                    │    └───────────┘
-                      │                    │
- Composed app         │  ┌─────────────┐   │    ┌───────────┐
-─────────────────────>│  │ Coordinator │───────>│ Agent A   │
- (via coordinator)    │  │ (DAG, DB)   │   │    └───────────┘
-                      │  └─────────────┘   │    ┌───────────┐
-                      │   Resolves deps,   │    │ Agent B   │
- result               │   dispatches A2A ──────>│ (haiku)   │
-<─────────────────────│                    │    └───────────┘
-                      │                    │
-                      └────────────────────┘
+                      ┌────────────┐
+  ┌────────┐          │            │        ┌─────────┐
+  │ Client │<────────>│            │<──────>│ Agent A │
+  └────────┘          │    MQTT    │        └─────────┘
+                      │   Broker   │        ┌─────────┐
+  ┌─────────────┐     │            │<──────>│ Agent B │
+  │ Coordinator │<───>│            │        └─────────┘
+  └─────────────┘     │            │        ┌─────────┐
+   app cards          │            │<──────>│ Agent C │
+                      └────────────┘        └─────────┘
+                                             agent cards
 ```
 
-**Standalone agents** handle requests directly. Clients publish to the agent's request topic; the agent processes and replies. Any A2A-over-MQTT compliant process works.
+All participants connect to the broker via MQTT pub/sub.
 
-**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests following the dependency graph, and returns the final result to the caller.
+**Standalone agents** handle requests directly. Clients publish to the agent's request topic; the agent processes and replies. Each agent publishes its own discovery card. Any A2A-over-MQTT compliant process works.
+
+**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests following the dependency graph, and returns the final result to the caller. The coordinator publishes an app card for each composed workflow.
 
 Topics follow the [A2A-over-MQTT](docs/spec/a2a-over-mqtt-transport.md) scheme.
 

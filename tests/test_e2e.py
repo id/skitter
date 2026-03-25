@@ -245,6 +245,87 @@ class TestAgentRunner:
         terminal = [(k, c) for k, c in messages if k == REPLY_TERMINAL]
         assert terminal
 
+    async def test_wire_format_matches_proto3_json(self, start_agent):
+        """Raw wire JSON must use proto3 conventions: SCREAMING_SNAKE_CASE enums,
+        statusUpdate/artifactUpdate oneof wrappers, no Part type discriminator."""
+        aid = f"test-wire-{uuid.uuid4().hex[:4]}"
+
+        async def handler(agent, prompt, publish_stream, env):
+            await publish_stream("text", "working")
+            return "done"
+
+        await start_agent(aid, handler=handler)
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        req = A2ARequest(
+            text="Wire format test",
+            request_id=f"w-{uuid.uuid4().hex[:8]}",
+            sender="test",
+        )
+
+        raw_messages: list[dict] = []
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-wire-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(aid), req.to_json(), qos=1, properties=props
+            )
+
+            async with asyncio.timeout(10.0):
+                async for msg in client.messages:
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+                    data = json.loads(payload)
+                    raw_messages.append(data)
+                    kind, _ = classify_reply(data)
+                    if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                        break
+
+        # Must have status updates and at least one artifact
+        status_msgs = [m for m in raw_messages if "statusUpdate" in m.get("result", {})]
+        artifact_msgs = [
+            m for m in raw_messages if "artifactUpdate" in m.get("result", {})
+        ]
+        assert len(status_msgs) >= 2  # submitted + completed at minimum
+        assert len(artifact_msgs) >= 1
+
+        # No message should use the old type-discriminator format
+        for m in raw_messages:
+            result = m.get("result", {})
+            assert "type" not in result, (
+                f"Old format 'type' key found in result: {result}"
+            )
+
+        # Verify enum values are SCREAMING_SNAKE_CASE
+        for m in status_msgs:
+            su = m["result"]["statusUpdate"]
+            state = su["status"]["state"]
+            assert state.startswith("TASK_STATE_"), f"State not proto enum: {state}"
+            # If status has a message, verify role and part format
+            msg_obj = su["status"].get("message")
+            if msg_obj:
+                assert msg_obj["role"].startswith("ROLE_"), (
+                    f"Role not proto enum: {msg_obj['role']}"
+                )
+                for part in msg_obj["parts"]:
+                    assert "type" not in part, f"Part has type discriminator: {part}"
+
+        # Verify artifact parts have no type discriminator
+        for m in artifact_msgs:
+            au = m["result"]["artifactUpdate"]
+            for part in au["artifact"]["parts"]:
+                assert "type" not in part, (
+                    f"Artifact part has type discriminator: {part}"
+                )
+
     async def test_reply_echoes_requester_task_id(self, start_agent):
         """All reply events must carry the requester's taskId (spec gap 1)."""
         aid = f"test-taskid-{uuid.uuid4().hex[:4]}"
@@ -286,8 +367,9 @@ class TestAgentRunner:
                         continue
                     data = json.loads(payload)
                     result = data.get("result", {})
-                    if result.get("type") == "TaskStatusUpdateEvent":
-                        task_ids_in_replies.append(result.get("taskId", ""))
+                    su = result.get("statusUpdate")
+                    if su:
+                        task_ids_in_replies.append(su.get("taskId", ""))
                     kind, _ = classify_reply(data)
                     if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
                         break
@@ -311,8 +393,8 @@ class TestAgentRunner:
                 "method": "message/send",
                 "params": {
                     "message": {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": "hello"}],
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "hello"}],
                         "taskId": "",
                     }
                 },
@@ -416,8 +498,9 @@ class TestAgentRunner:
                         continue
                     data = json.loads(raw)
                     result = data.get("result", {})
-                    state = result.get("status", {}).get("state", "")
-                    if state == "completed":
+                    su = result.get("statusUpdate", {})
+                    state = su.get("status", {}).get("state", "")
+                    if state == "TASK_STATE_COMPLETED":
                         break
 
         assert call_count == 1  # handler was NOT called again
@@ -450,14 +533,13 @@ class TestComposedApp:
                         "agent": aid_a,
                         "description": "Do A",
                         "needs": [],
-                        "next": "step-b",
                     },
                     {
                         "id": "step-b",
                         "agent": aid_b,
                         "description": "Do B",
                         "needs": ["step-a"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -497,7 +579,7 @@ class TestComposedApp:
                         "agent": aid,
                         "description": "Do it",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -537,13 +619,14 @@ class TestComposedApp:
                         continue
                     data = json.loads(payload)
                     result = data.get("result", {})
-                    if result.get("type") == "TaskStatusUpdateEvent":
-                        task_ids_in_replies.append(result.get("taskId", ""))
+                    su = result.get("statusUpdate")
+                    if su:
+                        task_ids_in_replies.append(su.get("taskId", ""))
                     kind, _ = classify_reply(data)
                     if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
                         break
 
-        # Coordinator session_id = req.task_id, so all replies must carry it
+        # Coordinator replies carry req.task_id (the original requester's Task.id)
         assert len(task_ids_in_replies) >= 2  # at least submitted + completed
         assert all(tid == task_id for tid in task_ids_in_replies)
 
@@ -583,21 +666,19 @@ class TestComposedApp:
                         "agent": aid_a,
                         "description": "Produce A",
                         "needs": [],
-                        "next": "merge",
                     },
                     {
                         "id": "fork-b",
                         "agent": aid_b,
                         "description": "Produce B",
                         "needs": [],
-                        "next": "merge",
                     },
                     {
                         "id": "merge",
                         "agent": aid_c,
                         "description": "Merge",
                         "needs": ["fork-a", "fork-b"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -616,6 +697,190 @@ class TestComposedApp:
         data = json.loads(result)
         assert data["a"] == num_a
         assert data["b"] == num_b
+
+
+# ---------------------------------------------------------------------------
+# Correlation data validation
+# ---------------------------------------------------------------------------
+
+
+class TestCorrelationData:
+    async def test_replies_carry_correlation_data(
+        self, coordinator, start_agent, mock_graph
+    ):
+        """Agent replies must echo MQTT Correlation Data from the coordinator's dispatch."""
+        aid = f"corr-echo-{uuid.uuid4().hex[:4]}"
+        await start_agent(aid, handler=lambda a, p, s, e: "done")
+
+        mock_graph(
+            {
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": aid,
+                        "description": "Do it",
+                        "needs": [],
+                        "terminal": True,
+                    },
+                ]
+            }
+        )
+
+        app_id = await create_test_app([aid], f"Use {aid}")
+        await wait_for_discovery(app_id)
+
+        # Subscribe to the coordinator's internal reply topic to inspect correlation
+        # The coordinator subscribes to $a2a/v1/reply/{org}/{unit}/skitter/{sid}/{nid}
+        # but we don't know the session_id yet. Subscribe with wildcard.
+        spy_topic = "$a2a/v1/reply/skitter/default/skitter/#"
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        req = A2ARequest(
+            text="Go.",
+            request_id=f"app-{uuid.uuid4().hex[:8]}",
+            sender="test",
+        )
+
+        correlation_on_replies: list[str] = []
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-corr-spy-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(spy_topic, qos=1)
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(app_id), req.to_json(), qos=1, properties=props
+            )
+
+            async with asyncio.timeout(15.0):
+                async for msg in client.messages:
+                    topic = str(msg.topic)
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+
+                    # Capture correlation from agent replies to coordinator
+                    if "/reply/skitter/default/skitter/" in topic:
+                        corr_bytes = getattr(msg.properties, "CorrelationData", None)
+                        if corr_bytes:
+                            correlation_on_replies.append(corr_bytes.decode())
+
+                    # Stop when the caller gets the terminal reply
+                    if topic == reply_t:
+                        data = json.loads(payload)
+                        kind, _ = classify_reply(data)
+                        if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                            break
+
+        # Agent replies must carry correlation data
+        assert len(correlation_on_replies) >= 1
+        # All replies for the same dispatch must use the same correlation value
+        assert len(set(correlation_on_replies)) == 1
+
+    async def test_injected_reply_with_wrong_correlation_is_ignored(
+        self, coordinator, start_agent, mock_graph
+    ):
+        """A spoofed reply with wrong correlation must not complete the task."""
+        aid = f"corr-spoof-{uuid.uuid4().hex[:4]}"
+
+        got_prompt = asyncio.Event()
+
+        async def handler_slow(agent, prompt, publish_stream, env):
+            got_prompt.set()
+            await asyncio.sleep(5)
+            return "real-result"
+
+        await start_agent(aid, handler=handler_slow)
+
+        mock_graph(
+            {
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": aid,
+                        "description": "Do it",
+                        "needs": [],
+                        "terminal": True,
+                    },
+                ]
+            }
+        )
+
+        app_id = await create_test_app([aid], f"Use {aid}")
+        await wait_for_discovery(app_id)
+
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+        req = A2ARequest(
+            text="Go.",
+            request_id=f"app-{uuid.uuid4().hex[:8]}",
+            sender="test",
+        )
+
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-spoof-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(app_id), req.to_json(), qos=1, properties=props
+            )
+
+            # Wait for the agent to receive the prompt (task is dispatched)
+            async with asyncio.timeout(10.0):
+                await got_prompt.wait()
+
+            # Find the session to build the correct reply topic
+            sessions = list(coordinator._sessions.values())
+            assert len(sessions) == 1
+            state = sessions[0]
+            sid = state.session_id
+
+            # Inject a fake completed reply with wrong correlation
+            spoof_topic = f"$a2a/v1/reply/skitter/default/skitter/{sid}/step"
+            spoof_payload = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "bad-corr",
+                    "result": {
+                        "statusUpdate": {
+                            "taskId": "fake",
+                            "contextId": "",
+                            "status": {"state": "TASK_STATE_COMPLETED"},
+                        },
+                    },
+                }
+            )
+            spoof_props = make_properties(correlation_data="bad-corr")
+            await client.publish(
+                spoof_topic, spoof_payload, qos=1, properties=spoof_props
+            )
+
+            # The real agent will complete after ~5s; wait for the real result
+            result_text = ""
+            async with asyncio.timeout(15.0):
+                async for msg in client.messages:
+                    payload = msg.payload.decode() if msg.payload else ""
+                    if not payload:
+                        continue
+                    data = json.loads(payload)
+                    kind, content = classify_reply(data)
+                    if kind == REPLY_ARTIFACT:
+                        result_text = content
+                    elif kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
+                        break
+
+        # The real agent's result must come through, not the spoofed one
+        assert "real-result" in result_text
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +906,7 @@ class TestCancellation:
                         "agent": aid,
                         "description": "Slow",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -745,7 +1010,7 @@ class TestAgentFailure:
                         "agent": aid,
                         "description": "Fail",
                         "needs": [],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }
@@ -784,14 +1049,13 @@ class TestAgentFailure:
                         "agent": aid_a,
                         "description": "Fail",
                         "needs": [],
-                        "next": "step-b",
                     },
                     {
                         "id": "step-b",
                         "agent": aid_b,
                         "description": "OK",
                         "needs": ["step-a"],
-                        "next": "output",
+                        "terminal": True,
                     },
                 ]
             }

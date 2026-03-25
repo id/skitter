@@ -11,7 +11,7 @@ skitter/
   llm.py           LLM API wrapper (litellm)
   discovery.py     Build + parse A2A discovery cards
   db.py            Database interface (SQLite/PostgreSQL)
-  pull.py          Pull agent cards from broker, generate local agent files
+  pull.py          Pull discovery cards from broker, save as JSON
   a2a.py           A2A protocol: message types, topics, validation, requester helper
   mqtt.py          MQTT v5 transport: connection, properties, extraction
   config.py        ~/.skitter/ management, YAML loading, dataclasses
@@ -19,7 +19,7 @@ skitter/
   __main__.py      CLI dispatch
 ```
 
-Key docs: `docs/architecture.md` (detailed design), `docs/fly-deployment.md` (cloud setup).
+Key docs: `docs/architecture.md` (detailed design), `docs/spec/` (A2A and A2A-over-MQTT specs).
 
 ## Development Setup
 
@@ -31,27 +31,25 @@ uv run python -m skitter   # start coordinator
 
 ## Agent Runner
 
-Skitter works with any A2A-over-MQTT compliant agent. The built-in agent-runner is a convenience that wraps CLI tools (Claude Code, Codex). It reads native CLI agent definitions directly, no extra config layer.
+Skitter works with any A2A-over-MQTT compliant agent. The built-in agent-runner is a convenience that wraps CLI tools (Claude Code, Codex). It reads native CLI agent definitions for metadata, then delegates execution to the respective CLI tool.
 
-**Claude** (`~/.claude/agents/researcher.md`):
+**Claude agents** are references to registered Claude Code agent names. The runner reads metadata (`name`, `description`, `model`) from the `.md` frontmatter and passes the agent name to `claude --agent <name>`. Claude Code resolves and executes the agent from its own registry (`~/.claude/agents/`).
+
 ```markdown
 ---
 name: researcher
 description: Deep research with source citation
 model: sonnet
-memory: user
-tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 ---
 You are a research specialist. Be thorough, cite sources.
 ```
 
-**Codex** (`~/.codex/agents/coder.toml`):
+**Codex agents** carry their instructions inline. The runner reads `model` and `developer_instructions` from the `.toml` file and passes them to `codex exec` via CLI flags. The first 100 chars of `developer_instructions` are used as the agent description for the discovery card. Other `.toml` fields (e.g. `sandbox_mode`) are not applied; the runner always uses `--full-auto`.
+
 ```toml
 model = "gpt-5.1-codex-mini"
 developer_instructions = "You are a senior developer."
 ```
-
-The agent-runner reads `model` and `developer_instructions` from the TOML file. `developer_instructions` is passed to codex via `-c` at runtime; the first 100 chars are used as the agent description for the discovery card. Other `.toml` fields (e.g. `sandbox_mode`) are not applied; the runner always uses `--full-auto`.
 
 Start an agent-runner by pointing it at the file:
 
@@ -60,7 +58,7 @@ uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
 uv run python -m skitter agent-runner ~/.codex/agents/coder.toml
 ```
 
-Runtime is inferred from file extension (`.md` → claude, `.toml` → codex).
+Runtime is inferred from file extension (`.md` = Claude, `.toml` = Codex).
 
 ## Configuration
 
@@ -94,11 +92,9 @@ llm:
 | `SKITTER_MAX_ATTEMPTS` | `3` | Max send attempts (1 initial + retries) |
 | `SKITTER_AGENT_MAX_CONCURRENT` | `4` | Max concurrent requests per agent runner |
 
-For cloud deployment, see `.env.cloud.example` and `docs/fly-deployment.md`.
-
 ## Topic Scheme
 
-All topics use the `$a2a` namespace following the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
+All topics use the `$a2a` namespace following the A2A-over-MQTT scheme (see `docs/spec/a2a-over-mqtt-transport.md`).
 
 ### A2A topics
 

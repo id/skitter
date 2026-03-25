@@ -6,7 +6,7 @@ by running the CLI tool as a subprocess.
 
     skitter agent-runner .claude/agents/researcher.md
 
-Fully independent — no coordinator, no shared state.
+Fully independent; no coordinator, no shared state.
 """
 
 import asyncio
@@ -14,9 +14,12 @@ import json
 import logging
 import os
 import sys
+import tomllib
 from datetime import datetime, timezone
+from pathlib import Path
 
 import aiomqtt
+import yaml
 
 from skitter.config import AgentDef
 from skitter.discovery import build_card
@@ -77,8 +80,8 @@ def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
         ]
         if agent.model:
             cmd.extend(["--model", agent.model])
-        if agent.system_prompt:
-            cmd.extend(["-c", f"developer_instructions={agent.system_prompt}"])
+        if agent.codex_instructions:
+            cmd.extend(["-c", f"developer_instructions={agent.codex_instructions}"])
         cmd.append(prompt)
     else:
         cmd = [
@@ -93,8 +96,8 @@ def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
             "--settings",
             _SANDBOX_SETTINGS,
         ]
-        agent_file = agent.agent_file or agent.id
-        cmd.extend(["--agent", agent_file.removesuffix(".md")])
+        agent_name = agent.claude_agent or agent.id
+        cmd.extend(["--agent", agent_name])
         if agent.model:
             cmd.extend(["--model", agent.model])
     return cmd
@@ -171,21 +174,10 @@ async def _run_cli(
     if stderr:
         log.warning("stderr: %s", stderr[:500])
 
-    if proc.returncode and proc.returncode != 0 and not texts:
+    if proc.returncode and not texts:
         return f"(process exited with code {proc.returncode})"
 
     return "\n".join(texts) if texts else "(no response)"
-
-
-def _mqtt_kwargs_for_agent(agent: AgentDef, **overrides) -> dict:
-    """Build MQTT connection kwargs, using agent's broker config if set."""
-    if agent.broker and agent.broker.host:
-        return mqtt_client_kwargs(
-            hostname=agent.broker.host,
-            port=agent.broker.port or 8883,
-            **overrides,
-        )
-    return mqtt_client_kwargs(**overrides)
 
 
 async def handle_request(
@@ -273,8 +265,6 @@ async def handle_request(
 
 def load_agent(path_str: str) -> AgentDef:
     """Load an agent definition from a Claude .md or Codex .toml file."""
-    from pathlib import Path
-
     path = Path(path_str)
     if not path.is_file():
         log.error("Agent definition not found: %s", path)
@@ -292,8 +282,6 @@ def load_agent(path_str: str) -> AgentDef:
 
 def _load_claude_agent(path) -> AgentDef:
     """Parse a Claude agent .md file (YAML frontmatter between --- delimiters)."""
-    import yaml
-
     text = path.read_text()
     if not text.startswith("---"):
         log.error("Claude agent file must start with --- frontmatter: %s", path)
@@ -316,14 +304,12 @@ def _load_claude_agent(path) -> AgentDef:
         description=frontmatter.get("description", ""),
         runtime="claude",
         model=frontmatter.get("model", ""),
-        agent_file=path.stem,
+        claude_agent=agent_id,
     )
 
 
 def _load_codex_agent(path) -> AgentDef:
     """Parse a Codex agent .toml file."""
-    import tomllib
-
     try:
         data = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as e:
@@ -337,7 +323,7 @@ def _load_codex_agent(path) -> AgentDef:
         description=instructions[:100],
         runtime="codex",
         model=data.get("model", ""),
-        system_prompt=instructions,
+        codex_instructions=instructions,
     )
 
 
@@ -351,14 +337,11 @@ async def run_with_def(agent: AgentDef) -> None:
     """Main loop from an AgentDef (no file loading)."""
     log.info("Starting agent runner: %s (runtime=%s)", agent.id, agent.runtime)
 
-    # Compute env once at startup
     env = agent_env()
-
-    # Publish discovery card (retained, via main client below)
     card = build_card(agent)
     card_json = json.dumps(card)
 
-    # LWT for crash detection
+    # LWT: broker publishes this on unexpected disconnect
     lwt_topic = topic_a2a_event(agent.id)
     lwt_payload = json.dumps(
         {
@@ -379,8 +362,7 @@ async def run_with_def(agent: AgentDef) -> None:
 
     try:
         async with aiomqtt.Client(
-            **_mqtt_kwargs_for_agent(
-                agent,
+            **mqtt_client_kwargs(
                 identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent.id}",
                 will=will,
             ),

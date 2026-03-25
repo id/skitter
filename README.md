@@ -1,6 +1,6 @@
 # Skitter
 
-MQTT-based AI orchestrator. Independent agent processes coordinate via an MQTT broker.
+AI agent orchestrator using A2A-over-MQTT.
 
 Two modes:
 
@@ -45,7 +45,7 @@ uv run python -m skitter run random-x "go"
 # => {"x": 73}
 ```
 
-The agent-runner publishes a discovery card on startup and handles A2A requests independently. It supports Claude Code (`.md`) and Codex (`.toml`) agent definitions. Any A2A-over-MQTT compliant process works too.
+The agent-runner reads metadata from the native definition file, publishes a discovery card, and handles A2A requests independently. It supports Claude Code (`.md`) and Codex (`.toml`) definitions. Any A2A-over-MQTT compliant process works too.
 
 ### Create a composed app
 
@@ -119,38 +119,34 @@ uv run python -m skitter chat
 ## How It Works
 
 ```
-Any MQTT v5 Client          MQTT Broker           A2A Agents
-(CLI, dashboard,          (local or EMQX)      (any implementation)
- Telegram bot, etc.)
-                      ┌────────────────────┐
-                      │                    │
- Standalone agent     │                    │    ┌───────────┐
-─────────────────────>│  request topic  ───────>│ Agent A   │
- (direct to agent)    │                    │    │ (sonnet)  │──> result
-                      │                    │    └───────────┘
-                      │                    │
- Composed app         │  ┌─────────────┐   │    ┌───────────┐
-─────────────────────>│  │ Coordinator │───────>│ Agent A   │
- (via coordinator)    │  │ (DAG, DB)   │   │    └───────────┘
-                      │  └─────────────┘   │    ┌───────────┐
-                      │   Resolves deps,   │    │ Agent B   │
- result               │   dispatches A2A ──────>│ (haiku)   │
-<─────────────────────│                    │    └───────────┘
-                      │                    │
-                      └────────────────────┘
+                      ┌────────────┐
+  ┌────────┐          │            │        ┌─────────┐
+  │ Client │<────────>│            │<──────>│ Agent A │
+  └────────┘          │    MQTT    │        └─────────┘
+                      │   Broker   │        ┌─────────┐
+  ┌─────────────┐     │            │<──────>│ Agent B │
+  │ Coordinator │<───>│            │        └─────────┘
+  └─────────────┘     │            │        ┌─────────┐
+   app cards          │            │<──────>│ Agent C │
+                      └────────────┘        └─────────┘
+                                             agent cards
 ```
 
-**Standalone agents** handle requests directly. Clients publish to the agent's request topic; the agent processes and replies. Any A2A-over-MQTT compliant process works.
+All participants connect to the broker via MQTT pub/sub.
 
-**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests following the dependency graph, and returns the final result to the caller.
+**Standalone agents** handle requests directly. Clients publish to the agent's request topic; the agent processes and replies. Each agent publishes its own discovery card. Any A2A-over-MQTT compliant process works.
 
-Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
+**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests following the dependency graph, and returns the final result to the caller. The coordinator publishes an app card for each composed workflow.
+
+Topics follow the [A2A-over-MQTT](docs/spec/a2a-over-mqtt-transport.md) scheme.
 
 ## Agent Runner
 
-The built-in agent-runner wraps Claude Code and Codex CLI as A2A-over-MQTT agents. It reads native agent definitions directly (`.md` for Claude, `.toml` for Codex). Runtime is inferred from the file extension.
+The built-in agent-runner wraps Claude Code and Codex CLI as A2A-over-MQTT agents. It reads metadata from native definition files (`.md` for Claude, `.toml` for Codex), publishes a discovery card, and delegates execution to the respective CLI tool. Runtime is inferred from the file extension.
 
-Codex agents use `.toml` files:
+Claude agents are references to registered agent names: the runner passes the name to `claude --agent <name>`, and Claude Code resolves the definition from its own registry.
+
+Codex agents carry instructions inline: the runner passes `developer_instructions` and `model` to `codex exec` via CLI flags.
 
 ```toml
 # agents/coder.toml
@@ -216,7 +212,7 @@ Instead of a monolithic orchestrator, skitter pushes routing and fan-out into th
 - **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge that publishes requests and subscribes to replies.
 - **Run agents anywhere.** Local processes, Docker containers, or cloud machines. As long as they reach the broker, they work.
 - **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client to watch every request, result, and event in real time.
-- **Cheap cloud deploy.** Always-on coordinator on Fly.io, agents billed per second.
+
 
 ## Testing
 
@@ -235,7 +231,7 @@ E2E tests run the coordinator and agent-runners in-process with mocked CLI and g
 
 - No built-in authentication (rely on MQTT broker auth)
 - Single coordinator instance per broker (enforced via retained MQTT lock)
-- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime; other fields (`sandbox_mode`, etc.) are ignored
+- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime via CLI flags; other fields (`sandbox_mode`, etc.) are ignored
 - A2A Core Conformance only; Extended Conformance features (shared pool dispatch, task handover, binary artifacts, OAuth) are not implemented
 
 ## Contributing

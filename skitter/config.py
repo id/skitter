@@ -4,6 +4,7 @@ import logging
 import string
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -13,21 +14,14 @@ SKITTER_DIR = Path.home() / ".skitter"
 
 
 @dataclass
-class BrokerConfig:
-    host: str = ""
-    port: int = 0
-
-
-@dataclass
 class AgentDef:
     id: str
     name: str
     description: str = ""
-    runtime: str = ""  # "claude" or "codex"
-    model: str = ""  # optional model override
-    agent_file: str = ""  # runtime-specific prompt file (e.g. researcher.md)
-    system_prompt: str = ""  # codex only: passed via -c developer_instructions
-    broker: BrokerConfig | None = None
+    runtime: Literal["claude", "codex"] = "claude"
+    model: str = ""
+    claude_agent: str = ""  # registered Claude agent name (--agent flag)
+    codex_instructions: str = ""  # Codex developer instructions (-c flag)
     capabilities: dict[str, bool] = field(default_factory=dict)
     input_modes: list[str] = field(default_factory=lambda: ["text/plain"])
     output_modes: list[str] = field(default_factory=lambda: ["text/plain"])

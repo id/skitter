@@ -23,9 +23,9 @@ from skitter.db import (
 from skitter.discovery import is_workflow_card, parse_card
 from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
-    CANCEL_KEY,
-    CREATE_APP_KEY,
-    DELETE_APP_KEY,
+    CancelSessionResult,
+    CreateAppResult,
+    DeleteAppResult,
     handle_query as runtime_query,
     runtime_card,
 )
@@ -74,21 +74,21 @@ log = logging.getLogger("skitter.coordinator")
 class SessionTask:
     """Per-task state within a session."""
 
-    task_id: str
     agent: str
     description: str
     needs: list[str] = field(default_factory=list)
-    next: str = ""
+    terminal: bool = False
     target: TaskTarget | None = None
-    request_id: str = ""  # set on dispatch
-    a2a_task_id: str = ""  # A2A Task.id sent to agent; used for tasks/cancel
+    dispatch_correlation: str = ""  # MQTT Correlation Data sent with dispatch
+    dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for tasks/cancel
 
 
 @dataclass
 class SessionState:
     """In-memory state for an active session."""
 
-    session_id: str
+    session_id: str  # internal; coordinator-generated UUID
+    request_task_id: str  # incoming A2A Task.id; used for dedup and wire replies
     app_version_id: str
     context_id: str = ""
     caller_reply_topic: str = ""
@@ -111,7 +111,7 @@ class SessionState:
 
 
 def _compute_ready(state: SessionState) -> list[str]:
-    """Return task_ids that are pending and have all needs satisfied."""
+    """Return node_ids that are pending and have all needs satisfied."""
     ready = []
     for tid in list(state.pending):
         task = state.graph[tid]
@@ -124,7 +124,7 @@ def _compute_ready(state: SessionState) -> list[str]:
 
 
 def _propagate_failure(state: SessionState, failed_tid: str) -> list[str]:
-    """Mark all transitively dependent tasks as failed. Returns newly failed task_ids."""
+    """Mark all transitively dependent tasks as failed. Returns newly failed node_ids."""
     newly_failed = []
     queue = [failed_tid]
     while queue:
@@ -151,14 +151,14 @@ def _build_context(state: SessionState, task: SessionTask) -> str:
     return "\n\n".join(parts)
 
 
-def _is_terminal(next_val: str) -> bool:
-    """True if the task's 'next' field marks it as a terminal (output) task."""
-    return not next_val or next_val == "output"
+def _is_graph_task_terminal(t: dict) -> bool:
+    """True if the graph task dict has ``terminal: true``."""
+    return bool(t.get("terminal", False))
 
 
 def _find_terminal_tasks(state: SessionState) -> list[str]:
-    """Find tasks whose next is empty or 'output'."""
-    return [tid for tid, task in state.graph.items() if _is_terminal(task.next)]
+    """Find terminal tasks in a session."""
+    return [tid for tid, task in state.graph.items() if task.terminal]
 
 
 # --- Discovery registry ---
@@ -197,7 +197,8 @@ class Coordinator:
 
     def __init__(self, db: DB) -> None:
         self._db = db
-        self._sessions: dict[str, SessionState] = {}
+        self._sessions: dict[str, SessionState] = {}  # session_id → state
+        self._request_task_index: dict[str, str] = {}  # request_task_id → session_id
         self._registry = DiscoveryRegistry()
         self._client: aiomqtt.Client | None = None
         self._reply_subscriptions: set[str] = set()
@@ -256,7 +257,8 @@ class Coordinator:
         variables: dict[str, str] | None = None,
     ) -> SessionState:
         """Create a new session from an orchestration graph."""
-        session_id = request.task_id
+        session_id = str(uuid.uuid4())
+        request_task_id = request.task_id
         variables = variables or {}
         variables.setdefault("user_request", request.text or "")
 
@@ -267,6 +269,7 @@ class Coordinator:
         db_session = DBSession(
             id=session_id,
             app_version_id=app_version_id,
+            request_task_id=request_task_id,
             context_id=request.context_id or "",
             request_json=request.to_json(),
             variables=json.dumps(variables),
@@ -278,6 +281,7 @@ class Coordinator:
         # Build in-memory state
         state = SessionState(
             session_id=session_id,
+            request_task_id=request_task_id,
             app_version_id=app_version_id,
             context_id=request.context_id or "",
             caller_reply_topic=caller_reply_topic,
@@ -290,14 +294,14 @@ class Coordinator:
             description = safe_format(t.get("description", ""), variables)
             needs = t.get("needs", [])
             agent = t.get("agent", "")
+            terminal = _is_graph_task_terminal(t)
             target = TaskTarget(agent=agent)
 
             state.graph[tid] = SessionTask(
-                task_id=tid,
                 agent=agent,
                 description=description,
                 needs=needs,
-                next=t.get("next", ""),
+                terminal=terminal,
                 target=target,
             )
             state.pending.add(tid)
@@ -306,11 +310,11 @@ class Coordinator:
             db_task = DBTask(
                 id=f"{session_id}/{tid}",
                 session_id=session_id,
-                task_id=tid,
+                node_id=tid,
                 agent=agent,
                 description=description,
                 needs=json.dumps(needs),
-                next=t.get("next", ""),
+                terminal="1" if terminal else "",
                 target_json=json.dumps(
                     {"agent": target.agent, "mqtt_host": target.mqtt_host}
                 ),
@@ -318,6 +322,7 @@ class Coordinator:
             self._db.create_task(db_task)
 
         self._sessions[session_id] = state
+        self._request_task_index[request_task_id] = session_id
         return state
 
     # --- Task dispatch ---
@@ -328,9 +333,9 @@ class Coordinator:
         for tid in ready:
             await self._dispatch_task(state, tid)
 
-    async def _dispatch_task(self, state: SessionState, task_id: str) -> None:
+    async def _dispatch_task(self, state: SessionState, node_id: str) -> None:
         """Send an A2A request for a single task."""
-        task = state.graph[task_id]
+        task = state.graph[node_id]
         target = task.target or TaskTarget(agent=task.agent)
 
         context = _build_context(state, task)
@@ -342,27 +347,26 @@ class Coordinator:
         if user_request:
             prompt = f"{prompt}\n\nUser request: {user_request}"
 
-        request_id = uuid.uuid4().hex[:16]
-        reply_t = topic_reply("skitter", f"{state.session_id}/{task_id}")
+        correlation = uuid.uuid4().hex[:16]
+        reply_t = topic_reply("skitter", f"{state.session_id}/{node_id}")
 
         # Generate the A2A Task.id for the dispatched request
-        task_uuid = str(uuid.uuid4())
-        task.a2a_task_id = task_uuid
+        dispatch_task_id = str(uuid.uuid4())
+        task.dispatch_correlation = correlation
+        task.dispatch_task_id = dispatch_task_id
 
         # Write-ahead: persist dispatch info before sending
-        db_task_id = f"{state.session_id}/{task_id}"
+        db_task_row_id = f"{state.session_id}/{node_id}"
         self._db.update_task(
-            db_task_id,
-            request_id=request_id,
-            a2a_task_id=task_uuid,
+            db_task_row_id,
+            dispatch_task_id=dispatch_task_id,
             reply_topic=reply_t,
             dispatched_at=datetime.now(timezone.utc).isoformat(),
             state="running",
         )
 
-        task.request_id = request_id
-        state.pending.discard(task_id)
-        state.inflight.add(task_id)
+        state.pending.discard(node_id)
+        state.inflight.add(node_id)
 
         # Subscribe to reply topic
         if self._client and reply_t not in self._reply_subscriptions:
@@ -370,15 +374,15 @@ class Coordinator:
             self._reply_subscriptions.add(reply_t)
         a2a_req = A2ARequest(
             text=prompt,
-            request_id=request_id,
-            task_id=task_uuid,
+            request_id=correlation,
+            task_id=dispatch_task_id,
             context_id=state.context_id,
             sender="skitter",
         )
         request_topic = topic_request(target.agent)
         props = make_properties(
             response_topic=reply_t,
-            correlation_data=request_id,
+            correlation_data=correlation,
         )
         if self._client:
             await self._client.publish(
@@ -388,25 +392,36 @@ class Coordinator:
         log.info(
             "Dispatched task %s/%s → %s (req=%s)",
             state.session_id,
-            task_id,
+            node_id,
             target.agent,
-            request_id,
+            correlation,
         )
-        await self._publish_event("task_started", state.session_id, task_id=task_id)
+        await self._publish_event("task_started", state.session_id, task_id=node_id)
 
     # --- Reply handling ---
 
-    async def handle_reply(self, topic: str, payload: str) -> None:
+    async def handle_reply(
+        self, topic: str, payload: str, correlation: str = ""
+    ) -> None:
         """Process an A2A reply from an agent."""
-        # Parse topic: $a2a/v1/reply/{org}/{unit}/skitter/{session_id}/{task_id}
+        # Parse topic: $a2a/v1/reply/{org}/{unit}/skitter/{session_id}/{node_id}
         parts = topic.split("/")
         if len(parts) < 7:
             return
         session_id = parts[-2]
-        task_id = parts[-1]
+        node_id = parts[-1]
 
         state = self._sessions.get(session_id)
         if not state:
+            return
+
+        # Validate MQTT Correlation Data if we have an expected value
+        task = state.graph.get(node_id)
+        expected = task.dispatch_correlation if task else ""
+        if expected and correlation != expected:
+            log.warning(
+                "Dropping reply for %s/%s: correlation mismatch", session_id, node_id
+            )
             return
 
         try:
@@ -418,33 +433,33 @@ class Coordinator:
 
         if kind == REPLY_ARTIFACT:
             # Accumulate artifact content; terminal status follows separately
-            state.results[task_id] = content
+            state.results[node_id] = content
         elif kind == REPLY_TERMINAL:
             # Prefer artifact content (preceding REPLY_ARTIFACT) over status message
-            result = state.results.get(task_id, "") or content
-            await self._complete_task(state, task_id, result)
+            result = state.results.get(node_id, "") or content
+            await self._complete_task(state, node_id, result)
         elif kind == REPLY_INPUT_REQUIRED:
             # Interrupted state: multi-turn not yet supported for sub-agents
-            await self._fail_task(state, task_id, f"Agent requires input: {content}")
+            await self._fail_task(state, node_id, f"Agent requires input: {content}")
         elif kind in (REPLY_FAILED, REPLY_ERROR):
-            await self._fail_task(state, task_id, content)
+            await self._fail_task(state, node_id, content)
         elif kind in (REPLY_TEXT, REPLY_TOOL):
             # Forward streaming updates to caller
-            await self._forward_stream(state, task_id, kind, content)
+            await self._forward_stream(state, node_id, kind, content)
 
     async def _forward_stream(
-        self, state: SessionState, task_id: str, msg_type: str, content: str
+        self, state: SessionState, node_id: str, msg_type: str, content: str
     ) -> None:
         """Forward streaming updates from agents to the session's caller."""
         if not state.caller_reply_topic or not self._client:
             return
         event = make_status_event(
             request_id=state.caller_correlation,
-            task_id=state.session_id,
+            task_id=state.request_task_id,
             state="working",
             message=content,
             context_id=state.context_id,
-            metadata={"type": msg_type, "task_name": task_id},
+            metadata={"type": msg_type, "task_name": node_id},
         )
         props = make_properties(correlation_data=state.caller_correlation)
         await self._client.publish(
@@ -452,23 +467,23 @@ class Coordinator:
         )
 
     async def _complete_task(
-        self, state: SessionState, task_id: str, result: str
+        self, state: SessionState, node_id: str, result: str
     ) -> None:
         """Handle successful task completion."""
-        state.results[task_id] = result
-        state.inflight.discard(task_id)
+        state.results[node_id] = result
+        state.inflight.discard(node_id)
 
         # Update DB
-        db_task_id = f"{state.session_id}/{task_id}"
+        db_task_row_id = f"{state.session_id}/{node_id}"
         self._db.update_task(
-            db_task_id,
+            db_task_row_id,
             state="completed",
             result=result,
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        log.info("Task %s/%s completed", state.session_id, task_id)
-        await self._publish_event("task_completed", state.session_id, task_id=task_id)
+        log.info("Task %s/%s completed", state.session_id, node_id)
+        await self._publish_event("task_completed", state.session_id, task_id=node_id)
 
         # Check if session is complete
         if not state.inflight and not state.pending:
@@ -477,24 +492,24 @@ class Coordinator:
             # Dispatch newly ready tasks
             await self.dispatch_ready(state)
 
-    async def _fail_task(self, state: SessionState, task_id: str, error: str) -> None:
+    async def _fail_task(self, state: SessionState, node_id: str, error: str) -> None:
         """Handle task failure and propagate."""
-        state.inflight.discard(task_id)
-        state.failed.add(task_id)
+        state.inflight.discard(node_id)
+        state.failed.add(node_id)
 
         # Update DB
-        db_task_id = f"{state.session_id}/{task_id}"
+        db_task_row_id = f"{state.session_id}/{node_id}"
         self._db.update_task(
-            db_task_id,
+            db_task_row_id,
             state="failed",
             error=error,
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
 
         # Propagate failure to downstream tasks
-        newly_failed = _propagate_failure(state, task_id)
+        newly_failed = _propagate_failure(state, node_id)
         for ftid in newly_failed:
-            cascade_error = f"Skipped: upstream task '{task_id}' failed"
+            cascade_error = f"Skipped: upstream task '{node_id}' failed"
             self._db.update_task(
                 f"{state.session_id}/{ftid}",
                 state="failed",
@@ -505,14 +520,14 @@ class Coordinator:
         log.error(
             "Task %s/%s failed: %s (cascaded to %d tasks)",
             state.session_id,
-            task_id,
+            node_id,
             error[:100],
             len(newly_failed),
         )
         await self._publish_event(
             "task_failed",
             state.session_id,
-            task_id=task_id,
+            task_id=node_id,
             data={"error": error[:200]},
         )
 
@@ -521,7 +536,7 @@ class Coordinator:
             await self._fail_session(state, error)
 
     async def _complete_session(self, state: SessionState) -> None:
-        """Finalize a completed session — send result to caller."""
+        """Finalize a completed session; send result to caller."""
         if state.session_id not in self._sessions:
             return  # already finalized (race with timeout/failure)
         self._db.update_session_state(state.session_id, "completed")
@@ -538,13 +553,14 @@ class Coordinator:
         await self._publish_completed(
             state.caller_reply_topic,
             state.caller_correlation,
-            state.session_id,
+            state.request_task_id,
             state.context_id,
             artifact_text=result_text,
         )
 
         await self._publish_event("session_completed", state.session_id)
         self._sessions.pop(state.session_id, None)
+        self._request_task_index.pop(state.request_task_id, None)
         log.info("Session %s completed", state.session_id)
 
     async def _fail_session(self, state: SessionState, error: str) -> None:
@@ -556,7 +572,7 @@ class Coordinator:
         if state.caller_reply_topic and self._client:
             event = make_status_event(
                 request_id=state.caller_correlation,
-                task_id=state.session_id,
+                task_id=state.request_task_id,
                 state="failed",
                 message=error,
                 context_id=state.context_id,
@@ -572,6 +588,7 @@ class Coordinator:
             data={"error": error[:200]},
         )
         self._sessions.pop(state.session_id, None)
+        self._request_task_index.pop(state.request_task_id, None)
         log.info("Session %s failed", state.session_id)
 
     # --- Runtime API ---
@@ -586,27 +603,24 @@ class Coordinator:
 
         Caller must pass a validated A2ARequest (v5 props and Task.id already checked).
         """
-        result_json = await runtime_query(self._db, req.text, self._registry)
+        result = await runtime_query(self._db, req.text, self._registry)
 
-        # Post-action hooks (cancel cleanup, app registration)
         try:
-            result = json.loads(result_json)
-            if CANCEL_KEY in result:
-                await self._cancel_session_cleanup(result[CANCEL_KEY])
-            if CREATE_APP_KEY in result:
-                await self._register_new_app(result[CREATE_APP_KEY])
-            if DELETE_APP_KEY in result:
-                await self._delete_app_cleanup(result[DELETE_APP_KEY])
+            if isinstance(result, CancelSessionResult):
+                await self._cancel_session_cleanup(result.session_id)
+            elif isinstance(result, CreateAppResult):
+                await self._start_app_connection(result.app_id, result.card_json)
+            elif isinstance(result, DeleteAppResult):
+                await self._delete_app_cleanup(result.app_id)
         except Exception:
             log.exception("Runtime query post-action failed")
 
-        # Reply to the query caller
         await self._publish_completed(
             reply_topic,
             correlation,
             req.task_id,
             req.context_id or "",
-            artifact_text=result_json,
+            artifact_text=json.dumps(result.to_dict()),
         )
 
     async def _cancel_session_cleanup(self, session_id: str) -> None:
@@ -617,12 +631,13 @@ class Coordinator:
         state = self._sessions.pop(session_id, None)
         if not state:
             return
+        self._request_task_index.pop(state.request_task_id, None)
         now = datetime.now(timezone.utc).isoformat()
 
         # Send tasks/cancel to agents with inflight tasks
         for tid in list(state.inflight):
             task_def = state.graph.get(tid)
-            cancel_id = task_def.a2a_task_id if task_def else ""
+            cancel_id = task_def.dispatch_task_id if task_def else ""
             if cancel_id and self._client:
                 cancel_msg = json.dumps(
                     {
@@ -654,7 +669,7 @@ class Coordinator:
         if state.caller_reply_topic and self._client:
             event = make_status_event(
                 request_id=state.caller_correlation,
-                task_id=session_id,
+                task_id=state.request_task_id,
                 state="canceled",
                 message="Session canceled via runtime API",
                 context_id=state.context_id,
@@ -663,14 +678,6 @@ class Coordinator:
             await self._client.publish(
                 state.caller_reply_topic, event, qos=1, properties=props
             )
-
-    async def _register_new_app(self, app_info: dict) -> None:
-        """Subscribe to a newly created app's request topic and publish its card."""
-        app_id = app_info.get("app_id", "")
-        card = app_info.get("card")
-        if not app_id or not card:
-            return
-        await self._start_app_connection(app_id, json.dumps(card))
 
     async def _delete_app_cleanup(self, app_id: str) -> None:
         """Clear retained discovery card and tear down the app's MQTT connection."""
@@ -753,7 +760,7 @@ class Coordinator:
         if state.caller_reply_topic and self._client:
             ack = make_status_event(
                 request_id=state.caller_correlation,
-                task_id=state.session_id,
+                task_id=state.request_task_id,
                 state="submitted",
                 context_id=state.context_id,
             )
@@ -784,7 +791,10 @@ class Coordinator:
         # Deduplication: if a session with this Task.id exists, reply with
         # current state (A2A-over-MQTT spec: MUST return existing task state)
         incoming_ctx = req.context_id or ""
-        existing = self._sessions.get(req.task_id)
+        existing_session_id = self._request_task_index.get(req.task_id)
+        existing = (
+            self._sessions.get(existing_session_id) if existing_session_id else None
+        )
         if existing:
             if await self._reject_context_mismatch(
                 existing.context_id,
@@ -800,7 +810,7 @@ class Coordinator:
                 existing, caller_reply_topic, caller_correlation
             )
             return
-        db_session = self._db.get_session(req.task_id)
+        db_session = self._db.get_session_by_request_task_id(req.task_id)
         if db_session:
             if await self._reject_context_mismatch(
                 db_session.context_id,
@@ -888,7 +898,7 @@ class Coordinator:
             return
         event = make_status_event(
             request_id=correlation,
-            task_id=state.session_id,
+            task_id=state.request_task_id,
             state=state.a2a_state,
             context_id=state.context_id,
         )
@@ -912,17 +922,18 @@ class Coordinator:
             return
         reply_state = "working" if db_session.state == "running" else db_session.state
         props = make_properties(correlation_data=correlation)
+        wire_task_id = db_session.request_task_id
 
         # Replay artifact/error content for terminal sessions
         error_msg = ""
         if db_session.state == "completed":
-            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.task_id)
-            results = [t.result for t in tasks if _is_terminal(t.next) and t.result]
+            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.node_id)
+            results = [t.result for t in tasks if t.terminal and t.result]
             artifact_text = "\n\n".join(results) if results else ""
             if artifact_text:
                 artifact = make_artifact_event(
                     request_id=correlation,
-                    task_id=db_session.id,
+                    task_id=wire_task_id,
                     artifact_text=artifact_text,
                     context_id=db_session.context_id,
                 )
@@ -930,13 +941,13 @@ class Coordinator:
                     reply_topic, artifact, qos=1, properties=props
                 )
         elif db_session.state in ("failed", "canceled"):
-            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.task_id)
+            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.node_id)
             errors = [t.error for t in tasks if t.error]
             error_msg = "; ".join(errors) if errors else ""
 
         event = make_status_event(
             request_id=correlation,
-            task_id=db_session.id,
+            task_id=wire_task_id,
             state=reply_state,
             message=error_msg,
             context_id=db_session.context_id,
@@ -1018,6 +1029,7 @@ class Coordinator:
 
             state = SessionState(
                 session_id=db_session.id,
+                request_task_id=db_session.request_task_id,
                 app_version_id=db_session.app_version_id,
                 context_id=db_session.context_id,
                 caller_reply_topic=db_session.caller_reply_topic,
@@ -1029,37 +1041,38 @@ class Coordinator:
 
             for t in tasks:
                 needs = json.loads(t.needs) if t.needs else []
-                state.graph[t.task_id] = SessionTask(
-                    task_id=t.task_id,
+                # dispatch_correlation is not persisted; recovered tasks
+                # skip correlation validation (bounded by 120s timeout)
+                state.graph[t.node_id] = SessionTask(
                     agent=t.agent,
                     description=t.description,
                     needs=needs,
-                    next=t.next,
+                    terminal=bool(t.terminal),
                     target=TaskTarget(agent=t.agent),
-                    request_id=t.request_id,
-                    a2a_task_id=t.a2a_task_id,
+                    dispatch_task_id=t.dispatch_task_id,
                 )
 
                 if t.state == "completed":
-                    state.results[t.task_id] = t.result
+                    state.results[t.node_id] = t.result
                 elif t.state == "failed":
-                    state.failed.add(t.task_id)
+                    state.failed.add(t.node_id)
                 elif t.state == "running" and t.dispatched_at:
-                    state.inflight.add(t.task_id)
+                    state.inflight.add(t.node_id)
                     # Resubscribe to reply topic
                     if t.reply_topic and self._client:
                         if t.reply_topic not in self._reply_subscriptions:
                             await self._client.subscribe(t.reply_topic, qos=1)
                             self._reply_subscriptions.add(t.reply_topic)
                 else:
-                    state.pending.add(t.task_id)
+                    state.pending.add(t.node_id)
 
             self._sessions[state.session_id] = state
+            self._request_task_index[state.request_task_id] = state.session_id
 
             # Dispatch any newly ready tasks
             await self.dispatch_ready(state)
 
-            # Schedule timeout for recovered inflight tasks — if no reply
+            # Schedule timeout for recovered inflight tasks; if no reply
             # arrives within the timeout, the task is assumed lost.
             if state.inflight:
                 for tid in list(state.inflight):
@@ -1076,20 +1089,20 @@ class Coordinator:
             )
 
     async def _timeout_inflight(
-        self, state: SessionState, task_id: str, timeout: float
+        self, state: SessionState, node_id: str, timeout: float
     ) -> None:
         """Fail a recovered inflight task if no reply arrives within timeout."""
         await asyncio.sleep(timeout)
-        if state.session_id in self._sessions and task_id in state.inflight:
+        if state.session_id in self._sessions and node_id in state.inflight:
             log.warning(
-                "Recovered task %s/%s timed out after %.0fs — failing",
+                "Recovered task %s/%s timed out after %.0fs; failing",
                 state.session_id,
-                task_id,
+                node_id,
                 timeout,
             )
             await self._fail_task(
                 state,
-                task_id,
+                node_id,
                 f"Task timed out during recovery (no reply within {timeout:.0f}s)",
             )
 
@@ -1179,7 +1192,11 @@ class Coordinator:
 
                     elif "/reply/" in topic and "/skitter/" in topic:
                         if payload:
-                            await self.handle_reply(topic, payload)
+                            corr_bytes = getattr(
+                                mqtt_msg.properties, "CorrelationData", None
+                            )
+                            corr = corr_bytes.decode() if corr_bytes else ""
+                            await self.handle_reply(topic, payload, corr)
         finally:
             # Tear down per-app connections
             for app_id in list(self._app_tasks):

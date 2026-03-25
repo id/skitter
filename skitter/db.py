@@ -44,6 +44,7 @@ class AppVersion:
 class DBSession:
     id: str
     app_version_id: str
+    request_task_id: str = ""
     context_id: str = ""
     request_json: str = ""
     variables: str = ""
@@ -58,14 +59,13 @@ class DBSession:
 class DBTask:
     id: str
     session_id: str
-    task_id: str
+    node_id: str
     agent: str
     description: str = ""
     needs: str = ""
-    next: str = ""
+    terminal: str = ""
     target_json: str = ""
-    request_id: str = ""
-    a2a_task_id: str = ""
+    dispatch_task_id: str = ""
     reply_topic: str = ""
     dispatched_at: str = ""
     state: str = "pending"
@@ -94,6 +94,9 @@ class DB(Protocol):
 
     def create_session(self, session: DBSession) -> None: ...
     def get_session(self, session_id: str) -> DBSession | None: ...
+    def get_session_by_request_task_id(
+        self, request_task_id: str
+    ) -> DBSession | None: ...
     def list_sessions(self, app_id: str | None = None) -> list[DBSession]: ...
     def update_session_state(self, session_id: str, state: str) -> None: ...
 
@@ -159,6 +162,22 @@ _MIGRATIONS: list[list[str]] = [
     ],
     # v2: contextId support
     ["ALTER TABLE session ADD COLUMN context_id TEXT DEFAULT ''"],
+    # v3: identity model cleanup (Phase 1)
+    [
+        "ALTER TABLE session ADD COLUMN request_task_id TEXT DEFAULT ''",
+        "UPDATE session SET request_task_id = id WHERE request_task_id = ''",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_request_task_id "
+        "ON session(request_task_id)",
+        "ALTER TABLE task RENAME COLUMN task_id TO node_id",
+        "ALTER TABLE task RENAME COLUMN a2a_task_id TO dispatch_task_id",
+    ],
+    # v4: graph model cleanup (Phase 2) — replace next with terminal flag
+    # Old model: next pointed to a downstream task ID, or "output" for terminal tasks.
+    # The validator required next on every task, so empty/NULL means terminal.
+    [
+        "ALTER TABLE task ADD COLUMN terminal TEXT DEFAULT ''",
+        "UPDATE task SET terminal = '1' WHERE next = 'output' OR next = '' OR next IS NULL",
+    ],
 ]
 
 _TASK_UPDATABLE_FIELDS = frozenset(
@@ -166,8 +185,7 @@ _TASK_UPDATABLE_FIELDS = frozenset(
         "state",
         "result",
         "error",
-        "request_id",
-        "a2a_task_id",
+        "dispatch_task_id",
         "reply_topic",
         "dispatched_at",
         "started_at",
@@ -207,6 +225,7 @@ def _row_to_session(row) -> DBSession:
     return DBSession(
         id=row["id"],
         app_version_id=row["app_version_id"],
+        request_task_id=row["request_task_id"] or "",
         context_id=row["context_id"] or "",
         request_json=row["request_json"] or "",
         variables=row["variables"] or "",
@@ -222,14 +241,13 @@ def _row_to_task(row) -> DBTask:
     return DBTask(
         id=row["id"],
         session_id=row["session_id"],
-        task_id=row["task_id"],
+        node_id=row["node_id"],
         agent=row["agent"],
         description=row["description"] or "",
         needs=row["needs"] or "",
-        next=row["next"] or "",
+        terminal=row["terminal"] or "",
         target_json=row["target_json"] or "",
-        request_id=row["request_id"] or "",
-        a2a_task_id=row["a2a_task_id"] or "",
+        dispatch_task_id=row["dispatch_task_id"] or "",
         reply_topic=row["reply_topic"] or "",
         dispatched_at=row["dispatched_at"] or "",
         state=row["state"] or "pending",
@@ -354,12 +372,13 @@ class SqliteDB:
 
     def create_session(self, session: DBSession) -> None:
         self._conn.execute(
-            "INSERT INTO session (id, app_version_id, context_id, request_json, "
-            "variables, caller_reply_topic, caller_correlation, state, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO session (id, app_version_id, request_task_id, context_id, "
+            "request_json, variables, caller_reply_topic, caller_correlation, "
+            "state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.id,
                 session.app_version_id,
+                session.request_task_id,
                 session.context_id,
                 session.request_json,
                 session.variables,
@@ -374,6 +393,12 @@ class SqliteDB:
     def get_session(self, session_id: str) -> DBSession | None:
         row = self._conn.execute(
             "SELECT * FROM session WHERE id = ?", (session_id,)
+        ).fetchone()
+        return _row_to_session(row) if row else None
+
+    def get_session_by_request_task_id(self, request_task_id: str) -> DBSession | None:
+        row = self._conn.execute(
+            "SELECT * FROM session WHERE request_task_id = ?", (request_task_id,)
         ).fetchone()
         return _row_to_session(row) if row else None
 
@@ -407,16 +432,16 @@ class SqliteDB:
 
     def create_task(self, task: DBTask) -> None:
         self._conn.execute(
-            "INSERT INTO task (id, session_id, task_id, agent, description, "
-            "needs, next, target_json, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO task (id, session_id, node_id, agent, description, "
+            "needs, terminal, target_json, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task.id,
                 task.session_id,
-                task.task_id,
+                task.node_id,
                 task.agent,
                 task.description,
                 task.needs,
-                task.next,
+                task.terminal,
                 task.target_json,
                 task.state,
             ),
@@ -573,12 +598,13 @@ class PostgresDB:
 
     def create_session(self, session: DBSession) -> None:
         self._exec(
-            "INSERT INTO session (id, app_version_id, context_id, request_json, "
-            "variables, caller_reply_topic, caller_correlation, state, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO session (id, app_version_id, request_task_id, context_id, "
+            "request_json, variables, caller_reply_topic, caller_correlation, "
+            "state, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 session.id,
                 session.app_version_id,
+                session.request_task_id,
                 session.context_id,
                 session.request_json,
                 session.variables,
@@ -591,6 +617,12 @@ class PostgresDB:
 
     def get_session(self, session_id: str) -> DBSession | None:
         row = self._fetchone("SELECT * FROM session WHERE id = %s", (session_id,))
+        return _row_to_session(row) if row else None
+
+    def get_session_by_request_task_id(self, request_task_id: str) -> DBSession | None:
+        row = self._fetchone(
+            "SELECT * FROM session WHERE request_task_id = %s", (request_task_id,)
+        )
         return _row_to_session(row) if row else None
 
     def list_sessions(self, app_id: str | None = None) -> list[DBSession]:
@@ -620,16 +652,16 @@ class PostgresDB:
 
     def create_task(self, task: DBTask) -> None:
         self._exec(
-            "INSERT INTO task (id, session_id, task_id, agent, description, "
-            "needs, next, target_json, state) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO task (id, session_id, node_id, agent, description, "
+            "needs, terminal, target_json, state) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 task.id,
                 task.session_id,
-                task.task_id,
+                task.node_id,
                 task.agent,
                 task.description,
                 task.needs,
-                task.next,
+                task.terminal,
                 task.target_json,
                 task.state,
             ),

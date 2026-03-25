@@ -40,7 +40,7 @@ Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. 
 - **Namespace separation.** `$a2a/v1/...` for client-facing A2A protocol (request, reply, discovery, events).
 - **Native sub-agents.** Agent identity owned by the external runtime (Claude Code or Codex). Skitter reads metadata from native definition files (`~/.claude/agents/*.md`, `~/.codex/agents/*.toml`) but the files are resolved and executed by the respective CLI tools. No separate skitter agent config.
 - **Independent agents.** Agents are any A2A-over-MQTT compliant process. The coordinator doesn't spawn or manage them.
-- **A2A protocol compliance.** All protocol-facing code must conform to [A2A v1.0.0](https://github.com/a2aproject/A2A/blob/main/specification/a2a.proto) and the [A2A-over-MQTT v0.1 binding](https://github.com/emqx/mqtt-for-ai/blob/main/a2a-over-mqtt/specification/0.1/basic/mqtt_transport.md). Use `/a2a-compliance` to validate after protocol changes.
+- **A2A protocol compliance.** All protocol-facing code must conform to A2A v1.0.0 and the A2A-over-MQTT v0.1 binding. Local copies of the specs live in `docs/spec/`. Use `/a2a-compliance` to validate after protocol changes.
 
 ## Writing Style
 

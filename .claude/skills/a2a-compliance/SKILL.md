@@ -1,20 +1,21 @@
 ---
 name: a2a-compliance
 description: Validate A2A and A2A-over-MQTT protocol compliance. Use after changing protocol-facing code.
-allowed-tools: Read, Grep, Glob, WebFetch, WebSearch
+allowed-tools: Read, Grep, Glob
 ---
 
 # A2A Protocol Compliance Check
 
 Validate that skitter's protocol layer conforms to the A2A v1.0.0 spec and the A2A-over-MQTT v0.1 binding.
 
-## Authoritative Sources
+## Authoritative Sources (local)
 
-- **A2A proto** (data structures): https://github.com/a2aproject/A2A/blob/main/specification/a2a.proto
-- **A2A spec** (JSON serialization rules, examples): https://github.com/a2aproject/A2A/blob/main/docs/specification.md
-- **A2A-over-MQTT spec** (MQTT transport binding): https://github.com/emqx/mqtt-for-ai/blob/main/a2a-over-mqtt/specification/0.1/basic/mqtt_transport.md
+Read all four files before checking:
 
-Fetch all three specs via `WebFetch` (raw GitHub URLs) before checking. Do not rely on memory; the specs evolve.
+- **A2A proto** (data structures): `docs/spec/a2a.proto`
+- **A2A spec** (JSON serialization rules, examples): `docs/spec/a2a-specification.md`
+- **A2A-over-MQTT transport** (MQTT transport binding): `docs/spec/a2a-over-mqtt-transport.md`
+- **A2A-over-MQTT architecture** (design rationale): `docs/spec/a2a-over-mqtt-architecture.md`
 
 ## Procedure
 

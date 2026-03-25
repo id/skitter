@@ -19,7 +19,7 @@ skitter/
   __main__.py      CLI dispatch
 ```
 
-Key docs: `docs/architecture.md` (detailed design), `docs/fly-deployment.md` (cloud setup).
+Key docs: `docs/architecture.md` (detailed design), `docs/spec/` (A2A and A2A-over-MQTT specs).
 
 ## Development Setup
 
@@ -92,11 +92,9 @@ llm:
 | `SKITTER_MAX_ATTEMPTS` | `3` | Max send attempts (1 initial + retries) |
 | `SKITTER_AGENT_MAX_CONCURRENT` | `4` | Max concurrent requests per agent runner |
 
-For cloud deployment, see `.env.cloud.example` and `docs/fly-deployment.md`.
-
 ## Topic Scheme
 
-All topics use the `$a2a` namespace following the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
+All topics use the `$a2a` namespace following the A2A-over-MQTT scheme (see `docs/spec/a2a-over-mqtt-transport.md`).
 
 ### A2A topics
 

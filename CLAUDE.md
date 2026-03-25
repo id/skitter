@@ -26,13 +26,16 @@ MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT brok
 | Doc | Content |
 |---|---|
 | `docs/architecture.md` | Design principles, topic scheme, execution flows, recovery model |
-| `docs/fly-deployment.md` | EMQX Serverless + Fly.io setup guide (always-on coordinator, deploy, testing) |
+| `docs/spec/a2a.proto` | A2A v1.0.0 proto (canonical schema) |
+| `docs/spec/a2a-specification.md` | A2A v1.0.0 spec (JSON serialization rules, examples) |
+| `docs/spec/a2a-over-mqtt-transport.md` | A2A-over-MQTT v0.1 transport binding |
+| `docs/spec/a2a-over-mqtt-architecture.md` | A2A-over-MQTT design rationale |
 | `CONTRIBUTING.md` | Project structure, config reference, env vars, testing, lint |
-| `README.md` | User-facing quickstart, deploy, how-it-works |
+| `README.md` | User-facing quickstart, how-it-works |
 
 ## Architecture in One Paragraph
 
-Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. Any A2A-over-MQTT compliant agent can handle requests; skitter ships an agent-runner as a convenience for wrapping CLI tools, but it's not required. For composed apps, the coordinator subscribes to the app's request topic, creates a DB-backed session, and dispatches A2A requests to individual agents. The coordinator only sends A2A requests and collects replies and doesn't care how agents are implemented. Locally: agents + Docker EMQX. On Fly: always-on coordinator + EMQX Serverless + independent agent machines.
+Clients publish JSON-RPC requests to `$a2a/v1/request/{org}/{unit}/{agent_id}`. Any A2A-over-MQTT compliant agent can handle requests; skitter ships an agent-runner as a convenience for wrapping CLI tools, but it's not required. For composed apps, the coordinator subscribes to the app's request topic, creates a DB-backed session, and dispatches A2A requests to individual agents. The coordinator only sends A2A requests and collects replies and doesn't care how agents are implemented. Locally: agents + Docker EMQX.
 
 ## Key Concepts
 

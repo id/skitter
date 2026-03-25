@@ -144,7 +144,7 @@ Any MQTT v5 Client          MQTT Broker           A2A Agents
 
 **Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests following the dependency graph, and returns the final result to the caller.
 
-Topics follow the [A2A-over-MQTT](https://www.emqx.com/mqtt-for-ai/a2a-over-mqtt/) scheme.
+Topics follow the [A2A-over-MQTT](docs/spec/a2a-over-mqtt-transport.md) scheme.
 
 ## Agent Runner
 
@@ -218,7 +218,7 @@ Instead of a monolithic orchestrator, skitter pushes routing and fan-out into th
 - **Zero-code integrations.** Connect Telegram, Slack, or anything else with a ~100-line bridge that publishes requests and subscribes to replies.
 - **Run agents anywhere.** Local processes, Docker containers, or cloud machines. As long as they reach the broker, they work.
 - **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client to watch every request, result, and event in real time.
-- **Cheap cloud deploy.** Always-on coordinator on Fly.io, agents billed per second.
+
 
 ## Testing
 

@@ -14,7 +14,9 @@ log = logging.getLogger("skitter.llm")
 
 def _resolve_model(override: str = "") -> str:
     """Return the LLM model name from override, config, or env. Raises if unset."""
-    model = override or load_llm_config().model or os.environ.get("SKITTER_LLM_MODEL", "")
+    model = (
+        override or load_llm_config().model or os.environ.get("SKITTER_LLM_MODEL", "")
+    )
     if not model:
         raise ValueError(
             "No LLM model configured. Set llm.model in ~/.skitter/config.yaml "

@@ -56,7 +56,12 @@ _cli_handlers: dict[str, object] = {}
 async def _dispatching_run_cli(agent, prompt, publish_stream, env):
     handler = _cli_handlers.get(agent.id)
     if handler:
-        return await handler(agent, prompt, publish_stream, env)
+        import inspect
+
+        result = handler(agent, prompt, publish_stream, env)
+        if inspect.isawaitable(result):
+            return await result
+        return result
     return f"Response from {agent.id}"
 
 
@@ -174,7 +179,7 @@ class TestAgentRunner:
         card = await wait_for_discovery(aid)
         assert card["supportedInterfaces"][0]["protocolVersion"] == "1.0.0"
         assert card["capabilities"]["streaming"] is True
-        assert card["skills"][0]["id"] == aid
+        assert card["skills"][0]["id"] == "default"
         assert "tags" in card["skills"][0]
 
     async def test_direct_query(self, start_agent):
@@ -732,7 +737,7 @@ class TestCorrelationData:
         # Subscribe to the coordinator's internal reply topic to inspect correlation
         # The coordinator subscribes to $a2a/v1/reply/{org}/{unit}/skitter/{sid}/{nid}
         # but we don't know the session_id yet. Subscribe with wildcard.
-        spy_topic = "$a2a/v1/reply/skitter/default/skitter/#"
+        spy_topic = f"$a2a/v1/reply/{A2A_ORG}/{A2A_UNIT}/skitter/#"
 
         test_id = uuid.uuid4().hex[:8]
         reply_t = topic_reply("test", test_id)
@@ -765,7 +770,7 @@ class TestCorrelationData:
                         continue
 
                     # Capture correlation from agent replies to coordinator
-                    if "/reply/skitter/default/skitter/" in topic:
+                    if f"/reply/{A2A_ORG}/{A2A_UNIT}/skitter/" in topic:
                         corr_bytes = getattr(msg.properties, "CorrelationData", None)
                         if corr_bytes:
                             correlation_on_replies.append(corr_bytes.decode())

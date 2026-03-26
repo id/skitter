@@ -372,6 +372,15 @@
 
     // ── Discovery ──────────────────────────────────────────
 
+    function getWorkflowTasks(card) {
+      for (const ext of (card.capabilities || {}).extensions || []) {
+        if (ext.uri === 'urn:skitter:workflow' && ext.params && ext.params.tasks && ext.params.tasks.length) {
+          return ext.params.tasks;
+        }
+      }
+      return null;
+    }
+
     function handleDiscovery(agentId, raw) {
       if (agentId === 'skitter') return; // skip coordinator card
       if (!raw) {
@@ -382,7 +391,7 @@
       }
       try {
         const card = JSON.parse(raw);
-        if (card.metadata && card.metadata.tasks) {
+        if (getWorkflowTasks(card)) {
           S.apps.set(agentId, card);
         } else {
           const existing = S.agents.get(agentId);
@@ -611,7 +620,7 @@
       }
       let h = '';
       for (const [id, card] of S.apps) {
-        const tasks = (card.metadata && card.metadata.tasks) || [];
+        const tasks = getWorkflowTasks(card) || [];
         const desc = card.description || '';
         h += `<div class="side-item" onclick="this.classList.toggle('expanded')">
           <div class="side-item-name">${esc(card.name || id)}</div>

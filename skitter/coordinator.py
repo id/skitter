@@ -1166,6 +1166,16 @@ class Coordinator:
                     retain=True,
                 )
 
+                # Best-effort LLM connectivity check; warn but don't block
+                # (only create-app needs the LLM, not runtime queries or recovery)
+                try:
+                    from skitter.llm import check as llm_check
+
+                    async with asyncio.timeout(10):
+                        await llm_check()
+                except Exception as exc:
+                    log.warning("LLM check failed (create-app will not work): %s", exc)
+
                 # Recover apps (subscribe + republish cards) and inflight sessions
                 await self.recover()
                 log.info("Coordinator ready (lock=%s)", instance_id)

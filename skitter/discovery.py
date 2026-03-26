@@ -46,7 +46,7 @@ def build_card(
         else ["text/plain"],
         "skills": [
             {
-                "id": agent.id,
+                "id": "default",
                 "name": agent.name,
                 "description": agent.description,
                 "tags": tags,

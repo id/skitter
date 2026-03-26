@@ -1694,7 +1694,7 @@ class TestBuildCard:
         assert card["capabilities"]["pushNotifications"] is False
         assert card["defaultInputModes"] == ["text/plain"]
         assert card["defaultOutputModes"] == ["text/plain"]
-        assert card["skills"][0]["id"] == "researcher"
+        assert card["skills"][0]["id"] == "default"
         assert card["skills"][0]["tags"] == ["researcher"]
         assert "metadata" not in card
 
@@ -2518,18 +2518,20 @@ class TestGraphValidation:
 
 class TestGraphGeneration:
     def _make_cards(self):
-        return [
-            {
+        # Agent IDs intentionally differ from skill IDs to catch code
+        # that confuses the two (the bug that motivated this change).
+        return {
+            "agent-reader-001": {
                 "name": "Reader",
                 "description": "Reads sensor data",
-                "skills": [{"id": "reader", "name": "Reader"}],
+                "skills": [{"id": "read-skill", "name": "Reader"}],
             },
-            {
+            "agent-analyzer-002": {
                 "name": "Analyzer",
                 "description": "Analyzes data",
-                "skills": [{"id": "analyzer", "name": "Analyzer"}],
+                "skills": [{"id": "analyze-skill", "name": "Analyzer"}],
             },
-        ]
+        }
 
     @pytest.mark.asyncio
     async def test_generate_valid_graph(self):
@@ -2542,13 +2544,13 @@ class TestGraphGeneration:
                 "tasks": [
                     {
                         "id": "read",
-                        "agent": "reader",
+                        "agent": "agent-reader-001",
                         "description": "Read sensor data",
                         "needs": [],
                     },
                     {
                         "id": "analyze",
-                        "agent": "analyzer",
+                        "agent": "agent-analyzer-002",
                         "description": "Analyze the data",
                         "needs": ["read"],
                         "terminal": True,
@@ -2564,7 +2566,7 @@ class TestGraphGeneration:
             )
 
         assert len(graph["tasks"]) == 2
-        assert graph["tasks"][0]["agent"] == "reader"
+        assert graph["tasks"][0]["agent"] == "agent-reader-001"
 
     @pytest.mark.asyncio
     async def test_generate_strips_markdown_fences(self):
@@ -2572,7 +2574,7 @@ class TestGraphGeneration:
 
         from skitter.graph_gen import generate_graph
 
-        fenced = '```json\n{"tasks": [{"id": "t1", "agent": "reader", "description": "do it", "needs": [], "terminal": true}]}\n```'
+        fenced = '```json\n{"tasks": [{"id": "t1", "agent": "agent-reader-001", "description": "do it", "needs": [], "terminal": true}]}\n```'
 
         with patch("skitter.graph_gen.complete", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = fenced
@@ -2603,7 +2605,7 @@ class TestGraphGeneration:
                 "tasks": [
                     {
                         "id": "t1",
-                        "agent": "reader",
+                        "agent": "agent-reader-001",
                         "description": "Read",
                         "needs": [],
                         "terminal": True,
@@ -2617,7 +2619,7 @@ class TestGraphGeneration:
             graph = await generate_graph("Read", self._make_cards(), model="test")
 
         assert mock_llm.call_count == 2
-        assert graph["tasks"][0]["agent"] == "reader"
+        assert graph["tasks"][0]["agent"] == "agent-reader-001"
 
     @pytest.mark.asyncio
     async def test_generate_fails_after_retries(self):
@@ -2846,11 +2848,11 @@ class TestRuntimeApi:
         assert isinstance(result, ErrorResult)
 
     def test_runtime_card(self):
-        from skitter.runtime_api import AGENT_ID, runtime_card
+        from skitter.runtime_api import runtime_card
 
         card = runtime_card()
         assert card["name"] == "Skitter Runtime"
-        assert card["skills"][0]["id"] == AGENT_ID
+        assert card["skills"][0]["id"] == "default"
 
     @pytest.mark.asyncio
     async def test_create_app(self):

@@ -1625,7 +1625,12 @@ class TestAppCreation:
         assert app.card_json != ""
         card = json.loads(card_json)
         assert card["name"] == "Test App"
-        assert len(card["metadata"]["tasks"]) == 1
+        wf = next(
+            e
+            for e in card["capabilities"]["extensions"]
+            if e["uri"] == "urn:skitter:workflow"
+        )
+        assert len(wf["params"]["tasks"]) == 1
 
     def test_provided_app_id(self):
         from skitter.runtime_api import create_app
@@ -1678,8 +1683,8 @@ class TestBuildCard:
         assert card["name"] == "Researcher"
         assert card["description"] == "Deep research with citations"
         assert card["version"] == "0.1.0"
-        assert "url" in card
-        # supportedInterfaces replaces top-level url/protocolVersion per A2A v1.0.0
+        assert "url" not in card
+        # URL only lives inside supportedInterfaces per registry schema
         ifaces = card["supportedInterfaces"]
         assert len(ifaces) == 1
         assert ifaces[0]["protocolVersion"] == "1.0.0"
@@ -1708,8 +1713,8 @@ class TestBuildCard:
         assert card["capabilities"]["pushNotifications"] is False
         assert card["defaultInputModes"] == ["text/plain", "application/json"]
 
-    def test_composed_app_card_has_metadata_tasks(self):
-        from skitter.discovery import build_card
+    def test_composed_app_card_has_workflow_extension(self):
+        from skitter.discovery import WORKFLOW_EXTENSION_URI, build_card
 
         agent = AgentDef(id="my-app", name="My App", description="A composed app")
         metadata = {
@@ -1723,17 +1728,19 @@ class TestBuildCard:
             ],
         }
         card = build_card(agent, metadata=metadata)
-        assert "metadata" in card
-        assert card["metadata"]["variables"] == ["topic"]
-        assert len(card["metadata"]["tasks"]) == 1
-        assert card["metadata"]["tasks"][0]["id"] == "step1"
+        assert "metadata" not in card
+        exts = card["capabilities"]["extensions"]
+        wf = next(e for e in exts if e["uri"] == WORKFLOW_EXTENSION_URI)
+        assert wf["params"]["variables"] == ["topic"]
+        assert len(wf["params"]["tasks"]) == 1
+        assert wf["params"]["tasks"][0]["id"] == "step1"
 
     def test_card_has_url(self):
         from skitter.discovery import build_card
 
         agent = AgentDef(id="test", name="Test")
         card = build_card(agent, url="mqtt://custom:1883")
-        assert card["url"] == "mqtt://custom:1883"
+        assert "url" not in card
         assert card["supportedInterfaces"][0]["url"] == "mqtt://custom:1883"
 
     def test_card_skills_have_tags(self):
@@ -1768,8 +1775,20 @@ class TestParseCard:
         from skitter.discovery import is_workflow_card
 
         assert not is_workflow_card({"name": "Agent"})
-        assert not is_workflow_card({"name": "Agent", "metadata": {}})
-        assert is_workflow_card({"metadata": {"tasks": [{"id": "step1"}]}})
+        assert not is_workflow_card({"capabilities": {}})
+        assert not is_workflow_card({"capabilities": {"extensions": []}})
+        assert is_workflow_card(
+            {
+                "capabilities": {
+                    "extensions": [
+                        {
+                            "uri": "urn:skitter:workflow",
+                            "params": {"tasks": [{"id": "step1"}]},
+                        }
+                    ]
+                }
+            }
+        )
 
 
 class TestDiscoveryWildcard:
@@ -1977,14 +1996,26 @@ class TestPullCards:
             {
                 "_agent_id": "pipeline",
                 "name": "Pipeline",
-                "metadata": {"tasks": [{"id": "t1"}]},
+                "capabilities": {
+                    "extensions": [
+                        {
+                            "uri": "urn:skitter:workflow",
+                            "params": {"tasks": [{"id": "t1"}]},
+                        }
+                    ]
+                },
             }
         ]
         written = save_cards(cards, tmp_path)
         assert len(written) == 1
         data = json.loads((tmp_path / "pipeline.json").read_text())
         assert data["name"] == "Pipeline"
-        assert data["metadata"]["tasks"] == [{"id": "t1"}]
+        wf = next(
+            e
+            for e in data["capabilities"]["extensions"]
+            if e["uri"] == "urn:skitter:workflow"
+        )
+        assert wf["params"]["tasks"] == [{"id": "t1"}]
 
     def test_skip_existing_file(self, tmp_path):
         from skitter.pull import save_cards
@@ -2125,7 +2156,20 @@ class TestDiscoveryRegistry:
 
         reg = DiscoveryRegistry()
         reg.update("agent1", {"name": "Agent1"})
-        reg.update("app1", {"name": "App1", "metadata": {"tasks": [{"id": "t1"}]}})
+        reg.update(
+            "app1",
+            {
+                "name": "App1",
+                "capabilities": {
+                    "extensions": [
+                        {
+                            "uri": "urn:skitter:workflow",
+                            "params": {"tasks": [{"id": "t1"}]},
+                        }
+                    ]
+                },
+            },
+        )
         assert "agent1" in reg.list_agents()
         assert "app1" not in reg.list_agents()
         assert "app1" in reg.list_apps()

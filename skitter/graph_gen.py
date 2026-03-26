@@ -38,12 +38,10 @@ Rules:
 """
 
 
-def _build_prompt(instructions: str, agent_cards: list[dict]) -> str:
+def _build_prompt(instructions: str, agent_cards: dict[str, dict]) -> str:
     """Build the user prompt from instructions and agent cards."""
     agents_desc = []
-    for card in agent_cards:
-        skills = card.get("skills", [])
-        agent_id = skills[0].get("id", "unknown") if skills else "unknown"
+    for agent_id, card in agent_cards.items():
         name = card.get("name", "")
         desc = card.get("description", "")
         agents_desc.append(f"- **{agent_id}** ({name}): {desc}")
@@ -128,7 +126,7 @@ def validate_graph(graph: dict, valid_agent_ids: set[str]) -> None:
 
 async def generate_graph(
     instructions: str,
-    agent_cards: list[dict],
+    agent_cards: dict[str, dict],
     *,
     model: str = "",
 ) -> dict:
@@ -136,12 +134,7 @@ async def generate_graph(
 
     Validates the result and retries once on validation failure.
     """
-    valid_ids = set()
-    for card in agent_cards:
-        skills = card.get("skills", [])
-        if skills:
-            valid_ids.add(skills[0].get("id", ""))
-    valid_ids.discard("")
+    valid_ids = set(agent_cards.keys())
 
     prompt = _build_prompt(instructions, agent_cards)
 

@@ -343,12 +343,12 @@ async def _handle_create_app(
     # NOTE: registry presence doesn't guarantee the agent is online;
     # discovery cards are retained on the broker after disconnect.
     # Online/offline status is tracked broker-side via LWT.
-    cards = []
+    cards: dict[str, dict] = {}
     missing = []
     for aid in agent_ids:
         card = registry.get(aid)
         if card:
-            cards.append(card)
+            cards[aid] = card
         else:
             missing.append(aid)
 
@@ -370,7 +370,7 @@ async def _handle_create_app(
         app_id=app_id,
         name=name,
         description=description,
-        source_cards=cards,
+        source_cards=list(cards.values()),
         instructions=instructions,
         graph=graph,
     )

@@ -40,17 +40,46 @@ def mqtt_client_kwargs(**overrides) -> dict:
 # --- MQTT v5 property helpers ---
 
 
-def make_properties(
+def _build_properties(
+    packet_type: int,
+    *,
     response_topic: str | None = None,
     correlation_data: str | None = None,
+    user_properties: list[tuple[str, str]] | None = None,
 ) -> Properties:
-    """Build MQTT v5 PUBLISH properties with Response Topic and/or Correlation Data."""
-    props = Properties(PacketTypes.PUBLISH)
+    """Build MQTT v5 properties for any packet type.
+
+    Note: response_topic and correlation_data are only valid for PUBLISH packets.
+    """
+    props = Properties(packet_type)
     if response_topic:
         props.ResponseTopic = response_topic
     if correlation_data:
         props.CorrelationData = correlation_data.encode("utf-8")
+    if user_properties:
+        props.UserProperty = user_properties
     return props
+
+
+def make_properties(
+    response_topic: str | None = None,
+    correlation_data: str | None = None,
+    user_properties: list[tuple[str, str]] | None = None,
+) -> Properties:
+    """Build MQTT v5 PUBLISH properties."""
+    return _build_properties(
+        PacketTypes.PUBLISH,
+        response_topic=response_topic,
+        correlation_data=correlation_data,
+        user_properties=user_properties,
+    )
+
+
+def make_will_properties(
+    user_properties: list[tuple[str, str]] | None = None,
+) -> Properties:
+    """Build MQTT v5 WILL properties (WILLMESSAGE packet type)."""
+    return _build_properties(PacketTypes.WILLMESSAGE, user_properties=user_properties)
 
 
 def get_correlation_data(msg) -> str | None:
@@ -70,3 +99,17 @@ def get_response_topic(msg) -> str | None:
     if props is None:
         return None
     return getattr(props, "ResponseTopic", None)
+
+
+def get_user_property(msg, key: str) -> str | None:
+    """Extract a single User Property value by key from an aiomqtt message."""
+    props = getattr(msg, "properties", None)
+    if props is None:
+        return None
+    user_props = getattr(props, "UserProperty", None)
+    if not user_props:
+        return None
+    for k, v in user_props:
+        if k == key:
+            return v
+    return None

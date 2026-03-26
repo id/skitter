@@ -15,7 +15,6 @@ import logging
 import os
 import sys
 import tomllib
-from datetime import datetime, timezone
 from pathlib import Path
 
 import aiomqtt
@@ -32,12 +31,11 @@ from skitter.a2a import (
     make_a2a_error,
     make_artifact_event,
     make_status_event,
-    topic_a2a_event,
     topic_discovery,
     topic_request,
     validate_a2a_request,
 )
-from skitter.mqtt import make_properties, mqtt_client_kwargs
+from skitter.mqtt import make_properties, make_will_properties, mqtt_client_kwargs
 
 
 def agent_env() -> dict[str, str]:
@@ -340,17 +338,24 @@ async def run_with_def(agent: AgentDef) -> None:
     env = agent_env()
     card = build_card(agent)
     card_json = json.dumps(card)
+    discovery_topic = topic_discovery(agent.id)
 
-    # LWT: broker publishes this on unexpected disconnect
-    lwt_topic = topic_a2a_event(agent.id)
-    lwt_payload = json.dumps(
-        {
-            "event": "dead",
-            "agent": agent.id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+    lwt_props = make_will_properties(
+        user_properties=[("a2a-status", "offline"), ("a2a-status-source", "lwt")],
     )
-    will = aiomqtt.Will(topic=lwt_topic, payload=lwt_payload, qos=1)
+    will = aiomqtt.Will(
+        topic=discovery_topic,
+        payload=card_json,
+        qos=1,
+        retain=True,
+        properties=lwt_props,
+    )
+    online_props = make_properties(
+        user_properties=[("a2a-status", "online"), ("a2a-status-source", "agent")],
+    )
+    offline_props = make_properties(
+        user_properties=[("a2a-status", "offline"), ("a2a-status-source", "agent")],
+    )
 
     request_topic = topic_request(agent.id)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
@@ -360,20 +365,24 @@ async def run_with_def(agent: AgentDef) -> None:
     ] = {}  # task_id → (timestamp, state, result)
     task_context: dict[str, str] = {}  # task_id → context_id
 
-    try:
-        async with aiomqtt.Client(
-            **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent.id}",
-                will=will,
-            ),
-        ) as client:
+    started = False
+
+    async with aiomqtt.Client(
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/{agent.id}",
+            will=will,
+        ),
+    ) as client:
+        try:
             await client.subscribe(request_topic, qos=1)
             await client.publish(
-                topic_discovery(agent.id),
+                discovery_topic,
                 card_json,
                 qos=1,
                 retain=True,
+                properties=online_props,
             )
+            started = True
             log.info("Listening on %s", request_topic)
 
             async for mqtt_msg in client.messages:
@@ -395,7 +404,6 @@ async def run_with_def(agent: AgentDef) -> None:
                         log.info("Canceling task %s", cancel_id)
                     continue
 
-                # message/send: validate MQTT v5 properties + Task.id
                 validated = await validate_a2a_request(mqtt_msg, client, log=log)
                 if not validated:
                     continue
@@ -419,7 +427,7 @@ async def run_with_def(agent: AgentDef) -> None:
                     dedup_result = None
 
                 if dedup_state:
-                    # Reject context_id mismatch per A2A-over-MQTT spec
+                    # Reject context_id mismatch per A2A-over-MQTT spec (-32602)
                     stored_ctx = task_context.get(req.task_id, "")
                     incoming_ctx = req.context_id or ""
                     if stored_ctx and incoming_ctx and incoming_ctx != stored_ctx:
@@ -451,8 +459,7 @@ async def run_with_def(agent: AgentDef) -> None:
                     )
                     ctx = req.context_id or ""
                     props = make_properties(correlation_data=correlation)
-                    # Replay artifact for completed tasks so retrying requesters
-                    # can recover the original output
+                    # Replay artifact so retrying requesters recover the original output
                     if dedup_result:
                         artifact = make_artifact_event(
                             request_id=correlation,
@@ -495,13 +502,24 @@ async def run_with_def(agent: AgentDef) -> None:
                 )
                 task_registry[req.task_id] = task
                 task.add_done_callback(_on_done)
-    finally:
-        # Cancel inflight tasks on shutdown
-        tasks = list(task_registry.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            tasks = list(task_registry.values())
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            if started:
+                try:
+                    await client.publish(
+                        discovery_topic,
+                        card_json,
+                        qos=1,
+                        retain=True,
+                        properties=offline_props,
+                    )
+                except Exception:
+                    log.debug("Failed to publish offline status", exc_info=True)
 
 
 def main() -> None:

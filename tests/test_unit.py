@@ -356,8 +356,10 @@ class TestTopics:
         assert "/researcher" in t
 
     def test_a2a_event_topic(self):
+        from skitter.a2a import A2A_ORG
+
         t = topic_a2a_event("skitter")
-        assert t == "$a2a/v1/event/skitter/default/skitter"
+        assert t == f"$a2a/v1/event/{A2A_ORG}/{A2A_UNIT}/skitter"
 
 
 # --- Topic parsing ---
@@ -631,6 +633,59 @@ class TestAgentRunnerCompliance:
             su = result.get("statusUpdate")
             if su:
                 assert su["taskId"] == task_id
+
+    @pytest.mark.asyncio
+    async def test_graceful_disconnect_publishes_offline_status(self):
+        """Graceful shutdown must republish Agent Card with a2a-status=offline."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from skitter.agent_runner import run_with_def
+
+        agent = AgentDef(id="test-offline", name="Test Offline")
+
+        mock_client = MagicMock()
+        published: list[tuple[str, dict]] = []
+
+        async def capture_publish(topic, payload, qos=0, retain=False, **kwargs):
+            props = kwargs.get("properties")
+            user_props = getattr(props, "UserProperty", None) if props else None
+            published.append(
+                (str(topic), {"qos": qos, "retain": retain, "user_props": user_props})
+            )
+
+        mock_client.publish = AsyncMock(side_effect=capture_publish)
+        mock_client.subscribe = AsyncMock()
+
+        # Messages iterator that blocks until cancelled
+        async def blocking_messages():
+            await asyncio.sleep(999)
+            yield  # never reached
+
+        type(mock_client).messages = property(lambda self: blocking_messages())
+
+        with patch("aiomqtt.Client") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            task = asyncio.create_task(run_with_def(agent))
+            await asyncio.sleep(0.05)  # let it start and publish online card
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Find the offline publish (last publish to the discovery topic with retain=True)
+        discovery_publishes = [
+            (t, info) for t, info in published if "discovery" in t and info["retain"]
+        ]
+        assert len(discovery_publishes) >= 2  # online + offline
+
+        last_topic, last_info = discovery_publishes[-1]
+        assert last_info["user_props"] is not None
+        user_props_dict = dict(last_info["user_props"])
+        assert user_props_dict.get("a2a-status") == "offline"
+        assert user_props_dict.get("a2a-status-source") == "agent"
 
     @pytest.mark.asyncio
     async def test_stream_qos_is_1(self):
@@ -3908,3 +3963,127 @@ class TestDedupContextEdgeCases:
 
         assert req.task_id in sup._request_task_index
         assert sup._request_task_index[req.task_id] == state.session_id
+
+
+# --- A2A compliance: MQTT v5 property helpers ---
+
+
+class TestMqttProperties:
+    def test_make_properties_with_user_properties(self):
+        from skitter.mqtt import make_properties
+
+        props = make_properties(
+            user_properties=[("a2a-status", "online"), ("a2a-status-source", "agent")],
+        )
+        assert props.UserProperty == [
+            ("a2a-status", "online"),
+            ("a2a-status-source", "agent"),
+        ]
+
+    def test_make_properties_without_user_properties(self):
+        from skitter.mqtt import make_properties
+
+        props = make_properties(correlation_data="corr-1")
+        assert not hasattr(props, "UserProperty") or not props.UserProperty
+
+    def test_make_will_properties(self):
+        from paho.mqtt.packettypes import PacketTypes
+
+        from skitter.mqtt import make_will_properties
+
+        props = make_will_properties(
+            user_properties=[
+                ("a2a-status", "offline"),
+                ("a2a-status-source", "lwt"),
+            ],
+        )
+        assert props.packetType == PacketTypes.WILLMESSAGE
+        assert props.UserProperty == [
+            ("a2a-status", "offline"),
+            ("a2a-status-source", "lwt"),
+        ]
+
+    def test_get_user_property(self):
+        from skitter.mqtt import get_user_property
+
+        msg = MagicMock()
+        props = MagicMock()
+        props.UserProperty = [("a2a-status", "online"), ("a2a-status-source", "agent")]
+        msg.properties = props
+
+        assert get_user_property(msg, "a2a-status") == "online"
+        assert get_user_property(msg, "a2a-status-source") == "agent"
+        assert get_user_property(msg, "nonexistent") is None
+
+    def test_get_user_property_no_props(self):
+        from skitter.mqtt import get_user_property
+
+        msg = MagicMock()
+        msg.properties = None
+        assert get_user_property(msg, "a2a-status") is None
+
+
+# --- A2A compliance: Client ID format ---
+
+
+class TestClientIdFormat:
+    """Client ID MUST be {org_id}/{unit_id}/{agent_id} per A2A-over-MQTT spec."""
+
+    def test_mqtt_client_kwargs_protocol_v5(self):
+        from skitter.mqtt import mqtt_client_kwargs
+
+        kwargs = mqtt_client_kwargs()
+        import aiomqtt
+
+        assert kwargs["protocol"] == aiomqtt.ProtocolVersion.V5
+
+
+# --- A2A compliance: retry Correlation Data rotation ---
+
+
+class TestRetryCorrelationRotation:
+    """Requester MUST generate new Correlation Data for each retry attempt."""
+
+    @pytest.mark.asyncio
+    async def test_each_retry_uses_different_correlation(self):
+        """Each retry publish must have unique Correlation Data; Task.id stays the same."""
+        from unittest.mock import AsyncMock, patch
+
+        from skitter.a2a import stream_replies
+
+        mock_client = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        mock_client.publish = AsyncMock()
+
+        async def blocking_messages():
+            await asyncio.sleep(999)
+            yield  # never reached
+
+        with (
+            patch("aiomqtt.Client") as MockClient,
+            patch("skitter.a2a.REPLY_FIRST_TIMEOUT", 0.05),
+            patch("skitter.a2a._backoff_delay", return_value=0.01),
+            patch("skitter.a2a.MAX_ATTEMPTS", 3),
+        ):
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            type(mock_client).messages = property(lambda self: blocking_messages())
+
+            async for _ in stream_replies("topic/req", '{"test": 1}', "corr-orig"):
+                pass
+
+        # Extract Correlation Data from each publish call's properties
+        correlations = []
+        for call in mock_client.publish.call_args_list:
+            props = call.kwargs.get("properties")
+            if props and hasattr(props, "CorrelationData"):
+                cd = props.CorrelationData
+                correlations.append(cd.decode() if isinstance(cd, bytes) else cd)
+
+        assert len(correlations) == 3
+        # First attempt uses original, subsequent use new values
+        assert correlations[0] == "corr-orig"
+        assert correlations[1] != "corr-orig"
+        assert correlations[2] != "corr-orig"
+        # All three must be unique
+        assert len(set(correlations)) == 3

@@ -182,6 +182,30 @@ class TestAgentRunner:
         assert card["skills"][0]["id"] == "default"
         assert "tags" in card["skills"][0]
 
+    async def test_discovery_card_has_a2a_status_online(self, start_agent):
+        """Agent Card publication SHOULD include a2a-status=online User Property."""
+        from skitter.mqtt import get_user_property
+
+        aid = f"test-status-{uuid.uuid4().hex[:4]}"
+        await start_agent(aid, description="Status test agent")
+
+        # Subscribe to the discovery topic and check User Properties on the retained message
+        topic = topic_discovery(aid)
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-a2a-status-{uuid.uuid4().hex[:6]}",
+            ),
+        ) as client:
+            await client.subscribe(topic, qos=1)
+            async with asyncio.timeout(10.0):
+                async for msg in client.messages:
+                    if msg.payload:
+                        assert get_user_property(msg, "a2a-status") == "online"
+                        assert get_user_property(msg, "a2a-status-source") == "agent"
+                        return
+
+        pytest.fail("No discovery card received")
+
     async def test_direct_query(self, start_agent):
         aid = f"test-query-{uuid.uuid4().hex[:4]}"
 

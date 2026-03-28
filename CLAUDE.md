@@ -19,7 +19,8 @@ MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT brok
 | DB interface (SQLite/PostgreSQL) | `skitter/db.py` |
 | Agent/skill scaffolding (LLM-powered) | `skitter/create_agent.py` |
 | App/session management (coordinator wrappers) | `skitter/manage.py` |
-| Chat client | `skitter/cli.py` |
+| One-shot A2A request | `skitter/request.py` |
+| Interactive A2A session client | `skitter/cli.py` |
 | CLI dispatch | `skitter/__main__.py` |
 | Dashboard (single-file, MQTT-connected) | `dashboard.html` |
 

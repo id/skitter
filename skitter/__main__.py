@@ -27,8 +27,8 @@ def dispatch() -> None:
     Routes to the appropriate sub-module based on the first positional arg:
 
         skitter                              → coordinator (default)
-        skitter chat [...]                   → interactive MQTT chat client
-        skitter run  [agent_id] '<prompt>'   → one-shot A2A request
+        skitter chat <agent_id>              → interactive A2A session
+        skitter request <agent_id> '<prompt>' → one-shot A2A request
         skitter agent-runner <file>          → standalone A2A agent process
         skitter create-agent <name> <prompt> → generate agent definition via LLM
         skitter create-app <name> <instr>    → create a composed multi-agent app
@@ -61,18 +61,21 @@ def dispatch() -> None:
     elif subcmd in _MANAGE_CMDS:
         _MANAGE_CMDS[subcmd](sys.argv[2:])
     elif subcmd == "run":
+        print(
+            "'skitter run' has been renamed to 'skitter request'.\n"
+            "Usage: skitter request <agent_id> '<prompt>'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    elif subcmd == "request":
         args = sys.argv[2:]
-        if not args:
-            print("Usage: skitter run [agent_id] '<prompt>'", file=sys.stderr)
+        if len(args) < 2:
+            print("Usage: skitter request <agent_id> '<prompt>'", file=sys.stderr)
             sys.exit(1)
-        # Two+ args where first doesn't look like prose: treat as agent_id
-        if len(args) >= 2 and " " not in args[0]:
-            agent_id, prompt = args[0], " ".join(args[1:])
-        else:
-            agent_id, prompt = "skitter", " ".join(args)
-        from skitter.run import run_prompt
+        agent_id, prompt = args[0], " ".join(args[1:])
+        from skitter.request import request_prompt
 
-        run_prompt(agent_id, prompt)
+        request_prompt(agent_id, prompt)
     else:
         from skitter.coordinator import main
 

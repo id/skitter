@@ -7,11 +7,11 @@ coordinator via A2A request.
 import argparse
 import json
 
-from skitter.run import run_prompt
+from skitter.request import request_prompt
 
 
 def _query(text: str) -> None:
-    run_prompt("skitter", text)
+    request_prompt("skitter", text)
 
 
 def create_app(argv: list[str] | None = None) -> None:

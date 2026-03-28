@@ -21,9 +21,8 @@ from skitter.a2a import (
     REPLY_ARTIFACT,
     REPLY_ERROR,
     REPLY_FAILED,
-    REPLY_TERMINAL,
     REPLY_TEXT,
-    classify_reply,
+    stream_request,
     topic_discovery,
     topic_reply,
 )
@@ -31,7 +30,6 @@ from skitter.mqtt import (
     MQTT_HOST,
     MQTT_PORT,
     MQTT_TLS,
-    make_properties,
     mqtt_client_kwargs,
 )
 
@@ -89,7 +87,7 @@ async def send_and_collect(
     msg: A2ARequest,
     timeout: float = 60.0,
 ) -> str:
-    """Publish A2A request, stream replies, return terminal result."""
+    """Publish A2A request via stream_request, return terminal result."""
     test_id = uuid.uuid4().hex[:8]
     reply_t = topic_reply("test", test_id)
 
@@ -100,41 +98,26 @@ async def send_and_collect(
     ) as client:
         await client.subscribe(reply_t, qos=1)
 
-        props = make_properties(
-            response_topic=reply_t,
-            correlation_data=msg.request_id,
-        )
-        await client.publish(
-            request_topic,
-            msg.to_json(),
-            qos=1,
-            properties=props,
-        )
-
         artifact_text = ""
         try:
             async with asyncio.timeout(timeout):
-                async for mqtt_msg in client.messages:
-                    payload = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
-                    if not payload:
-                        continue
-                    try:
-                        data = json.loads(payload)
-                    except Exception:
-                        continue
-
-                    kind, content = classify_reply(data)
+                async for kind, content in stream_request(
+                    client,
+                    request_topic,
+                    reply_t,
+                    msg.to_json(),
+                    msg.request_id,
+                ):
                     if kind == REPLY_TEXT:
                         print(content, end="", flush=True)
                     elif kind == REPLY_ARTIFACT:
                         artifact_text = content
-                    elif kind == REPLY_TERMINAL:
-                        print()
-                        return artifact_text or content
                     elif kind == REPLY_FAILED:
                         return f"Failed: {content}"
                     elif kind == REPLY_ERROR:
                         return f"Error: {content}"
+                print()
+                return artifact_text
         except TimeoutError:
             pytest.fail(f"Timed out after {timeout}s waiting for result")
 

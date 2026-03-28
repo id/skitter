@@ -232,6 +232,8 @@ class TestAgentRunner:
 
         await start_agent(aid, handler=handler)
 
+        from skitter.a2a import stream_request
+
         test_id = uuid.uuid4().hex[:8]
         reply_t = topic_reply("test", test_id)
         req = A2ARequest(
@@ -247,23 +249,10 @@ class TestAgentRunner:
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
-            props = make_properties(
-                response_topic=reply_t, correlation_data=req.request_id
-            )
-            await client.publish(
-                topic_request(aid), req.to_json(), qos=1, properties=props
-            )
-
-            async with asyncio.timeout(10.0):
-                async for msg in client.messages:
-                    payload = msg.payload.decode() if msg.payload else ""
-                    if not payload:
-                        continue
-                    data = json.loads(payload)
-                    kind, content = classify_reply(data)
-                    messages.append((kind, content))
-                    if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
-                        break
+            async for kind, content in stream_request(
+                client, topic_request(aid), reply_t, req.to_json(), req.request_id
+            ):
+                messages.append((kind, content))
 
         stream_msgs = [(k, c) for k, c in messages if k == REPLY_TEXT]
         assert len(stream_msgs) >= 2

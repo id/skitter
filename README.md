@@ -37,7 +37,7 @@ uv run skitter create-agent random-x "returns a random number as JSON"
 uv run skitter agent-runner agents/random-x.md
 
 # Terminal 2: send a request
-uv run skitter run random-x "go"
+uv run skitter request random-x "go"
 # => {"x": 73}
 ```
 
@@ -70,7 +70,7 @@ uv run skitter create-app "Add Numbers" \
   "Generate two random numbers in parallel, then sum them" \
   --agents random-x,random-y,sum --id add-numbers
 
-uv run skitter run add-numbers "go"
+uv run skitter request add-numbers "go"
 # => {"y": 73} ... {"x": 47} ... {"sum": 120}
 ```
 
@@ -78,10 +78,11 @@ The coordinator generates a fan-out/fan-in graph: random-x and random-y run in p
 
 Open `dashboard.html` in a browser to watch requests execute in real time (connects to the broker via WebSocket).
 
-Use `chat` for interactive sessions:
+Use `chat` for interactive sessions with any agent:
 
 ```bash
-uv run skitter chat
+uv run skitter chat random-x
+uv run skitter chat add-numbers
 ```
 
 ## How It Works

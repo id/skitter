@@ -15,7 +15,9 @@ skitter/
   a2a.py           A2A protocol: message types, topics, validation, requester helper
   mqtt.py          MQTT v5 transport: connection, properties, extraction
   config.py        ~/.skitter/ management, YAML loading, dataclasses
-  cli.py           Chat client
+  request.py       One-shot A2A request
+  cli.py           Interactive A2A session client
+  manage.py        App/session management (coordinator wrappers)
   __main__.py      CLI dispatch
 ```
 

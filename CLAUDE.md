@@ -12,7 +12,6 @@ MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT brok
 | LLM client (litellm wrapper) | `skitter/llm.py` |
 | Graph generation + validation | `skitter/graph_gen.py` |
 | Runtime API + app creation | `skitter/runtime_api.py` |
-| Pull discovery cards from broker (JSON) | `skitter/pull.py` |
 | A2A protocol (message types, topics, validation, requester helper) | `skitter/a2a.py` |
 | MQTT v5 transport (connection, properties) | `skitter/mqtt.py` |
 | Config loading (~/.skitter/), dataclasses | `skitter/config.py` |

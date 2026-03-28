@@ -20,14 +20,14 @@ from skitter.db import (
     DBTask,
     open_db,
 )
-from skitter.discovery import is_workflow_card, parse_card
+from skitter.discovery import is_app_card, parse_card
 from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
     CancelSessionResult,
     CreateAppResult,
     DeleteAppResult,
     handle_query as runtime_query,
-    runtime_card,
+    coordinator_card,
 )
 from skitter.a2a import (
     A2A_ORG,
@@ -183,10 +183,10 @@ class DiscoveryRegistry:
         return self._cards.get(agent_id)
 
     def list_agents(self) -> list[str]:
-        return [aid for aid, card in self._cards.items() if not is_workflow_card(card)]
+        return [aid for aid, card in self._cards.items() if not is_app_card(card)]
 
     def list_apps(self) -> list[str]:
-        return [aid for aid, card in self._cards.items() if is_workflow_card(card)]
+        return [aid for aid, card in self._cards.items() if is_app_card(card)]
 
 
 # --- Coordinator ---
@@ -1158,7 +1158,7 @@ class Coordinator:
                 await client.subscribe(topic_request(RUNTIME_AGENT_ID), qos=1)
 
                 # Publish runtime API card (retained)
-                rt_card_json = json.dumps(runtime_card())
+                rt_card_json = json.dumps(coordinator_card())
                 await client.publish(
                     topic_discovery(RUNTIME_AGENT_ID),
                     rt_card_json,

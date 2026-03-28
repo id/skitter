@@ -4,13 +4,17 @@ from skitter.manage import (
     cancel_session,
     create_app,
     delete_app,
+    get_agent,
     get_app,
     get_session,
+    list_agents,
     list_apps,
     list_sessions,
 )
 
 _MANAGE_CMDS = {
+    "list-agents": list_agents,
+    "get-agent": get_agent,
     "create-app": create_app,
     "list-apps": list_apps,
     "get-app": get_app,
@@ -38,7 +42,8 @@ def dispatch() -> None:
         skitter list-sessions [app_id]       → list sessions
         skitter get-session <id>             → get session details
         skitter cancel-session <id>          → cancel a running session
-        skitter pull [target_dir]            → pull agent cards from broker
+        skitter list-agents                   → list agents discovered from broker
+        skitter get-agent <agent_id>          → get agent discovery card (JSON)
     """
     subcmd = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -50,10 +55,6 @@ def dispatch() -> None:
         from skitter.agent_runner import main as runner_main
 
         runner_main()
-    elif subcmd == "pull":
-        from skitter.pull import main as pull_main
-
-        pull_main()
     elif subcmd == "create-agent":
         from skitter.create_agent import main as create_agent_main
 

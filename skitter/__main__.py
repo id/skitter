@@ -1,53 +1,24 @@
-import asyncio
 import sys
-import uuid
 
+from skitter.manage import (
+    cancel_session,
+    create_app,
+    delete_app,
+    get_app,
+    get_session,
+    list_apps,
+    list_sessions,
+)
 
-def _run_prompt(agent_id: str, prompt: str) -> None:
-    """Send a one-shot A2A request to an agent and print the reply."""
-    from rich.console import Console
-
-    from skitter.a2a import (
-        A2ARequest,
-        REPLY_ARTIFACT,
-        REPLY_ERROR,
-        REPLY_FAILED,
-        REPLY_INPUT_REQUIRED,
-        REPLY_SUBMITTED,
-        REPLY_TEXT,
-        REPLY_TIMEOUT,
-        REPLY_TOOL,
-        stream_replies,
-        topic_request,
-    )
-
-    console = Console()
-
-    async def _stream() -> None:
-        request_id = f"run-{uuid.uuid4().hex[:8]}"
-        req = A2ARequest(text=prompt, request_id=request_id, sender="cli")
-
-        async for kind, content in stream_replies(
-            topic_request(agent_id), req.to_json(), request_id
-        ):
-            if kind == REPLY_SUBMITTED:
-                console.print(f"[dim]Session: {content}[/dim]")
-            elif kind == REPLY_TEXT:
-                console.print(content, end="")
-            elif kind == REPLY_TOOL:
-                console.print(f"  [dim][tool] {content}[/dim]")
-            elif kind == REPLY_ARTIFACT:
-                console.print(f"\n\n{content}")
-            elif kind == REPLY_INPUT_REQUIRED:
-                console.print(f"[yellow]Input required: {content}[/yellow]")
-            elif kind == REPLY_FAILED:
-                console.print(f"[red]Failed: {content}[/red]")
-            elif kind == REPLY_ERROR:
-                console.print(f"[red]Error: {content}[/red]")
-            elif kind == REPLY_TIMEOUT:
-                console.print("[yellow]Timed out waiting for result[/yellow]")
-
-    asyncio.run(_stream())
+_MANAGE_CMDS = {
+    "create-app": create_app,
+    "list-apps": list_apps,
+    "get-app": get_app,
+    "delete-app": delete_app,
+    "list-sessions": list_sessions,
+    "get-session": get_session,
+    "cancel-session": cancel_session,
+}
 
 
 def dispatch() -> None:
@@ -57,8 +28,16 @@ def dispatch() -> None:
 
         skitter                              → coordinator (default)
         skitter chat [...]                   → interactive MQTT chat client
-        skitter run  [agent_id] '<prompt>'   → one-shot A2A request (default: skitter)
+        skitter run  [agent_id] '<prompt>'   → one-shot A2A request
         skitter agent-runner <file>          → standalone A2A agent process
+        skitter create-agent <name> <prompt> → generate agent definition via LLM
+        skitter create-app <name> <instr>    → create a composed multi-agent app
+        skitter list-apps                    → list all apps
+        skitter get-app <id>                 → get app details
+        skitter delete-app <id>              → delete an app
+        skitter list-sessions [app_id]       → list sessions
+        skitter get-session <id>             → get session details
+        skitter cancel-session <id>          → cancel a running session
         skitter pull [target_dir]            → pull agent cards from broker
     """
     subcmd = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -75,6 +54,12 @@ def dispatch() -> None:
         from skitter.pull import main as pull_main
 
         pull_main()
+    elif subcmd == "create-agent":
+        from skitter.create_agent import main as create_agent_main
+
+        create_agent_main()
+    elif subcmd in _MANAGE_CMDS:
+        _MANAGE_CMDS[subcmd](sys.argv[2:])
     elif subcmd == "run":
         args = sys.argv[2:]
         if not args:
@@ -85,7 +70,9 @@ def dispatch() -> None:
             agent_id, prompt = args[0], " ".join(args[1:])
         else:
             agent_id, prompt = "skitter", " ".join(args)
-        _run_prompt(agent_id, prompt)
+        from skitter.run import run_prompt
+
+        run_prompt(agent_id, prompt)
     else:
         from skitter.coordinator import main
 

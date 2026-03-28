@@ -26,7 +26,7 @@ Key docs: `docs/architecture.md` (detailed design), `docs/spec/` (A2A and A2A-ov
 ```bash
 uv sync
 docker compose up -d   # local EMQX broker
-uv run python -m skitter   # start coordinator
+uv run skitter   # start coordinator
 ```
 
 ## Agent Runner
@@ -54,8 +54,8 @@ developer_instructions = "You are a senior developer."
 Start an agent-runner by pointing it at the file:
 
 ```bash
-uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
-uv run python -m skitter agent-runner ~/.codex/agents/coder.toml
+uv run skitter agent-runner ~/.claude/agents/researcher.md
+uv run skitter agent-runner ~/.codex/agents/coder.toml
 ```
 
 Runtime is inferred from file extension (`.md` = Claude, `.toml` = Codex).
@@ -110,11 +110,11 @@ $a2a/v1/
 
 ```bash
 # Unit tests (no broker needed)
-uv run python -m pytest tests/test_unit.py -q
+uv run pytest tests/test_unit.py -q
 
 # E2E tests (needs EMQX on localhost, no Docker/LLM API required)
 docker compose up -d   # start local EMQX
-uv run python -m pytest tests/test_e2e.py -v -s
+uv run pytest tests/test_e2e.py -v -s
 ```
 
 E2E tests run the coordinator and agent-runners in-process with mocked `_run_cli` (no real CLI subprocess) and mocked `generate_graph` (no LLM API). Real MQTT messages flow through EMQX on localhost. Tests cover: agent discovery, direct queries, streaming, composed app pipelines (linear + fan-out/fan-in), session cancellation, and failure propagation/cascading.

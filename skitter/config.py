@@ -4,7 +4,6 @@ import logging
 import string
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 import yaml
 
@@ -18,7 +17,7 @@ class AgentDef:
     id: str
     name: str
     description: str = ""
-    runtime: Literal["claude", "codex"] = "claude"
+    runtime: str = "claude"  # claude, codex, copilot, gemini, qwen, ...
     model: str = ""
     claude_agent: str = ""  # registered Claude agent name (--agent flag)
     codex_instructions: str = ""  # Codex developer instructions (-c flag)

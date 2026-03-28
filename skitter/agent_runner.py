@@ -81,9 +81,37 @@ def _build_cli_cmd(agent: AgentDef, prompt: str) -> list[str]:
         if agent.codex_instructions:
             cmd.extend(["-c", f"developer_instructions={agent.codex_instructions}"])
         cmd.append(prompt)
-    else:
+    elif agent.runtime == "copilot":
         cmd = [
-            "claude",
+            "copilot",
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--allow-all",
+        ]
+        agent_name = agent.claude_agent or agent.id
+        cmd.extend(["--agent", agent_name])
+        if agent.model:
+            cmd.extend(["--model", agent.model])
+    elif agent.runtime == "qwen":
+        cmd = [
+            "qwen",
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--sandbox",
+            "--approval-mode",
+            "auto-edit",
+        ]
+        if agent.model:
+            cmd.extend(["--model", agent.model])
+    else:
+        # claude and other claude-compatible runtimes (gemini, etc.)
+        binary = agent.runtime
+        cmd = [
+            binary,
             "-p",
             prompt,
             "--output-format",
@@ -119,7 +147,7 @@ async def _run_cli(
             limit=1024 * 1024,
         )
     except FileNotFoundError:
-        binary = "codex" if agent.runtime == "codex" else "claude"
+        binary = cmd[0]
         return f"Error: {binary} CLI not found on PATH"
 
     texts: list[str] = []
@@ -262,7 +290,12 @@ async def handle_request(
 
 
 def load_agent(path_str: str) -> AgentDef:
-    """Load an agent definition from a Claude .md or Codex .toml file."""
+    """Load an agent definition from a .md or .toml file.
+
+    The file extension determines the *parse format* (YAML frontmatter vs TOML).
+    The ``runtime`` field inside the file determines which CLI tool runs the agent.
+    If ``runtime`` is omitted, it defaults to ``claude`` for .md and ``codex`` for .toml.
+    """
     path = Path(path_str)
     if not path.is_file():
         log.error("Agent definition not found: %s", path)
@@ -270,19 +303,19 @@ def load_agent(path_str: str) -> AgentDef:
 
     suffix = path.suffix.lower()
     if suffix == ".md":
-        return _load_claude_agent(path)
+        return _load_md_agent(path)
     if suffix == ".toml":
-        return _load_codex_agent(path)
+        return _load_toml_agent(path)
 
     log.error("Unsupported agent file type: %s (expected .md or .toml)", suffix)
     sys.exit(1)
 
 
-def _load_claude_agent(path) -> AgentDef:
-    """Parse a Claude agent .md file (YAML frontmatter between --- delimiters)."""
+def _load_md_agent(path) -> AgentDef:
+    """Parse an agent .md file (YAML frontmatter between --- delimiters)."""
     text = path.read_text()
     if not text.startswith("---"):
-        log.error("Claude agent file must start with --- frontmatter: %s", path)
+        log.error("Agent file must start with --- frontmatter: %s", path)
         sys.exit(1)
 
     end = text.find("\n---", 3)
@@ -296,30 +329,32 @@ def _load_claude_agent(path) -> AgentDef:
         sys.exit(1)
 
     agent_id = frontmatter.get("name", path.stem)
+    runtime = frontmatter.get("runtime", "claude")
     return AgentDef(
         id=agent_id,
         name=frontmatter.get("name", agent_id),
         description=frontmatter.get("description", ""),
-        runtime="claude",
+        runtime=runtime,
         model=frontmatter.get("model", ""),
         claude_agent=agent_id,
     )
 
 
-def _load_codex_agent(path) -> AgentDef:
-    """Parse a Codex agent .toml file."""
+def _load_toml_agent(path) -> AgentDef:
+    """Parse an agent .toml file."""
     try:
         data = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as e:
         log.error("Invalid TOML in %s: %s", path, e)
         sys.exit(1)
-    agent_id = path.stem
+    agent_id = data.get("name", path.stem)
     instructions = data.get("developer_instructions", "")
+    runtime = data.get("runtime", "codex")
     return AgentDef(
         id=agent_id,
         name=agent_id,
-        description=instructions[:100],
-        runtime="codex",
+        description=data.get("description", instructions[:100]),
+        runtime=runtime,
         model=data.get("model", ""),
         codex_instructions=instructions,
     )

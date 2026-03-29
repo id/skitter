@@ -79,10 +79,9 @@ llm:
 
 | Variable | Default | Description |
 |---|---|---|
-| `MQTT_HOST` | `localhost` | Broker hostname |
-| `MQTT_PORT` | `1883` | Broker port |
-| `MQTT_TLS` | (empty) | Set to `1` for TLS |
-| `MQTT_USER` / `MQTT_PASS` | (empty) | Broker auth |
+| `MQTT_BROKER_URL` | `mqtt://localhost:1883` | Broker URL (`mqtt://` or `mqtts://`) |
+| `MQTT_USERNAME` / `MQTT_PASSWORD` | (empty) | Broker auth |
+| `MQTT_CA_CERT` | (empty) | Path to custom CA certificate for `mqtts://` |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
 | `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation (`provider/model`, e.g. `anthropic/claude-haiku-4-5`; see [litellm providers](https://docs.litellm.ai/docs/providers)) |

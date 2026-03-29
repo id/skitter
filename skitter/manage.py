@@ -104,7 +104,7 @@ def _query_or_exit(text: str) -> dict:
 def _table(*columns: str) -> Table:
     t = Table(box=box.MARKDOWN, show_edge=True, pad_edge=True)
     for col in columns:
-        t.add_column(col)
+        t.add_column(col, no_wrap=(col == "ID"))
     return t
 
 

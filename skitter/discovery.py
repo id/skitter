@@ -3,7 +3,7 @@
 import json
 
 from skitter.config import AgentDef
-from skitter.mqtt import MQTT_HOST, MQTT_PORT
+from skitter.mqtt import MQTT_BROKER_URL
 
 APP_EXTENSION_URI = "urn:skitter:app"
 
@@ -19,7 +19,7 @@ def build_card(
     If metadata is provided (e.g. {"tasks": [...], "variables": [...]}),
     it is stored as an app extension in capabilities.extensions.
     """
-    url = url or f"mqtt://{MQTT_HOST}:{MQTT_PORT}"
+    url = url or MQTT_BROKER_URL
     capabilities = dict(agent.capabilities) if agent.capabilities else {}
     capabilities.setdefault("streaming", True)
     capabilities.setdefault("pushNotifications", False)

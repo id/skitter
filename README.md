@@ -142,7 +142,7 @@ docker build -f Dockerfile.agent -t skitter-agent .
 # Run a Claude agent
 # Auth: CLAUDE_CODE_OAUTH_TOKEN (from "claude setup-token") or ANTHROPIC_API_KEY
 docker run --rm \
-  -e MQTT_HOST=your-broker \
+  -e MQTT_BROKER_URL=mqtt://your-broker:1883 \
   -e CLAUDE_CODE_OAUTH_TOKEN=... \
   -v ./agents/researcher.md:/app/agents/researcher.md:ro \
   skitter-agent /app/agents/researcher.md
@@ -150,7 +150,7 @@ docker run --rm \
 # Run a Codex agent
 # Auth: CODEX_API_KEY, or mount ~/.codex/auth.json
 docker run --rm \
-  -e MQTT_HOST=your-broker \
+  -e MQTT_BROKER_URL=mqtt://your-broker:1883 \
   -e CODEX_API_KEY=... \
   -v ./agents/coder.toml:/app/agents/coder.toml:ro \
   skitter-agent /app/agents/coder.toml

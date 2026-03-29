@@ -31,7 +31,7 @@ from skitter.mqtt import (
     MQTT_PORT,
     MQTT_TLS,
     mqtt_client_kwargs,
-)
+)  # MQTT_HOST/PORT/TLS derived from MQTT_BROKER_URL
 
 
 # ---------------------------------------------------------------------------

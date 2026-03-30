@@ -1,6 +1,6 @@
 services:
   emqx:
-    image: thalesmg/emqx-enterprise:6.2.0-alpha.2-g56deb2ad
+    image: emqx/emqx-enterprise:6.2.0-rc.1
     ports:
       - "1883:1883"   # MQTT
       - "8083:8083"   # WebSocket

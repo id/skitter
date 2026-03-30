@@ -28,6 +28,7 @@ from skitter.a2a import (
     A2A_INVALID_PARAMS,
     A2ARequest,
     A2AResponse,
+    TaskState,
     make_a2a_error,
     make_artifact_event,
     make_status_event,
@@ -228,7 +229,7 @@ async def handle_request(
     ack = make_status_event(
         request_id=correlation,
         task_id=req.task_id,
-        state="submitted",
+        state=TaskState.SUBMITTED,
         context_id=req.context_id or "",
     )
     props = make_properties(correlation_data=correlation)
@@ -239,7 +240,7 @@ async def handle_request(
         event = make_status_event(
             request_id=correlation,
             task_id=req.task_id,
-            state="working",
+            state=TaskState.WORKING,
             message=content,
             context_id=req.context_id or "",
             metadata={"type": item_type},
@@ -253,7 +254,7 @@ async def handle_request(
         canceled = make_status_event(
             request_id=correlation,
             task_id=req.task_id,
-            state="canceled",
+            state=TaskState.CANCELED,
             message="Task canceled",
             context_id=req.context_id or "",
         )
@@ -268,7 +269,7 @@ async def handle_request(
         failed = make_status_event(
             request_id=correlation,
             task_id=req.task_id,
-            state="failed",
+            state=TaskState.FAILED,
             message="Internal error",
             context_id=req.context_id or "",
         )
@@ -287,7 +288,7 @@ async def handle_request(
     terminal = make_status_event(
         request_id=correlation,
         task_id=req.task_id,
-        state="completed",
+        state=TaskState.COMPLETED,
         context_id=req.context_id or "",
     )
     await client.publish(reply_topic, terminal, qos=1, properties=props)
@@ -449,7 +450,9 @@ async def run_with_def(agent: AgentDef) -> None:
                     if cancel_reply_t and cancel_corr:
                         rpc_id = data.get("id", "")
                         cancel_state = (
-                            "canceled" if cancel_id in task_registry else "failed"
+                            TaskState.CANCELED
+                            if cancel_id in task_registry
+                            else TaskState.FAILED
                         )
                         resp = make_status_event(
                             request_id=rpc_id,
@@ -477,7 +480,7 @@ async def run_with_def(agent: AgentDef) -> None:
                     task_context.pop(k, None)
 
                 if req.task_id in task_registry:
-                    dedup_state, dedup_result = "working", ""
+                    dedup_state, dedup_result = TaskState.WORKING, ""
                 elif req.task_id in completed_tasks:
                     _, dedup_state, dedup_result = completed_tasks[req.task_id]
                 else:
@@ -512,7 +515,7 @@ async def run_with_def(agent: AgentDef) -> None:
                     log.info(
                         "Duplicate Task.id %s (%s), returning %s state",
                         req.task_id,
-                        "in-flight" if dedup_state == "working" else "done",
+                        "in-flight" if dedup_state == TaskState.WORKING else "done",
                         dedup_state,
                     )
                     ctx = req.context_id or ""
@@ -540,12 +543,12 @@ async def run_with_def(agent: AgentDef) -> None:
                 def _on_done(t: asyncio.Task, tid: str = req.task_id) -> None:
                     task_registry.pop(tid, None)
                     if t.cancelled():
-                        state, result = "canceled", ""
+                        state, result = TaskState.CANCELED, ""
                     elif t.exception():
                         log.error("Request handler failed: %s", t.exception())
-                        state, result = "failed", ""
+                        state, result = TaskState.FAILED, ""
                     else:
-                        state, result = "completed", t.result() or ""
+                        state, result = TaskState.COMPLETED, t.result() or ""
                     completed_tasks[tid] = (
                         asyncio.get_running_loop().time(),
                         state,

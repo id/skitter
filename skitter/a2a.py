@@ -8,6 +8,7 @@ layer on top.
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
+from enum import StrEnum
 import json
 import logging
 import os
@@ -64,19 +65,22 @@ def topic_coordinator_lock() -> str:
     return f"{_PREFIX}/lock/{A2A_ORG}/{A2A_UNIT}/coordinator"
 
 
-# --- Proto JSON wire format mapping (A2A v1.0.0 Section 5.5) ---
-# Callers use short names internally; these maps convert at the wire boundary.
+# --- Task state enum (A2A v1.0.0 Section 5.5) ---
 
-_STATE_TO_WIRE = {
-    "submitted": "TASK_STATE_SUBMITTED",
-    "working": "TASK_STATE_WORKING",
-    "completed": "TASK_STATE_COMPLETED",
-    "failed": "TASK_STATE_FAILED",
-    "canceled": "TASK_STATE_CANCELED",
-    "input-required": "TASK_STATE_INPUT_REQUIRED",
-    "auth-required": "TASK_STATE_AUTH_REQUIRED",
-    "rejected": "TASK_STATE_REJECTED",
-}
+
+class TaskState(StrEnum):
+    SUBMITTED = "submitted"
+    WORKING = "working"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    INPUT_REQUIRED = "input-required"
+    AUTH_REQUIRED = "auth-required"
+    REJECTED = "rejected"
+
+
+# Proto JSON wire format: SCREAMING_SNAKE enum names on the wire.
+_STATE_TO_WIRE = {s: f"TASK_STATE_{s.name}" for s in TaskState}
 
 _WIRE_TO_STATE = {v: k for k, v in _STATE_TO_WIRE.items()}
 
@@ -130,7 +134,7 @@ class A2AResponse:
 def make_status_event(
     request_id: str,
     task_id: str,
-    state: str,
+    state: TaskState,
     message: str = "",
     context_id: str = "",
     *,
@@ -143,13 +147,10 @@ def make_status_event(
     contextId, status (TaskStatus), and event-level metadata. TaskStatus
     contains state (SCREAMING_SNAKE_CASE enum) and an optional Message object.
 
-    ``state`` accepts short internal names ("submitted", "working", ...);
-    they are mapped to proto enum names on the wire.
-
     ``message`` is wrapped into a proper A2A Message object with ROLE_AGENT.
     ``metadata`` is placed on the event envelope (not inside status).
     """
-    wire_state = _STATE_TO_WIRE.get(state, state)
+    wire_state = _STATE_TO_WIRE[state]
     status: dict = {
         "state": wire_state,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -317,19 +318,24 @@ def classify_reply(data: dict) -> tuple[str, str]:
     if task_obj:
         status = task_obj.get("status", {})
         wire_state = status.get("state", "")
-        state = _WIRE_TO_STATE.get(wire_state, wire_state)
+        state = _WIRE_TO_STATE.get(wire_state)
         # Prefer artifact text for completed tasks (blocking SendMessage response)
         artifact_text = ""
         for artifact in task_obj.get("artifacts", []):
             artifact_text += _extract_parts_text(artifact.get("parts", []))
         text = artifact_text or _extract_message_text(status)
-        if state in ("completed", "failed", "canceled", "rejected"):
-            return (REPLY_TERMINAL if state == "completed" else REPLY_FAILED), (
-                text or (f"Task {state}" if state != "completed" else "")
+        if state in (
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELED,
+            TaskState.REJECTED,
+        ):
+            return (REPLY_TERMINAL if state == TaskState.COMPLETED else REPLY_FAILED), (
+                text or (f"Task {state}" if state != TaskState.COMPLETED else "")
             )
-        if state in ("input-required", "auth-required"):
+        if state in (TaskState.INPUT_REQUIRED, TaskState.AUTH_REQUIRED):
             return REPLY_INPUT_REQUIRED, text or state
-        if state == "submitted":
+        if state == TaskState.SUBMITTED:
             return REPLY_SUBMITTED, task_obj.get("id", "")
         return REPLY_TEXT, text
 
@@ -346,31 +352,31 @@ def _classify_status_update(status_update: dict) -> tuple[str, str]:
     """Classify a TaskStatusUpdateEvent payload."""
     status = status_update.get("status", {})
     wire_state = status.get("state", "")
-    state = _WIRE_TO_STATE.get(wire_state, wire_state)
+    state = _WIRE_TO_STATE.get(wire_state)
     # Event-level metadata; fall back to status.metadata for compat
     meta = status_update.get("metadata") or status.get("metadata") or {}
 
-    if state == "submitted":
+    if state == TaskState.SUBMITTED:
         task_id = status_update.get("taskId", "")
         return REPLY_SUBMITTED, task_id
 
-    if state == "working":
+    if state == TaskState.WORKING:
         message = _extract_message_text(status)
         msg_type = meta.get("type", "text")
         if msg_type == "tool_use":
             return REPLY_TOOL, message
         return REPLY_TEXT, message
 
-    if state == "completed":
+    if state == TaskState.COMPLETED:
         message = _extract_message_text(status)
         return REPLY_TERMINAL, message
 
     # Interrupted states: stream-final per spec, but task is not terminal
-    if state in ("input-required", "auth-required"):
+    if state in (TaskState.INPUT_REQUIRED, TaskState.AUTH_REQUIRED):
         message = _extract_message_text(status)
         return REPLY_INPUT_REQUIRED, message or state
 
-    if state in ("failed", "canceled", "rejected"):
+    if state in (TaskState.FAILED, TaskState.CANCELED, TaskState.REJECTED):
         message = _extract_message_text(status)
         return REPLY_FAILED, message or f"Task {state}"
 

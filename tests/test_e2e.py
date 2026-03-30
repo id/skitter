@@ -105,14 +105,27 @@ async def coordinator():
     task = asyncio.create_task(coord.run())
     await wait_for_discovery("skitter")
     yield coord
+
+    # Collect app IDs before shutdown (shutdown clears _app_clients)
+    app_ids = list(coord._app_clients.keys())
+
     task.cancel()
     try:
         await task
     except asyncio.CancelledError:
         pass
     db.close()
-    await _clear_retained(topic_coordinator_lock())
-    await _clear_retained(topic_discovery("skitter"))
+
+    # Clear coordinator + app discovery cards
+    async with aiomqtt.Client(
+        **mqtt_client_kwargs(
+            identifier=f"{A2A_ORG}/{A2A_UNIT}/cleanup-{uuid.uuid4().hex[:6]}",
+        ),
+    ) as client:
+        await client.publish(topic_coordinator_lock(), b"", qos=1, retain=True)
+        await client.publish(topic_discovery("skitter"), b"", qos=1, retain=True)
+        for app_id in app_ids:
+            await client.publish(topic_discovery(app_id), b"", qos=1, retain=True)
 
 
 @pytest.fixture
@@ -232,6 +245,8 @@ class TestAgentRunner:
 
         await start_agent(aid, handler=handler)
 
+        from skitter.a2a import stream_request
+
         test_id = uuid.uuid4().hex[:8]
         reply_t = topic_reply("test", test_id)
         req = A2ARequest(
@@ -247,23 +262,10 @@ class TestAgentRunner:
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
-            props = make_properties(
-                response_topic=reply_t, correlation_data=req.request_id
-            )
-            await client.publish(
-                topic_request(aid), req.to_json(), qos=1, properties=props
-            )
-
-            async with asyncio.timeout(10.0):
-                async for msg in client.messages:
-                    payload = msg.payload.decode() if msg.payload else ""
-                    if not payload:
-                        continue
-                    data = json.loads(payload)
-                    kind, content = classify_reply(data)
-                    messages.append((kind, content))
-                    if kind in (REPLY_TERMINAL, REPLY_FAILED, REPLY_ERROR):
-                        break
+            async for kind, content in stream_request(
+                client, topic_request(aid), reply_t, req.to_json(), req.request_id
+            ):
+                messages.append((kind, content))
 
         stream_msgs = [(k, c) for k, c in messages if k == REPLY_TEXT]
         assert len(stream_msgs) >= 2

@@ -3,9 +3,9 @@
 import json
 
 from skitter.config import AgentDef
-from skitter.mqtt import MQTT_HOST, MQTT_PORT
+from skitter.mqtt import MQTT_BROKER_URL
 
-WORKFLOW_EXTENSION_URI = "urn:skitter:workflow"
+APP_EXTENSION_URI = "urn:skitter:app"
 
 
 def build_card(
@@ -17,9 +17,9 @@ def build_card(
     """Build a single spec-conformant A2A Agent Card.
 
     If metadata is provided (e.g. {"tasks": [...], "variables": [...]}),
-    it is stored as a workflow extension in capabilities.extensions.
+    it is stored as an app extension in capabilities.extensions.
     """
-    url = url or f"mqtt://{MQTT_HOST}:{MQTT_PORT}"
+    url = url or MQTT_BROKER_URL
     capabilities = dict(agent.capabilities) if agent.capabilities else {}
     capabilities.setdefault("streaming", True)
     capabilities.setdefault("pushNotifications", False)
@@ -58,8 +58,8 @@ def build_card(
         card["capabilities"].setdefault("extensions", [])
         card["capabilities"]["extensions"].append(
             {
-                "uri": WORKFLOW_EXTENSION_URI,
-                "description": "Skitter composed-app workflow definition",
+                "uri": APP_EXTENSION_URI,
+                "description": "Skitter composed-app definition",
                 "required": False,
                 "params": metadata,
             }
@@ -73,9 +73,9 @@ def parse_card(payload: bytes) -> dict:
     return json.loads(payload)
 
 
-def is_workflow_card(card: dict) -> bool:
-    """Detect composed app by presence of workflow extension with tasks."""
+def is_app_card(card: dict) -> bool:
+    """Detect composed app by presence of app extension with tasks."""
     for ext in card.get("capabilities", {}).get("extensions", []):
-        if ext.get("uri") == WORKFLOW_EXTENSION_URI:
+        if ext.get("uri") == APP_EXTENSION_URI:
             return bool(ext.get("params", {}).get("tasks"))
     return False

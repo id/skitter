@@ -1,109 +1,98 @@
-"""Interactive CLI for chatting with skitter via A2A-over-MQTT."""
+"""Interactive A2A session client.
+
+    skitter chat <agent_id>
+
+Connects to the MQTT broker, fetches the agent's discovery card, and opens
+an interactive prompt where each line becomes an A2A request. Replies are
+displayed in real time. Works with any A2A-over-MQTT agent on the broker.
+"""
 
 import asyncio
-import json
+import os
 import sys
 import uuid
 
 import aiomqtt
+from rich.console import Console
 
 from skitter.a2a import (
     A2A_ORG,
     A2A_UNIT,
     A2ARequest,
-    REPLY_ARTIFACT,
-    REPLY_ERROR,
-    REPLY_FAILED,
-    REPLY_TERMINAL,
-    REPLY_TEXT,
-    REPLY_TOOL,
-    classify_reply,
+    print_reply,
+    stream_request,
+    topic_discovery,
     topic_reply,
     topic_request,
 )
-from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
-    make_properties,
-    mqtt_client_kwargs,
-)
+from skitter.discovery import parse_card
+from skitter.mqtt import mqtt_client_kwargs
 
 
-async def run_chat(session_id: str) -> None:
-    mqtt_session = uuid.uuid4().hex[:12]
+async def _fetch_card(
+    client: aiomqtt.Client, agent_id: str, timeout: float = 3.0
+) -> dict | None:
+    """Fetch an agent's retained discovery card from the broker."""
+    topic = topic_discovery(agent_id)
+    await client.subscribe(topic, qos=1)
+    try:
+        async with asyncio.timeout(timeout):
+            async for msg in client.messages:
+                if msg.payload:
+                    try:
+                        return parse_card(msg.payload)
+                    except Exception:
+                        return None
+    except TimeoutError:
+        return None
+    finally:
+        await client.unsubscribe(topic)
+
+
+async def _run_chat(agent_id: str) -> None:
+    console = Console()
+    session_id = f"chat-{uuid.uuid4().hex[:8]}"
     context_id = str(uuid.uuid4())
+    mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
-    default_request = topic_request("skitter")
-
-    print(f"Connecting to {MQTT_HOST}:{MQTT_PORT}")
-    print(f"Session ID: {session_id}")
-    print(f"Reply topic: {reply_t}")
-    print("Type or paste a message. /send to send, /drop to discard.")
-    print("Ctrl+C to exit.\n")
+    req_topic = topic_request(agent_id)
 
     async with aiomqtt.Client(
         **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}"),
     ) as client:
+        # Fetch discovery card
+        card = await _fetch_card(client, agent_id)
+        if card:
+            name = card.get("name", agent_id)
+            desc = card.get("description", "")
+            console.print(f"[bold]{name}[/bold]", end="")
+            if desc:
+                console.print(f" [dim]{desc}[/dim]")
+            else:
+                console.print()
+        else:
+            console.print(
+                f"[yellow]No discovery card found for '{agent_id}'. "
+                f"Continuing without agent info.[/yellow]"
+            )
+
+        console.print(f"[dim]Session: {session_id}[/dim]")
+        console.print("[dim]Type a message and press Enter. Ctrl+C to exit.[/dim]\n")
+
+        # Subscribe to reply topic for the entire session
         await client.subscribe(reply_t, qos=1)
 
-        async def listen() -> None:
-            async for msg in client.messages:
-                try:
-                    payload = msg.payload.decode() if msg.payload else ""
-                    if not payload:
-                        continue
-                    data = json.loads(payload)
-
-                    kind, content = classify_reply(data)
-                    if kind == REPLY_TEXT:
-                        print(f"\r\033[K{content}", end="", flush=True)
-                    elif kind == REPLY_TOOL:
-                        print(f"\r\033[K  [tool] {content}")
-                    elif kind == REPLY_ARTIFACT:
-                        print(f"\r\033[K\n{content}")
-                    elif kind == REPLY_TERMINAL:
-                        print("> ", end="", flush=True)
-                    elif kind == REPLY_FAILED:
-                        print(f"\r\033[KFailed: {content}")
-                        print("> ", end="", flush=True)
-                    elif kind == REPLY_ERROR:
-                        print(f"\r\033[KError: {content}")
-                        print("> ", end="", flush=True)
-
-                except Exception:
-                    pass
-
-        listener = asyncio.create_task(listen())
-        loop = asyncio.get_event_loop()
-
-        def read_message() -> str:
-            lines = []
-            while True:
-                prompt = "> " if not lines else ". "
-                line = input(prompt)
-                if line.strip() == "/send" and lines:
-                    break
-                if line.strip() == "/drop":
-                    print("Discarded.")
-                    return ""
-                lines.append(line)
-            return "\n".join(lines).strip()
+        loop = asyncio.get_running_loop()
 
         try:
             while True:
-                text = await loop.run_in_executor(None, read_message)
+                try:
+                    text = await loop.run_in_executor(None, input, "> ")
+                except EOFError:
+                    break
+                text = text.strip()
                 if not text:
                     continue
-
-                # Parse invocation commands
-                agent_id = ""
-                if text.startswith("/agent "):
-                    parts = text.split(None, 2)
-                    agent_id = parts[1] if len(parts) > 1 else ""
-                    text = parts[2] if len(parts) > 2 else ""
-                    if not agent_id or not text:
-                        print("Usage: /agent <agent_id> <description>")
-                        continue
 
                 request_id = f"{session_id}-{uuid.uuid4().hex[:6]}"
                 req = A2ARequest(
@@ -113,38 +102,27 @@ async def run_chat(session_id: str) -> None:
                     sender="cli",
                 )
 
-                if agent_id:
-                    request_topic = topic_request(agent_id)
-                else:
-                    request_topic = default_request
+                async for kind, content in stream_request(
+                    client, req_topic, reply_t, req.to_json(), request_id
+                ):
+                    print_reply(console, kind, content)
+                console.print()
 
-                props = make_properties(
-                    response_topic=reply_t,
-                    correlation_data=request_id,
-                )
-                await client.publish(
-                    request_topic,
-                    req.to_json(),
-                    qos=1,
-                    properties=props,
-                )
-        except (EOFError, KeyboardInterrupt):
-            print("\nBye!")
-        finally:
-            listener.cancel()
+        except KeyboardInterrupt:
+            console.print("\n[dim]Bye![/dim]")
 
 
 def main() -> None:
-    session_id = f"cli-{uuid.uuid4().hex[:8]}"
-
     args = sys.argv[2:]  # skip "skitter" and "chat"
-    i = 0
-    while i < len(args):
-        if args[i] == "--session-id" and i + 1 < len(args):
-            session_id = args[i + 1]
-            i += 2
-        else:
-            print(f"Unknown argument: {args[i]}", file=sys.stderr)
-            sys.exit(1)
-
-    asyncio.run(run_chat(session_id))
+    if not args or args[0].startswith("-"):
+        print("Usage: skitter chat <agent_id>", file=sys.stderr)
+        sys.exit(1)
+    agent_id = args[0]
+    try:
+        asyncio.run(_run_chat(agent_id))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # The executor thread may still be blocked on input(); os._exit
+        # avoids the atexit join hang on the thread pool.
+        os._exit(0)

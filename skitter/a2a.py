@@ -211,6 +211,28 @@ REPLY_FAILED = "failed"
 REPLY_ERROR = "error"
 REPLY_TIMEOUT = "timeout"
 
+
+def print_reply(console, kind: str, content: str) -> None:
+    """Render an A2A reply to a rich Console. Shared by request and chat."""
+    if kind == REPLY_SUBMITTED:
+        console.print(f"[dim]Task: {content}[/dim]")
+    elif kind == REPLY_TEXT:
+        # Agent output may contain [brackets]; disable markup to show verbatim
+        console.print(content, end="", markup=False, highlight=False)
+    elif kind == REPLY_TOOL:
+        console.print(f"  [dim][tool] {content}[/dim]")
+    elif kind == REPLY_ARTIFACT:
+        console.print(f"\n\n{content}", markup=False, highlight=False)
+    elif kind == REPLY_INPUT_REQUIRED:
+        console.print(f"[yellow]Input required: {content}[/yellow]")
+    elif kind == REPLY_FAILED:
+        console.print(f"[red]Failed: {content}[/red]")
+    elif kind == REPLY_ERROR:
+        console.print(f"[red]Error: {content}[/red]")
+    elif kind == REPLY_TIMEOUT:
+        console.print("[yellow]Timed out waiting for reply[/yellow]")
+
+
 _TERMINAL_KINDS = frozenset(
     {
         REPLY_TERMINAL,
@@ -406,17 +428,93 @@ async def send_request(
         await client.publish(request_topic, payload, qos=1, properties=props)
 
 
+async def stream_request(
+    client: "aiomqtt.Client",
+    request_topic: str,
+    reply_topic: str,
+    payload: str,
+    correlation_id: str,
+) -> AsyncGenerator[tuple[str, str], None]:
+    """Publish a request on an existing client and yield (kind, content) replies.
+
+    The caller must have already subscribed to *reply_topic* on *client*.
+    Implements the A2A requester retry/timeout profile: retries with new
+    Correlation Data on first-reply timeout, validates Correlation Data
+    on incoming messages. Yields ("timeout", "") if all attempts are
+    exhausted or the stream stalls after receiving at least one reply.
+    """
+    got_first_reply = False
+    current_correlation = correlation_id
+    # Accept replies matching any correlation from prior attempts,
+    # since the responder echoes the correlation from the first
+    # request it received (dedup drops retries by Task.id).
+    valid_correlations: set[str] = {correlation_id}
+
+    for attempt in range(MAX_ATTEMPTS):
+        if attempt > 0:
+            delay = _backoff_delay(attempt - 1)
+            await asyncio.sleep(delay)
+            # New Correlation Data per retry, same Task.id in payload
+            current_correlation = uuid.uuid4().hex[:16]
+            valid_correlations.add(current_correlation)
+
+        props = make_properties(
+            response_topic=reply_topic,
+            correlation_data=current_correlation,
+        )
+        await client.publish(request_topic, payload, qos=1, properties=props)
+
+        try:
+            timeout = REPLY_FIRST_TIMEOUT
+            while True:
+                async with asyncio.timeout(timeout):
+                    async for mqtt_msg in client.messages:
+                        raw = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
+                        if not raw:
+                            continue
+
+                        # Validate Correlation Data against all attempts
+                        msg_corr = get_correlation_data(mqtt_msg)
+                        if msg_corr not in valid_correlations:
+                            continue
+
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            continue
+
+                        kind, content = classify_reply(data)
+                        if not kind:
+                            continue
+
+                        got_first_reply = True
+                        timeout = STREAM_IDLE_TIMEOUT
+
+                        yield kind, content
+                        if kind in _TERMINAL_KINDS:
+                            return
+                        break  # reset timeout for next message
+                # Inner loop broke normally (processed a message), continue
+        except TimeoutError:
+            if got_first_reply:
+                yield REPLY_TIMEOUT, ""
+                return
+            # No reply at all: retry (next attempt)
+            continue
+
+    # All attempts exhausted
+    yield REPLY_TIMEOUT, ""
+
+
 async def stream_replies(
     request_topic: str,
     payload: str,
     correlation_id: str,
 ) -> AsyncGenerator[tuple[str, str], None]:
-    """Publish a request and yield (kind, content) reply tuples.
+    """One-shot: create a connection, send a request, yield replies, close.
 
-    Implements the A2A requester retry/timeout profile: retries with new
-    Correlation Data on first-reply timeout, validates Correlation Data
-    on incoming messages. Yields ("timeout", "") if all attempts are
-    exhausted or the stream stalls after receiving at least one reply.
+    Convenience wrapper around ``stream_request`` for callers that don't
+    manage their own MQTT client.
     """
     mqtt_session = uuid.uuid4().hex[:12]
     reply_t = topic_reply("cli", mqtt_session)
@@ -427,68 +525,10 @@ async def stream_replies(
         ),
     ) as client:
         await client.subscribe(reply_t, qos=1)
-
-        got_first_reply = False
-        current_correlation = correlation_id
-        # Accept replies matching any correlation from prior attempts,
-        # since the responder echoes the correlation from the first
-        # request it received (dedup drops retries by Task.id).
-        valid_correlations: set[str] = {correlation_id}
-
-        for attempt in range(MAX_ATTEMPTS):
-            if attempt > 0:
-                delay = _backoff_delay(attempt - 1)
-                await asyncio.sleep(delay)
-                # New Correlation Data per retry, same Task.id in payload
-                current_correlation = uuid.uuid4().hex[:16]
-                valid_correlations.add(current_correlation)
-
-            props = make_properties(
-                response_topic=reply_t,
-                correlation_data=current_correlation,
-            )
-            await client.publish(request_topic, payload, qos=1, properties=props)
-
-            try:
-                timeout = REPLY_FIRST_TIMEOUT
-                while True:
-                    async with asyncio.timeout(timeout):
-                        async for mqtt_msg in client.messages:
-                            raw = mqtt_msg.payload.decode() if mqtt_msg.payload else ""
-                            if not raw:
-                                continue
-
-                            # Validate Correlation Data against all attempts
-                            msg_corr = get_correlation_data(mqtt_msg)
-                            if msg_corr not in valid_correlations:
-                                continue
-
-                            try:
-                                data = json.loads(raw)
-                            except Exception:
-                                continue
-
-                            kind, content = classify_reply(data)
-                            if not kind:
-                                continue
-
-                            got_first_reply = True
-                            timeout = STREAM_IDLE_TIMEOUT
-
-                            yield kind, content
-                            if kind in _TERMINAL_KINDS:
-                                return
-                            break  # reset timeout for next message
-                    # Inner loop broke normally (processed a message), continue
-            except TimeoutError:
-                if got_first_reply:
-                    yield REPLY_TIMEOUT, ""
-                    return
-                # No reply at all: retry (next attempt)
-                continue
-
-        # All attempts exhausted
-        yield REPLY_TIMEOUT, ""
+        async for kind, content in stream_request(
+            client, request_topic, reply_t, payload, correlation_id
+        ):
+            yield kind, content
 
 
 # --- Shared request validation ---

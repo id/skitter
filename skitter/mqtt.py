@@ -2,6 +2,7 @@
 
 import os
 import ssl
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from paho.mqtt.packettypes import PacketTypes
@@ -11,11 +12,16 @@ import aiomqtt
 
 load_dotenv()
 
-MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
-MQTT_TLS = os.environ.get("MQTT_TLS", "") == "1"
-MQTT_USER = os.environ.get("MQTT_USER", "")
-MQTT_PASS = os.environ.get("MQTT_PASS", "")
+MQTT_BROKER_URL = os.environ.get("MQTT_BROKER_URL", "mqtt://localhost:1883")
+
+_parsed = urlparse(MQTT_BROKER_URL)
+MQTT_HOST = _parsed.hostname or "localhost"
+MQTT_TLS = _parsed.scheme == "mqtts"
+MQTT_PORT = _parsed.port or (8883 if MQTT_TLS else 1883)
+
+MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
+MQTT_CA_CERT = os.environ.get("MQTT_CA_CERT", "")
 
 
 def mqtt_client_kwargs(**overrides) -> dict:
@@ -29,10 +35,13 @@ def mqtt_client_kwargs(**overrides) -> dict:
         "protocol": aiomqtt.ProtocolVersion.V5,
     }
     if MQTT_TLS:
-        kwargs["tls_context"] = ssl.create_default_context()
-    if MQTT_USER:
-        kwargs["username"] = MQTT_USER
-        kwargs["password"] = MQTT_PASS
+        ctx = ssl.create_default_context()
+        if MQTT_CA_CERT:
+            ctx.load_verify_locations(MQTT_CA_CERT)
+        kwargs["tls_context"] = ctx
+    if MQTT_USERNAME:
+        kwargs["username"] = MQTT_USERNAME
+        kwargs["password"] = MQTT_PASSWORD
     kwargs.update(overrides)
     return kwargs
 

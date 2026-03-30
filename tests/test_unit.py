@@ -370,7 +370,7 @@ class TestTopicParsing:
         topic = "$a2a/v1/request/skitter/default/researcher"
         assert _parse_agent_id_from_topic(topic) == "researcher"
 
-    def test_parse_workflow_id(self):
+    def test_parse_app_id(self):
         topic = "$a2a/v1/request/skitter/default/quick-research"
         assert _parse_agent_id_from_topic(topic) == "quick-research"
 
@@ -1683,7 +1683,7 @@ class TestAppCreation:
         wf = next(
             e
             for e in card["capabilities"]["extensions"]
-            if e["uri"] == "urn:skitter:workflow"
+            if e["uri"] == "urn:skitter:app"
         )
         assert len(wf["params"]["tasks"]) == 1
 
@@ -1768,8 +1768,8 @@ class TestBuildCard:
         assert card["capabilities"]["pushNotifications"] is False
         assert card["defaultInputModes"] == ["text/plain", "application/json"]
 
-    def test_composed_app_card_has_workflow_extension(self):
-        from skitter.discovery import WORKFLOW_EXTENSION_URI, build_card
+    def test_composed_app_card_has_app_extension(self):
+        from skitter.discovery import APP_EXTENSION_URI, build_card
 
         agent = AgentDef(id="my-app", name="My App", description="A composed app")
         metadata = {
@@ -1785,7 +1785,7 @@ class TestBuildCard:
         card = build_card(agent, metadata=metadata)
         assert "metadata" not in card
         exts = card["capabilities"]["extensions"]
-        wf = next(e for e in exts if e["uri"] == WORKFLOW_EXTENSION_URI)
+        wf = next(e for e in exts if e["uri"] == APP_EXTENSION_URI)
         assert wf["params"]["variables"] == ["topic"]
         assert len(wf["params"]["tasks"]) == 1
         assert wf["params"]["tasks"][0]["id"] == "step1"
@@ -1826,18 +1826,18 @@ class TestParseCard:
         card = parse_card(raw)
         assert card["name"] == "Test"
 
-    def test_is_workflow_card(self):
-        from skitter.discovery import is_workflow_card
+    def test_is_app_card(self):
+        from skitter.discovery import is_app_card
 
-        assert not is_workflow_card({"name": "Agent"})
-        assert not is_workflow_card({"capabilities": {}})
-        assert not is_workflow_card({"capabilities": {"extensions": []}})
-        assert is_workflow_card(
+        assert not is_app_card({"name": "Agent"})
+        assert not is_app_card({"capabilities": {}})
+        assert not is_app_card({"capabilities": {"extensions": []}})
+        assert is_app_card(
             {
                 "capabilities": {
                     "extensions": [
                         {
-                            "uri": "urn:skitter:workflow",
+                            "uri": "urn:skitter:app",
                             "params": {"tasks": [{"id": "step1"}]},
                         }
                     ]
@@ -2012,76 +2012,6 @@ class TestLoadAgent:
         assert agent.codex_instructions == "You are a senior developer."
 
 
-# --- Pull (save cards) ---
-
-
-class TestPullCards:
-    def test_save_card(self, tmp_path):
-        from skitter.pull import save_cards
-
-        cards = [
-            {
-                "_agent_id": "researcher",
-                "name": "Researcher",
-                "description": "Deep research",
-                "capabilities": {"streaming": True},
-                "skills": [{"id": "researcher", "name": "Researcher"}],
-            }
-        ]
-        written = save_cards(cards, tmp_path)
-        assert len(written) == 1
-        data = json.loads((tmp_path / "researcher.json").read_text())
-        assert data["name"] == "Researcher"
-        assert data["description"] == "Deep research"
-        assert data["capabilities"] == {"streaming": True}
-        # Internal fields should be stripped
-        assert "_agent_id" not in data
-
-    def test_skip_skitter_agent(self, tmp_path):
-        from skitter.pull import save_cards
-
-        cards = [{"_agent_id": "skitter", "name": "Skitter Runtime"}]
-        written = save_cards(cards, tmp_path)
-        assert written == []
-
-    def test_save_workflow_cards(self, tmp_path):
-        from skitter.pull import save_cards
-
-        cards = [
-            {
-                "_agent_id": "pipeline",
-                "name": "Pipeline",
-                "capabilities": {
-                    "extensions": [
-                        {
-                            "uri": "urn:skitter:workflow",
-                            "params": {"tasks": [{"id": "t1"}]},
-                        }
-                    ]
-                },
-            }
-        ]
-        written = save_cards(cards, tmp_path)
-        assert len(written) == 1
-        data = json.loads((tmp_path / "pipeline.json").read_text())
-        assert data["name"] == "Pipeline"
-        wf = next(
-            e
-            for e in data["capabilities"]["extensions"]
-            if e["uri"] == "urn:skitter:workflow"
-        )
-        assert wf["params"]["tasks"] == [{"id": "t1"}]
-
-    def test_skip_existing_file(self, tmp_path):
-        from skitter.pull import save_cards
-
-        (tmp_path / "researcher.json").write_text("{}\n")
-        cards = [{"_agent_id": "researcher", "name": "Researcher"}]
-        written = save_cards(cards, tmp_path)
-        assert written == []
-        assert (tmp_path / "researcher.json").read_text() == "{}\n"
-
-
 # --- Safe format ---
 
 
@@ -2218,7 +2148,7 @@ class TestDiscoveryRegistry:
                 "capabilities": {
                     "extensions": [
                         {
-                            "uri": "urn:skitter:workflow",
+                            "uri": "urn:skitter:app",
                             "params": {"tasks": [{"id": "t1"}]},
                         }
                     ]
@@ -2902,11 +2832,11 @@ class TestRuntimeApi:
         result = await handle_query(self.db, "")
         assert isinstance(result, ErrorResult)
 
-    def test_runtime_card(self):
-        from skitter.runtime_api import runtime_card
+    def test_coordinator_card(self):
+        from skitter.runtime_api import coordinator_card
 
-        card = runtime_card()
-        assert card["name"] == "Skitter Runtime"
+        card = coordinator_card()
+        assert card["name"] == "Skitter"
         assert card["skills"][0]["id"] == "default"
 
     @pytest.mark.asyncio

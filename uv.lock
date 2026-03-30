@@ -1735,7 +1735,7 @@ wheels = [
 [[package]]
 name = "skitter"
 version = "0.2.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiomqtt" },
     { name = "litellm" },

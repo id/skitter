@@ -105,12 +105,12 @@ class DeleteAppResult(QueryResult):
         return {"deleted_app": self.app_id}
 
 
-def runtime_card() -> dict:
+def coordinator_card() -> dict:
     """Build the discovery card for the skitter agent."""
     agent = AgentDef(
         id=AGENT_ID,
-        name="Skitter Runtime",
-        description="Query and manage Skitter runtime state",
+        name="Skitter",
+        description="Create and manage composed multi-agent apps",
     )
     return build_card(agent)
 

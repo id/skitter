@@ -20,5 +20,9 @@ skitter = "skitter.__main__:dispatch"
 cloud = ["boto3>=1.35"]
 postgres = ["psycopg[binary]>=3.1", "psycopg_pool>=3.1"]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.25"]

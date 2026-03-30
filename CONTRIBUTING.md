@@ -15,7 +15,9 @@ skitter/
   a2a.py           A2A protocol: message types, topics, validation, requester helper
   mqtt.py          MQTT v5 transport: connection, properties, extraction
   config.py        ~/.skitter/ management, YAML loading, dataclasses
-  cli.py           Chat client
+  request.py       One-shot A2A request
+  cli.py           Interactive A2A session client
+  manage.py        App/session management (coordinator wrappers)
   __main__.py      CLI dispatch
 ```
 
@@ -26,7 +28,7 @@ Key docs: `docs/architecture.md` (detailed design), `docs/spec/` (A2A and A2A-ov
 ```bash
 uv sync
 docker compose up -d   # local EMQX broker
-uv run python -m skitter   # start coordinator
+uv run skitter   # start coordinator
 ```
 
 ## Agent Runner
@@ -54,8 +56,8 @@ developer_instructions = "You are a senior developer."
 Start an agent-runner by pointing it at the file:
 
 ```bash
-uv run python -m skitter agent-runner ~/.claude/agents/researcher.md
-uv run python -m skitter agent-runner ~/.codex/agents/coder.toml
+uv run skitter agent-runner ~/.claude/agents/researcher.md
+uv run skitter agent-runner ~/.codex/agents/coder.toml
 ```
 
 Runtime is inferred from file extension (`.md` = Claude, `.toml` = Codex).
@@ -77,10 +79,9 @@ llm:
 
 | Variable | Default | Description |
 |---|---|---|
-| `MQTT_HOST` | `localhost` | Broker hostname |
-| `MQTT_PORT` | `1883` | Broker port |
-| `MQTT_TLS` | (empty) | Set to `1` for TLS |
-| `MQTT_USER` / `MQTT_PASS` | (empty) | Broker auth |
+| `MQTT_BROKER_URL` | `mqtt://localhost:1883` | Broker URL (`mqtt://` or `mqtts://`) |
+| `MQTT_USERNAME` / `MQTT_PASSWORD` | (empty) | Broker auth |
+| `MQTT_CA_CERT` | (empty) | Path to custom CA certificate for `mqtts://` |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
 | `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation (`provider/model`, e.g. `anthropic/claude-haiku-4-5`; see [litellm providers](https://docs.litellm.ai/docs/providers)) |
@@ -110,11 +111,11 @@ $a2a/v1/
 
 ```bash
 # Unit tests (no broker needed)
-uv run python -m pytest tests/test_unit.py -q
+uv run pytest tests/test_unit.py -q
 
 # E2E tests (needs EMQX on localhost, no Docker/LLM API required)
 docker compose up -d   # start local EMQX
-uv run python -m pytest tests/test_e2e.py -v -s
+uv run pytest tests/test_e2e.py -v -s
 ```
 
 E2E tests run the coordinator and agent-runners in-process with mocked `_run_cli` (no real CLI subprocess) and mocked `generate_graph` (no LLM API). Real MQTT messages flow through EMQX on localhost. Tests cover: agent discovery, direct queries, streaming, composed app pipelines (linear + fan-out/fan-in), session cancellation, and failure propagation/cascading.

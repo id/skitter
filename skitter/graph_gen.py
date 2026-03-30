@@ -8,7 +8,7 @@ from skitter.llm import complete
 log = logging.getLogger("skitter.graph_gen")
 
 _SYSTEM = """\
-You are a workflow orchestrator. Given a set of agent capabilities and user \
+You are an app orchestrator. Given a set of agent capabilities and user \
 instructions, generate an orchestration graph as JSON.
 
 Output format (no markdown, no explanation — just the JSON object):

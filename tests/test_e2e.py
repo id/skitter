@@ -421,7 +421,7 @@ class TestAgentRunner:
             {
                 "jsonrpc": "2.0",
                 "id": "rpc-1",
-                "method": "message/send",
+                "method": "SendMessage",
                 "params": {
                     "message": {
                         "role": "ROLE_USER",
@@ -535,6 +535,95 @@ class TestAgentRunner:
                         break
 
         assert call_count == 1  # handler was NOT called again
+
+    async def test_cancel_task_gets_reply(self, start_agent):
+        """CancelTask must get a JSON-RPC reply from the agent runner."""
+        aid = f"test-cancel-reply-{uuid.uuid4().hex[:4]}"
+
+        cancel_event = asyncio.Event()
+
+        async def slow_handler(agent, prompt, publish_stream, env):
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancel_event.set()
+                raise
+            return "done"
+
+        await start_agent(aid, handler=slow_handler)
+
+        task_id = str(uuid.uuid4())
+        test_id = uuid.uuid4().hex[:8]
+        reply_t = topic_reply("test", test_id)
+
+        async with aiomqtt.Client(
+            **mqtt_client_kwargs(
+                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-cancel-reply-{test_id}",
+            ),
+        ) as client:
+            await client.subscribe(reply_t, qos=1)
+
+            # Send a request that will block for 30s
+            req = A2ARequest(
+                text="slow task",
+                request_id=f"r-{uuid.uuid4().hex[:8]}",
+                task_id=task_id,
+                sender="test",
+            )
+            props = make_properties(
+                response_topic=reply_t, correlation_data=req.request_id
+            )
+            await client.publish(
+                topic_request(aid), req.to_json(), qos=1, properties=props
+            )
+
+            # Wait for submitted ack
+            async with asyncio.timeout(5.0):
+                async for msg in client.messages:
+                    raw = msg.payload.decode() if msg.payload else ""
+                    if not raw:
+                        continue
+                    data = json.loads(raw)
+                    kind, _ = classify_reply(data)
+                    if kind == REPLY_SUBMITTED:
+                        break
+
+            # Now send CancelTask with its own correlation
+            cancel_corr = f"cancel-{uuid.uuid4().hex[:8]}"
+            cancel_reply_t = topic_reply("test", f"cancel-{test_id}")
+            await client.subscribe(cancel_reply_t, qos=1)
+            cancel_msg = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": f"cancel-{task_id}",
+                    "method": "CancelTask",
+                    "params": {"id": task_id},
+                }
+            )
+            cancel_props = make_properties(
+                response_topic=cancel_reply_t,
+                correlation_data=cancel_corr,
+            )
+            await client.publish(
+                topic_request(aid), cancel_msg, qos=1, properties=cancel_props
+            )
+
+            # Must receive a reply on the cancel reply topic
+            got_cancel_reply = False
+            async with asyncio.timeout(5.0):
+                async for msg in client.messages:
+                    raw = msg.payload.decode() if msg.payload else ""
+                    if not raw:
+                        continue
+                    data = json.loads(raw)
+                    result = data.get("result", {})
+                    su = result.get("statusUpdate", {})
+                    state = su.get("status", {}).get("state", "")
+                    if state == "TASK_STATE_CANCELED":
+                        got_cancel_reply = True
+                        break
+
+            assert got_cancel_reply, "Agent must reply to CancelTask"
 
 
 # ---------------------------------------------------------------------------

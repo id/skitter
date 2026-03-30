@@ -80,7 +80,7 @@ class SessionTask:
     terminal: bool = False
     target: TaskTarget | None = None
     dispatch_correlation: str = ""  # MQTT Correlation Data sent with dispatch
-    dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for tasks/cancel
+    dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for CancelTask
 
 
 @dataclass
@@ -626,7 +626,7 @@ class Coordinator:
     async def _cancel_session_cleanup(self, session_id: str) -> None:
         """Clean up in-memory state after a session is canceled in the DB.
 
-        Sends A2A tasks/cancel to agents with inflight tasks (best-effort).
+        Sends A2A CancelTask to agents with inflight tasks (best-effort).
         """
         state = self._sessions.pop(session_id, None)
         if not state:
@@ -634,33 +634,40 @@ class Coordinator:
         self._request_task_index.pop(state.request_task_id, None)
         now = datetime.now(timezone.utc).isoformat()
 
-        # Send tasks/cancel to agents with inflight tasks
+        # Send CancelTask to agents with inflight tasks
+        cancel_reply_t = topic_reply(RUNTIME_AGENT_ID, f"cancel-{session_id[:8]}")
         for tid in list(state.inflight):
             task_def = state.graph.get(tid)
             cancel_id = task_def.dispatch_task_id if task_def else ""
             if cancel_id and self._client:
+                correlation = uuid.uuid4().hex[:16]
                 cancel_msg = json.dumps(
                     {
                         "jsonrpc": "2.0",
                         "id": f"cancel-{cancel_id}",
-                        "method": "tasks/cancel",
+                        "method": "CancelTask",
                         "params": {"id": cancel_id},
                     }
                 )
+                props = make_properties(
+                    response_topic=cancel_reply_t,
+                    correlation_data=correlation,
+                )
                 try:
                     await self._client.publish(
-                        topic_request(task_def.agent), cancel_msg, qos=1
+                        topic_request(task_def.agent),
+                        cancel_msg,
+                        qos=1,
+                        properties=props,
                     )
                     log.info(
-                        "Sent tasks/cancel for %s/%s → %s",
+                        "Sent CancelTask for %s/%s -> %s",
                         session_id,
                         tid,
                         task_def.agent,
                     )
                 except Exception:
-                    log.warning(
-                        "Failed to send tasks/cancel for %s/%s", session_id, tid
-                    )
+                    log.warning("Failed to send CancelTask for %s/%s", session_id, tid)
 
         for tid in state.pending | state.inflight:
             self._db.update_task(

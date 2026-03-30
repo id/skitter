@@ -35,7 +35,13 @@ from skitter.a2a import (
     topic_request,
     validate_a2a_request,
 )
-from skitter.mqtt import make_properties, make_will_properties, mqtt_client_kwargs
+from skitter.mqtt import (
+    get_correlation_data,
+    get_response_topic,
+    make_properties,
+    make_will_properties,
+    mqtt_client_kwargs,
+)
 
 
 def agent_env() -> dict[str, str]:
@@ -425,18 +431,35 @@ async def run_with_def(agent: AgentDef) -> None:
                 if not payload:
                     continue
 
-                # Parse method to handle tasks/cancel separately
+                # Parse method to handle CancelTask separately
                 try:
                     data = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
                 method = data.get("method", "")
 
-                if method == "tasks/cancel":
+                if method == "CancelTask":
                     cancel_id = data.get("params", {}).get("id", "")
                     if cancel_id and cancel_id in task_registry:
                         task_registry[cancel_id].cancel()
                         log.info("Canceling task %s", cancel_id)
+                    # Reply to CancelTask per A2A spec
+                    cancel_reply_t = get_response_topic(mqtt_msg) or ""
+                    cancel_corr = get_correlation_data(mqtt_msg) or ""
+                    if cancel_reply_t and cancel_corr:
+                        rpc_id = data.get("id", "")
+                        cancel_state = (
+                            "canceled" if cancel_id in task_registry else "failed"
+                        )
+                        resp = make_status_event(
+                            request_id=rpc_id,
+                            task_id=cancel_id or "",
+                            state=cancel_state,
+                        )
+                        props = make_properties(correlation_data=cancel_corr)
+                        await client.publish(
+                            cancel_reply_t, resp, qos=1, properties=props
+                        )
                     continue
 
                 validated = await validate_a2a_request(mqtt_msg, client, log=log)

@@ -46,7 +46,7 @@ class TestA2ARequest:
         d = json.loads(j)
         assert d["jsonrpc"] == "2.0"
         assert d["id"] == "req-abc123"
-        assert d["method"] == "message/send"
+        assert d["method"] == "SendMessage"
         msg = d["params"]["message"]
         assert msg["parts"][0]["text"] == "Research quantum computing"
         assert msg["taskId"] == "550e8400-e29b-41d4-a716-446655440000"
@@ -100,7 +100,7 @@ class TestA2ARequest:
             {
                 "jsonrpc": "2.0",
                 "id": "r1",
-                "method": "message/send",
+                "method": "SendMessage",
                 "params": {
                     "message": {
                         "role": "ROLE_USER",
@@ -300,6 +300,220 @@ class TestStatusEvent:
         kind, content = classify_reply(d)
         assert kind == REPLY_INPUT_REQUIRED
         assert content == "auth-required"
+
+    def test_status_event_has_timestamp(self):
+        """TaskStatus must include ISO 8601 timestamp per proto."""
+        event = make_status_event("req-1", "t1", "working", message="hi")
+        d = json.loads(event)
+        ts = d["result"]["statusUpdate"]["status"]["timestamp"]
+        assert ts  # non-empty
+        # Must be ISO 8601 parseable
+        from datetime import datetime
+
+        datetime.fromisoformat(ts)
+
+    def test_artifact_event_append_default_false(self):
+        """append field omitted when False (proto3 default)."""
+        event = make_artifact_event("req-1", "t1", "result")
+        d = json.loads(event)
+        assert "append" not in d["result"]["artifactUpdate"]
+
+    def test_artifact_event_append_true(self):
+        """append=True must be included in the wire format."""
+        event = make_artifact_event("req-1", "t1", "chunk2", append=True)
+        d = json.loads(event)
+        assert d["result"]["artifactUpdate"]["append"] is True
+
+    def test_classify_stream_response_task_completed(self):
+        """StreamResponse.task with completed status maps to REPLY_TERMINAL."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "task": {
+                    "id": "t1",
+                    "contextId": "ctx-1",
+                    "status": {"state": "TASK_STATE_COMPLETED"},
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TERMINAL
+
+    def test_classify_task_with_artifacts(self):
+        """SendMessageResponse.task with artifacts extracts artifact text."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "task": {
+                    "id": "t1",
+                    "status": {"state": "TASK_STATE_COMPLETED"},
+                    "artifacts": [
+                        {
+                            "artifactId": "a1",
+                            "parts": [{"text": "Final answer"}],
+                        }
+                    ],
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TERMINAL
+        assert content == "Final answer"
+
+    def test_classify_stream_response_task_failed(self):
+        """StreamResponse.task with failed status maps to REPLY_FAILED."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "task": {
+                    "id": "t1",
+                    "status": {
+                        "state": "TASK_STATE_FAILED",
+                        "message": {
+                            "role": "ROLE_AGENT",
+                            "parts": [{"text": "boom"}],
+                        },
+                    },
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_FAILED
+        assert content == "boom"
+
+    def test_classify_stream_response_task_working(self):
+        """StreamResponse.task with working status maps to REPLY_TEXT."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "task": {
+                    "id": "t1",
+                    "status": {
+                        "state": "TASK_STATE_WORKING",
+                        "message": {
+                            "role": "ROLE_AGENT",
+                            "parts": [{"text": "thinking"}],
+                        },
+                    },
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TEXT
+        assert content == "thinking"
+
+    def test_classify_stream_response_message(self):
+        """StreamResponse.message maps to REPLY_TEXT."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "ROLE_AGENT",
+                    "parts": [{"text": "hello from agent"}],
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TEXT
+        assert content == "hello from agent"
+
+    def test_classify_data_part(self):
+        """Part with data field should serialize as JSON text."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "ROLE_AGENT",
+                    "parts": [{"data": {"key": "value"}}],
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TEXT
+        assert '"key"' in content
+        assert '"value"' in content
+
+    def test_classify_url_part(self):
+        """Part with url field should return the URL as text."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "ROLE_AGENT",
+                    "parts": [{"url": "https://example.com/file.pdf"}],
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TEXT
+        assert content == "https://example.com/file.pdf"
+
+    def test_classify_raw_part(self):
+        """Part with raw field should return a placeholder."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "ROLE_AGENT",
+                    "parts": [{"raw": "AQID", "filename": "data.bin"}],
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TEXT
+        assert content == "[binary: data.bin]"
+
+    def test_classify_artifact_with_data_part(self):
+        """Artifact with data part should serialize as JSON."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "artifactUpdate": {
+                    "taskId": "t1",
+                    "artifact": {
+                        "artifactId": "a1",
+                        "parts": [{"data": [1, 2, 3]}],
+                    },
+                    "lastChunk": True,
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_ARTIFACT
+        assert content == "[1, 2, 3]"
+
+    def test_classify_multi_part_message(self):
+        """Multiple parts in a message are concatenated."""
+        d = {
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "ROLE_AGENT",
+                    "parts": [
+                        {"text": "Result: "},
+                        {"data": {"key": 1}},
+                    ],
+                }
+            },
+        }
+        kind, content = classify_reply(d)
+        assert kind == REPLY_TEXT
+        assert content == 'Result: {"key": 1}'
 
 
 class TestSpecDefaults:
@@ -790,8 +1004,8 @@ class TestCoordinatorDispatchCompliance:
         assert len(dispatched_payloads) == 1
         dispatched = dispatched_payloads[0]
 
-        # Must use message/send method
-        assert dispatched["method"] == "message/send"
+        # Must use SendMessage method
+        assert dispatched["method"] == "SendMessage"
 
         # taskId in the message must be a valid UUID
         dispatched_task_id = dispatched["params"]["message"]["taskId"]
@@ -938,7 +1152,7 @@ class TestCoordinatorDispatchCompliance:
 
     @pytest.mark.asyncio
     async def test_cancel_uses_a2a_task_id(self):
-        """tasks/cancel must reference the dispatched Task.id, not the JSON-RPC id."""
+        """CancelTask must reference the dispatched Task.id and include MQTT v5 properties."""
         sup, mock_client = self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
@@ -957,15 +1171,27 @@ class TestCoordinatorDispatchCompliance:
         mock_client.publish.reset_mock()
         await sup._cancel_session_cleanup(state.session_id)
 
-        # Find the tasks/cancel message
-        cancel_calls = [
-            json.loads(call.args[1])
+        # Find the CancelTask publish call
+        cancel_publish_calls = [
+            call
             for call in mock_client.publish.call_args_list
             if "/request/" in str(call.args[0])
         ]
-        cancel_msgs = [c for c in cancel_calls if c.get("method") == "tasks/cancel"]
+        cancel_payloads = [json.loads(c.args[1]) for c in cancel_publish_calls]
+        cancel_msgs = [c for c in cancel_payloads if c.get("method") == "CancelTask"]
         assert len(cancel_msgs) == 1
         assert cancel_msgs[0]["params"]["id"] == dispatch_task_id
+
+        # CancelTask must include MQTT v5 properties (Response Topic + Correlation Data)
+        cancel_call = next(
+            c
+            for c in cancel_publish_calls
+            if json.loads(c.args[1]).get("method") == "CancelTask"
+        )
+        props = cancel_call.kwargs.get("properties")
+        assert props is not None, "CancelTask must include MQTT v5 properties"
+        assert getattr(props, "ResponseTopic", None), "Must set Response Topic"
+        assert getattr(props, "CorrelationData", None), "Must set Correlation Data"
 
     @pytest.mark.asyncio
     async def test_handle_request_deduplicates_by_task_id(self):
@@ -1333,7 +1559,7 @@ class TestValidateA2ARequest:
             {
                 "jsonrpc": "2.0",
                 "id": "rpc-1",
-                "method": "message/send",
+                "method": "SendMessage",
                 "params": {
                     "message": {
                         "role": "ROLE_USER",
@@ -3776,7 +4002,7 @@ class TestSessionRecovery:
             if "/request/" in str(call.args[0]) and "y" in str(call.args[0])
         ]
         assert len(dispatched) == 1
-        assert dispatched[0]["method"] == "message/send"
+        assert dispatched[0]["method"] == "SendMessage"
 
     @pytest.mark.asyncio
     async def test_recover_timeout_fails_inflight_task(self):

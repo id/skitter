@@ -7,6 +7,7 @@ layer on top.
 
 import asyncio
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -149,7 +150,10 @@ def make_status_event(
     ``metadata`` is placed on the event envelope (not inside status).
     """
     wire_state = _STATE_TO_WIRE.get(state, state)
-    status: dict = {"state": wire_state}
+    status: dict = {
+        "state": wire_state,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
     if message:
         status["message"] = {
             "messageId": uuid.uuid4().hex,
@@ -177,6 +181,7 @@ def make_artifact_event(
     artifact_id: str = "",
     metadata: dict | None = None,
     last_chunk: bool = True,
+    append: bool = False,
 ) -> str:
     """Build a TaskArtifactUpdateEvent JSON-RPC response.
 
@@ -192,6 +197,8 @@ def make_artifact_event(
         },
         "lastChunk": last_chunk,
     }
+    if append:
+        event["append"] = True
     if metadata:
         event["metadata"] = metadata
     return json.dumps(
@@ -244,12 +251,36 @@ _TERMINAL_KINDS = frozenset(
 )
 
 
-def _extract_message_text(status: dict) -> str:
-    """Extract text from a TaskStatus.message (Message object or plain string)."""
-    msg = status.get("message", "")
+def _extract_part_text(part: dict) -> str:
+    """Extract displayable text from a single Part (any oneof variant)."""
+    if "text" in part:
+        return part["text"]
+    if "data" in part:
+        return json.dumps(part["data"])
+    if "url" in part:
+        return part["url"]
+    if "raw" in part:
+        filename = part.get("filename", "")
+        label = filename or part.get("mediaType", "binary")
+        return f"[binary: {label}]"
+    return ""
+
+
+def _extract_parts_text(parts: list[dict]) -> str:
+    """Extract text from a list of Parts, joining non-empty results."""
+    return "".join(_extract_part_text(p) for p in parts)
+
+
+def _extract_message_text(container: dict) -> str:
+    """Extract text from a TaskStatus.message or a standalone Message.
+
+    ``container`` may be a TaskStatus (with a nested ``message`` field)
+    or a Message object directly.
+    """
+    msg = container.get("message", "")
     if isinstance(msg, dict):
         parts = msg.get("parts", [])
-        return parts[0].get("text", "") if parts else ""
+        return _extract_parts_text(parts)
     return msg
 
 
@@ -259,8 +290,9 @@ def classify_reply(data: dict) -> tuple[str, str]:
     kind is one of: REPLY_TEXT, REPLY_TOOL, REPLY_ARTIFACT, REPLY_TERMINAL,
     REPLY_INPUT_REQUIRED, REPLY_FAILED, REPLY_ERROR, or "" for unrecognized.
 
-    Parses proto3 JSON StreamResponse: result contains either ``statusUpdate``
-    or ``artifactUpdate`` as the oneof wrapper key.
+    Parses proto3 JSON StreamResponse: result contains one of
+    ``statusUpdate``, ``artifactUpdate``, ``task``, or ``message``
+    as the oneof wrapper key.
     """
     if "error" in data:
         err = data["error"]
@@ -268,18 +300,50 @@ def classify_reply(data: dict) -> tuple[str, str]:
 
     result = data.get("result", {})
 
+    # Status update (StreamResponse.status_update) — checked first; most frequent in streaming
+    status_update = result.get("statusUpdate")
+    if status_update:
+        return _classify_status_update(status_update)
+
     # Artifact update (StreamResponse.artifact_update)
     artifact_update = result.get("artifactUpdate")
     if artifact_update:
         parts = artifact_update.get("artifact", {}).get("parts", [])
-        text = parts[0].get("text", "") if parts else ""
+        text = _extract_parts_text(parts)
         return REPLY_ARTIFACT, text
 
-    # Status update (StreamResponse.status_update)
-    status_update = result.get("statusUpdate")
-    if not status_update:
-        return "", ""
+    # Task object (StreamResponse.task / SendMessageResponse.task)
+    task_obj = result.get("task")
+    if task_obj:
+        status = task_obj.get("status", {})
+        wire_state = status.get("state", "")
+        state = _WIRE_TO_STATE.get(wire_state, wire_state)
+        # Prefer artifact text for completed tasks (blocking SendMessage response)
+        artifact_text = ""
+        for artifact in task_obj.get("artifacts", []):
+            artifact_text += _extract_parts_text(artifact.get("parts", []))
+        text = artifact_text or _extract_message_text(status)
+        if state in ("completed", "failed", "canceled", "rejected"):
+            return (REPLY_TERMINAL if state == "completed" else REPLY_FAILED), (
+                text or (f"Task {state}" if state != "completed" else "")
+            )
+        if state in ("input-required", "auth-required"):
+            return REPLY_INPUT_REQUIRED, text or state
+        if state == "submitted":
+            return REPLY_SUBMITTED, task_obj.get("id", "")
+        return REPLY_TEXT, text
 
+    # Message object (StreamResponse.message / SendMessageResponse.message)
+    message_obj = result.get("message")
+    if message_obj:
+        text = _extract_parts_text(message_obj.get("parts", []))
+        return REPLY_TEXT, text
+
+    return "", ""
+
+
+def _classify_status_update(status_update: dict) -> tuple[str, str]:
+    """Classify a TaskStatusUpdateEvent payload."""
     status = status_update.get("status", {})
     wire_state = status.get("state", "")
     state = _WIRE_TO_STATE.get(wire_state, wire_state)
@@ -318,7 +382,7 @@ def classify_reply(data: dict) -> tuple[str, str]:
 
 @dataclass
 class A2ARequest:
-    """JSON-RPC 2.0 request for A2A message/send."""
+    """JSON-RPC 2.0 request for A2A SendMessage."""
 
     text: str
     request_id: str
@@ -353,7 +417,7 @@ class A2ARequest:
             {
                 "jsonrpc": "2.0",
                 "id": self.request_id,
-                "method": "message/send",
+                "method": "SendMessage",
                 "params": params,
             }
         )

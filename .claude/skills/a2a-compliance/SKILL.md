@@ -10,9 +10,10 @@ Validate that skitter's protocol layer conforms to the A2A v1.0.0 spec and the A
 
 ## Authoritative Sources (local)
 
-Read all four files before checking:
+Read all five files before checking:
 
-- **A2A proto** (data structures): `docs/spec/a2a.proto`
+- **A2A proto** (canonical data structures): `docs/spec/a2a.proto`
+- **A2A JSON Schema** (machine-readable schema from proto): `docs/spec/a2a.json`
 - **A2A spec** (JSON serialization rules, examples): `docs/spec/a2a-specification.md`
 - **A2A-over-MQTT transport** (MQTT transport binding): `docs/spec/a2a-over-mqtt-transport.md`
 - **A2A-over-MQTT architecture** (design rationale): `docs/spec/a2a-over-mqtt-architecture.md`
@@ -21,7 +22,7 @@ Read all four files before checking:
 
 ### Phase 1: Data Object Wire Format Verification
 
-The proto is the canonical schema. The A2A spec (docs/specification.md) defines JSON serialization rules. Both must be checked. For every data object skitter produces or consumes on the wire:
+The proto is the canonical schema; the JSON Schema (`a2a.json`) is a machine-readable representation of the same definitions. The A2A spec (`a2a-specification.md`) defines JSON serialization rules. All three must be checked. For every data object skitter produces or consumes on the wire:
 
 1. **Enum values.** Check the spec's JSON serialization section for enum representation rules. Then grep skitter for every enum value written to JSON and verify it matches the required format.
 2. **Field names.** Check the spec's field naming convention. Verify every JSON field name skitter produces matches.

@@ -43,6 +43,7 @@ from skitter.a2a import (
     REPLY_TERMINAL,
     REPLY_TEXT,
     REPLY_TOOL,
+    TaskState,
     TaskTarget,
     classify_reply,
     make_a2a_error,
@@ -80,7 +81,7 @@ class SessionTask:
     terminal: bool = False
     target: TaskTarget | None = None
     dispatch_correlation: str = ""  # MQTT Correlation Data sent with dispatch
-    dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for tasks/cancel
+    dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for CancelTask
 
 
 @dataclass
@@ -101,13 +102,13 @@ class SessionState:
     variables: dict[str, str] = field(default_factory=dict)
 
     @property
-    def a2a_state(self) -> str:
+    def a2a_state(self) -> TaskState:
         """Derive A2A task state from session progress."""
         if self.pending or self.inflight:
-            return "working"
+            return TaskState.WORKING
         if self.failed:
-            return "failed"
-        return "completed"
+            return TaskState.FAILED
+        return TaskState.COMPLETED
 
 
 def _compute_ready(state: SessionState) -> list[str]:
@@ -456,7 +457,7 @@ class Coordinator:
         event = make_status_event(
             request_id=state.caller_correlation,
             task_id=state.request_task_id,
-            state="working",
+            state=TaskState.WORKING,
             message=content,
             context_id=state.context_id,
             metadata={"type": msg_type, "task_name": node_id},
@@ -477,7 +478,7 @@ class Coordinator:
         db_task_row_id = f"{state.session_id}/{node_id}"
         self._db.update_task(
             db_task_row_id,
-            state="completed",
+            state=TaskState.COMPLETED,
             result=result,
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
@@ -501,7 +502,7 @@ class Coordinator:
         db_task_row_id = f"{state.session_id}/{node_id}"
         self._db.update_task(
             db_task_row_id,
-            state="failed",
+            state=TaskState.FAILED,
             error=error,
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
@@ -512,7 +513,7 @@ class Coordinator:
             cascade_error = f"Skipped: upstream task '{node_id}' failed"
             self._db.update_task(
                 f"{state.session_id}/{ftid}",
-                state="failed",
+                state=TaskState.FAILED,
                 error=cascade_error,
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
@@ -539,7 +540,7 @@ class Coordinator:
         """Finalize a completed session; send result to caller."""
         if state.session_id not in self._sessions:
             return  # already finalized (race with timeout/failure)
-        self._db.update_session_state(state.session_id, "completed")
+        self._db.update_session_state(state.session_id, TaskState.COMPLETED)
 
         # Find terminal task results
         terminal_tids = _find_terminal_tasks(state)
@@ -567,13 +568,13 @@ class Coordinator:
         """Finalize a failed session."""
         if state.session_id not in self._sessions:
             return  # already finalized (race with timeout/failure)
-        self._db.update_session_state(state.session_id, "failed")
+        self._db.update_session_state(state.session_id, TaskState.FAILED)
 
         if state.caller_reply_topic and self._client:
             event = make_status_event(
                 request_id=state.caller_correlation,
                 task_id=state.request_task_id,
-                state="failed",
+                state=TaskState.FAILED,
                 message=error,
                 context_id=state.context_id,
             )
@@ -626,7 +627,7 @@ class Coordinator:
     async def _cancel_session_cleanup(self, session_id: str) -> None:
         """Clean up in-memory state after a session is canceled in the DB.
 
-        Sends A2A tasks/cancel to agents with inflight tasks (best-effort).
+        Sends A2A CancelTask to agents with inflight tasks (best-effort).
         """
         state = self._sessions.pop(session_id, None)
         if not state:
@@ -634,43 +635,50 @@ class Coordinator:
         self._request_task_index.pop(state.request_task_id, None)
         now = datetime.now(timezone.utc).isoformat()
 
-        # Send tasks/cancel to agents with inflight tasks
+        # Send CancelTask to agents with inflight tasks
+        cancel_reply_t = topic_reply(RUNTIME_AGENT_ID, f"cancel-{session_id[:8]}")
         for tid in list(state.inflight):
             task_def = state.graph.get(tid)
             cancel_id = task_def.dispatch_task_id if task_def else ""
             if cancel_id and self._client:
+                correlation = uuid.uuid4().hex[:16]
                 cancel_msg = json.dumps(
                     {
                         "jsonrpc": "2.0",
                         "id": f"cancel-{cancel_id}",
-                        "method": "tasks/cancel",
+                        "method": "CancelTask",
                         "params": {"id": cancel_id},
                     }
                 )
+                props = make_properties(
+                    response_topic=cancel_reply_t,
+                    correlation_data=correlation,
+                )
                 try:
                     await self._client.publish(
-                        topic_request(task_def.agent), cancel_msg, qos=1
+                        topic_request(task_def.agent),
+                        cancel_msg,
+                        qos=1,
+                        properties=props,
                     )
                     log.info(
-                        "Sent tasks/cancel for %s/%s → %s",
+                        "Sent CancelTask for %s/%s -> %s",
                         session_id,
                         tid,
                         task_def.agent,
                     )
                 except Exception:
-                    log.warning(
-                        "Failed to send tasks/cancel for %s/%s", session_id, tid
-                    )
+                    log.warning("Failed to send CancelTask for %s/%s", session_id, tid)
 
         for tid in state.pending | state.inflight:
             self._db.update_task(
-                f"{session_id}/{tid}", state="canceled", completed_at=now
+                f"{session_id}/{tid}", state=TaskState.CANCELED, completed_at=now
             )
         if state.caller_reply_topic and self._client:
             event = make_status_event(
                 request_id=state.caller_correlation,
                 task_id=state.request_task_id,
-                state="canceled",
+                state=TaskState.CANCELED,
                 message="Session canceled via runtime API",
                 context_id=state.context_id,
             )
@@ -761,7 +769,7 @@ class Coordinator:
             ack = make_status_event(
                 request_id=state.caller_correlation,
                 task_id=state.request_task_id,
-                state="submitted",
+                state=TaskState.SUBMITTED,
                 context_id=state.context_id,
             )
             props = make_properties(correlation_data=state.caller_correlation)
@@ -882,7 +890,7 @@ class Coordinator:
         event = make_status_event(
             request_id=correlation,
             task_id=task_id,
-            state="completed",
+            state=TaskState.COMPLETED,
             context_id=context_id,
         )
         await self._client.publish(reply_topic, event, qos=1, properties=props)
@@ -920,7 +928,11 @@ class Coordinator:
         """
         if not reply_topic or not self._client:
             return
-        reply_state = "working" if db_session.state == "running" else db_session.state
+        reply_state = (
+            TaskState.WORKING
+            if db_session.state == "running"
+            else TaskState(db_session.state)
+        )
         props = make_properties(correlation_data=correlation)
         wire_task_id = db_session.request_task_id
 

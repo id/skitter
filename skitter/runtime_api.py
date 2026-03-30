@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from skitter.a2a import TaskState
 from skitter.config import AgentDef
 from skitter.db import App, AppVersion, DB
 from skitter.discovery import build_card
@@ -237,7 +238,7 @@ def _cancel_session(db: DB, session_id: str) -> QueryResult:
         return ErrorResult(f"Session not found: {session_id}")
     if session.state != "running":
         return ErrorResult(f"Session not running (state={session.state})")
-    db.update_session_state(session.id, "canceled")
+    db.update_session_state(session.id, TaskState.CANCELED)
     return CancelSessionResult(session_id=session.id)
 
 

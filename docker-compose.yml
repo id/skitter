@@ -1,6 +1,6 @@
 services:
   emqx:
-    image: emqx/emqx-enterprise:6.2.0-rc.1
+    image: emqx/emqx-enterprise:6.2.0
     ports:
       - "1883:1883"   # MQTT
       - "8083:8083"   # WebSocket

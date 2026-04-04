@@ -1,0 +1,4 @@
+name = "test-codex"
+description = "Returns a JSON object with a greeting (test agent)"
+model = "gpt-5.4-mini"
+developer_instructions = "Return ONLY a JSON object {\"greeting\": \"hello\"}. No explanation."

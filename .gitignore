@@ -17,6 +17,10 @@ build/
 # EMQX data
 data/
 
+# Docker E2E test artifacts
+tests/workspace/
+tests/claude-state/
+
 # IDE
 .idea/
 .vscode/

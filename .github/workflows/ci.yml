@@ -31,3 +31,14 @@ jobs:
       - run: uv run python -m pytest tests/test_e2e.py -v
       - if: always()
         run: docker compose down
+
+  acceptance-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group dev
+      - run: docker compose up -d --wait
+      - run: uv run python -m pytest tests/test_acceptance.py -v -s
+      - if: always()
+        run: docker compose down

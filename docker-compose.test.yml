@@ -1,0 +1,83 @@
+# Docker E2E test stack: coordinator + agents on top of the base EMQX broker.
+# Usage: docker compose -f docker-compose.test.yml up -d --wait --build
+include:
+  - docker-compose.yml
+
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      emqx:
+        condition: service_healthy
+    environment:
+      MQTT_BROKER_URL: mqtt://emqx:1883
+      SKITTER_HOME: /home/skitter/.skitter
+      SKITTER_LLM_MODEL: ${SKITTER_LLM_MODEL:-claude-haiku-4-5}
+      SKITTER_LLM_API_KEY: ${SKITTER_LLM_API_KEY:-}
+      SKITTER_LLM_API: ${SKITTER_LLM_API:-anthropic}
+      SKITTER_LOG_LEVEL: DEBUG
+    networks:
+      - skitter
+
+  agent-claude: &claude-agent
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    depends_on:
+      emqx:
+        condition: service_healthy
+    environment:
+      MQTT_BROKER_URL: mqtt://emqx:1883
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      SKITTER_AGENT_PERMISSION_MODE: bypassPermissions
+      SKITTER_LOG_LEVEL: DEBUG
+    volumes:
+      - ${TEST_AGENTS_DIR:-./tests/fixtures/agents}:/home/skitter/.skitter/agents:ro
+    command: ["test-claude"]
+    networks:
+      - skitter
+
+  agent-claude-chat:
+    <<: *claude-agent
+    command: ["test-claude-chat"]
+
+  agent-codex: &codex-agent
+    <<: *claude-agent
+    environment:
+      MQTT_BROKER_URL: mqtt://emqx:1883
+      SKITTER_AGENT_PERMISSION_MODE: bypassPermissions
+      SKITTER_LOG_LEVEL: DEBUG
+    volumes:
+      - ${TEST_AGENTS_DIR:-./tests/fixtures/agents}:/home/skitter/.skitter/agents:ro
+      - ${CODEX_AUTH_JSON}:/home/skitter/.codex/auth.json:ro
+    command: ["test-codex"]
+
+  agent-codex-chat:
+    <<: *codex-agent
+    command: ["test-codex-chat"]
+
+  agent-sum:
+    <<: *claude-agent
+    command: ["test-sum"]
+
+  agent-writer:
+    <<: *claude-agent
+    volumes:
+      - ${TEST_AGENTS_DIR:-./tests/fixtures/agents}:/home/skitter/.skitter/agents:ro
+      - ${TEST_WORKSPACE:-./tests/workspace}:/tmp/workspace
+      - ${TEST_CLAUDE_STATE:-./tests/claude-state}:/home/skitter/.claude
+    command: ["test-writer"]
+
+  agent-codex-writer:
+    <<: *claude-agent
+    environment:
+      MQTT_BROKER_URL: mqtt://emqx:1883
+      SKITTER_AGENT_PERMISSION_MODE: bypassPermissions
+      SKITTER_LOG_LEVEL: DEBUG
+    volumes:
+      - ${TEST_AGENTS_DIR:-./tests/fixtures/agents}:/home/skitter/.skitter/agents:ro
+      - ${CODEX_AUTH_JSON}:/home/skitter/.codex/auth.json:ro
+      - ${TEST_WORKSPACE:-./tests/workspace}:/tmp/workspace
+    command: ["test-codex-writer"]

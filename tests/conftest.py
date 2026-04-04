@@ -1,7 +1,7 @@
 """Shared fixtures and helpers for tests.
 
-Provides: MQTT helpers (send_and_collect, wait_for_discovery, create_test_app)
-and skip conditions.
+Provides: MQTT helpers (send_and_collect, wait_for_discovery, create_test_app),
+subprocess runner, and skip conditions.
 """
 
 from __future__ import annotations
@@ -9,14 +9,17 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
 import aiomqtt
 import pytest
 
 from skitter.a2a import (
-    A2A_ORG,
-    A2A_UNIT,
+    a2a_org,
+    a2a_unit,
     A2ARequest,
     REPLY_ARTIFACT,
     REPLY_ERROR,
@@ -26,12 +29,10 @@ from skitter.a2a import (
     topic_discovery,
     topic_reply,
 )
-from skitter.mqtt import (
-    MQTT_HOST,
-    MQTT_PORT,
-    MQTT_TLS,
-    mqtt_client_kwargs,
-)  # MQTT_HOST/PORT/TLS derived from MQTT_BROKER_URL
+from skitter.config import load_config as _load_config
+from skitter.mqtt import mqtt_client_kwargs
+
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -40,15 +41,31 @@ from skitter.mqtt import (
 
 
 def mqtt_available() -> bool:
+    from urllib.parse import urlparse
+
+    broker = _load_config().broker
+    parsed = urlparse(broker.url)
+    host = parsed.hostname or "localhost"
+    tls = parsed.scheme == "mqtts"
+    port = parsed.port or (8883 if tls else 1883)
     try:
-        s = socket.create_connection((MQTT_HOST, MQTT_PORT), timeout=2)
-        if MQTT_TLS:
+        s = socket.create_connection((host, port), timeout=2)
+        if tls:
             import ssl
 
             ctx = ssl.create_default_context()
-            s = ctx.wrap_socket(s, server_hostname=MQTT_HOST)
+            s = ctx.wrap_socket(s, server_hostname=host)
         s.close()
         return True
+    except OSError:
+        return False
+
+
+def broker_reachable(host: str = "localhost", port: int = 1883) -> bool:
+    """Check if a broker is reachable via TCP."""
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
     except OSError:
         return False
 
@@ -57,16 +74,42 @@ needs_mqtt = pytest.mark.skipif(not mqtt_available(), reason="No MQTT broker")
 
 
 # ---------------------------------------------------------------------------
+# Subprocess helper
+# ---------------------------------------------------------------------------
+
+
+def run_skitter(
+    args: list[str],
+    env: dict[str, str],
+    *,
+    timeout: int = 60,
+    check: bool = False,
+    cwd: str | Path | None = None,
+) -> subprocess.CompletedProcess:
+    """Run ``python -m skitter <args>`` as a subprocess."""
+    cmd = [sys.executable, "-m", "skitter"] + args
+    return subprocess.run(
+        cmd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=check,
+        cwd=str(cwd or PROJECT_ROOT),
+    )
+
+
+# ---------------------------------------------------------------------------
 # MQTT helpers
 # ---------------------------------------------------------------------------
 
 
-async def wait_for_discovery(agent_id: str, timeout: float = 30.0) -> dict:
+async def wait_for_discovery(agent_id: str, timeout: float = 60.0) -> dict:
     """Wait for an agent's discovery card to appear on the broker."""
     topic = topic_discovery(agent_id)
     async with aiomqtt.Client(
         **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/test-disco-{uuid.uuid4().hex[:6]}",
+            identifier=f"{a2a_org()}/{a2a_unit()}/test-disco-{uuid.uuid4().hex[:6]}",
         ),
     ) as client:
         await client.subscribe(topic, qos=1)
@@ -85,7 +128,7 @@ async def wait_for_discovery(agent_id: str, timeout: float = 30.0) -> dict:
 async def send_and_collect(
     request_topic: str,
     msg: A2ARequest,
-    timeout: float = 60.0,
+    timeout: float = 120.0,
 ) -> str:
     """Publish A2A request via stream_request, return terminal result."""
     test_id = uuid.uuid4().hex[:8]
@@ -93,7 +136,7 @@ async def send_and_collect(
 
     async with aiomqtt.Client(
         **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/test-client-{test_id}",
+            identifier=f"{a2a_org()}/{a2a_unit()}/test-client-{test_id}",
         ),
     ) as client:
         await client.subscribe(reply_t, qos=1)

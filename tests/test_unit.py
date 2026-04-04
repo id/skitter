@@ -2,14 +2,16 @@
 
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 from skitter.config import AgentDef
 from skitter.coordinator import _parse_agent_id_from_topic
 from skitter.a2a import (
-    A2A_UNIT,
+    a2a_unit,
     A2ARequest,
     A2A_REQUEST_EXPIRED,
     A2A_RESPONDER_UNAVAILABLE,
@@ -570,10 +572,10 @@ class TestTopics:
         assert "/researcher" in t
 
     def test_a2a_event_topic(self):
-        from skitter.a2a import A2A_ORG
+        from skitter.a2a import a2a_org
 
         t = topic_a2a_event("skitter")
-        assert t == f"$a2a/v1/event/{A2A_ORG}/{A2A_UNIT}/skitter"
+        assert t == f"$a2a/v1/event/{a2a_org()}/{a2a_unit()}/skitter"
 
 
 # --- Topic parsing ---
@@ -2095,14 +2097,16 @@ class TestAgentRunnerCli:
             name="Researcher",
             runtime="claude",
             model="sonnet",
-            claude_agent="researcher",
+            instructions="You are a researcher.",
         )
         cmd = _build_cli_cmd(agent, "test prompt")
         assert cmd[0] == "claude"
         assert "-p" in cmd
-        assert "test prompt" in cmd
-        assert "--agent" in cmd
-        assert "researcher" in cmd
+        # Instructions should be prepended to prompt
+        prompt_idx = cmd.index("-p") + 1
+        assert "You are a researcher." in cmd[prompt_idx]
+        assert "test prompt" in cmd[prompt_idx]
+        assert "--agent" not in cmd
         assert "--model" in cmd
         assert "sonnet" in cmd
         assert cmd[cmd.index("--permission-mode") + 1] == "auto"
@@ -2123,7 +2127,7 @@ class TestAgentRunnerCli:
         assert cmd[-1] == "code something"  # prompt must be last (positional)
         assert "--model" in cmd
         assert "gpt-5-nano" in cmd
-        assert "--ephemeral" in cmd
+        assert "--ephemeral" not in cmd
         assert cmd[cmd.index("--color") + 1] == "never"
         assert "--full-auto" in cmd
 
@@ -2134,7 +2138,7 @@ class TestAgentRunnerCli:
             id="coder",
             name="Coder",
             runtime="codex",
-            codex_instructions="You are a senior developer.",
+            instructions="You are a senior developer.",
         )
         cmd = _build_cli_cmd(agent, "write tests")
         assert "-c" in cmd
@@ -2157,14 +2161,53 @@ class TestAgentRunnerCli:
         ]
         assert len(dev_instr_args) == 0
 
-    def test_build_claude_cmd_default_agent_name(self):
+    def test_build_claude_cmd_no_instructions(self):
         from skitter.agent_runner import _build_cli_cmd
 
         agent = AgentDef(id="researcher", name="Researcher", runtime="claude")
         cmd = _build_cli_cmd(agent, "test")
-        # When claude_agent is empty, uses agent.id
-        idx = cmd.index("--agent")
-        assert cmd[idx + 1] == "researcher"
+        # Without instructions, prompt is passed directly
+        prompt_idx = cmd.index("-p") + 1
+        assert cmd[prompt_idx] == "test"
+        assert "--agent" not in cmd
+
+    def test_build_claude_cmd_with_resume(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="researcher", name="Researcher", runtime="claude")
+        ctx = "550e8400-e29b-41d4-a716-446655440000"
+        cmd = _build_cli_cmd(agent, "test", resume_id=ctx)
+        assert "--resume" in cmd
+        idx = cmd.index("--resume")
+        assert cmd[idx + 1] == ctx
+
+    def test_build_claude_cmd_no_resume_without_context(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="researcher", name="Researcher", runtime="claude")
+        cmd = _build_cli_cmd(agent, "test")
+        assert "--resume" not in cmd
+
+    def test_build_codex_cmd_with_context_uses_resume(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="coder", name="Coder", runtime="codex")
+        ctx = "550e8400-e29b-41d4-a716-446655440000"
+        cmd = _build_cli_cmd(agent, "test", resume_id=ctx)
+        # Codex resume: codex exec resume [flags] <session_id> <prompt>
+        assert cmd[:3] == ["codex", "exec", "resume"]
+        assert cmd[-2] == ctx
+        assert cmd[-1] == "test"  # prompt is last
+
+    def test_build_codex_cmd_no_context(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="coder", name="Coder", runtime="codex")
+        cmd = _build_cli_cmd(agent, "test")
+        # Without context_id, uses regular exec (no resume subcommand)
+        assert cmd[0] == "codex"
+        assert cmd[1] == "exec"
+        assert "resume" not in cmd
 
     @pytest.mark.asyncio
     async def test_run_cli_missing_binary(self):
@@ -2176,9 +2219,10 @@ class TestAgentRunnerCli:
             pass
 
         with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result = await _run_cli(agent, "test", noop, {})
+            result, session_id = await _run_cli(agent, "test", noop, {})
             assert "claude" in result.lower()
             assert "not found" in result.lower()
+            assert session_id == ""
 
 
 class TestLoadAgent:
@@ -2199,7 +2243,7 @@ class TestLoadAgent:
         assert agent.description == "Deep research"
         assert agent.model == "sonnet"
         assert agent.runtime == "claude"
-        assert agent.claude_agent == "researcher"
+        assert agent.instructions == "You are a researcher."
 
     def test_load_claude_agent_minimal(self, tmp_path):
         (tmp_path / "simple.md").write_text("---\nname: simple\n---\nBe brief.\n")
@@ -2210,10 +2254,10 @@ class TestLoadAgent:
         assert agent.description == ""
         assert agent.model == ""
         assert agent.runtime == "claude"
-        assert agent.claude_agent == "simple"
+        assert agent.instructions == "Be brief."
 
     def test_load_claude_agent_name_differs_from_filename(self, tmp_path):
-        """claude_agent should use frontmatter name, not filename stem."""
+        """Agent ID should use frontmatter name, not filename stem."""
         (tmp_path / "my-copy.md").write_text(
             "---\nname: researcher\ndescription: Research\n---\nDo research.\n"
         )
@@ -2221,7 +2265,7 @@ class TestLoadAgent:
 
         agent = load_agent(str(tmp_path / "my-copy.md"))
         assert agent.id == "researcher"
-        assert agent.claude_agent == "researcher"
+        assert agent.instructions == "Do research."
 
     def test_load_codex_agent(self, tmp_path):
         (tmp_path / "coder.toml").write_text(
@@ -2235,7 +2279,7 @@ class TestLoadAgent:
         assert agent.runtime == "codex"
         assert agent.model == "gpt-5.1-codex-mini"
         assert agent.description == "You are a senior developer."
-        assert agent.codex_instructions == "You are a senior developer."
+        assert agent.instructions == "You are a senior developer."
 
 
 # --- Safe format ---
@@ -2516,6 +2560,239 @@ class TestSqliteDB:
         assert a1_sessions[0].id == "s1"
 
 
+class TestContextSessions:
+    """Test list_context_sessions DB query for app conversation continuity."""
+
+    def setup_method(self):
+        from skitter.db import App, AppVersion, SqliteDB
+
+        self.db = SqliteDB(":memory:")
+        self.db.create_app(App(id="app1", name="App1"))
+        self.db.create_app(App(id="app2", name="App2"))
+        self.db.create_app_version(AppVersion(id="v1", app_id="app1", version=1))
+        self.db.create_app_version(AppVersion(id="v2", app_id="app2", version=1))
+
+    def teardown_method(self):
+        self.db.close()
+
+    def _add_session(self, sid, app_version_id, context_id, state="completed"):
+        from skitter.db import DBSession
+
+        self.db.create_session(
+            DBSession(
+                id=sid,
+                app_version_id=app_version_id,
+                request_task_id=f"rtid-{sid}",
+                context_id=context_id,
+                request_json='{"params":{"message":{"parts":[{"text":"hello"}]}}}',
+            )
+        )
+        if state != "running":
+            self.db.update_session_state(sid, state)
+
+    def test_returns_completed_sessions_for_app_context(self):
+        self._add_session("s1", "v1", "ctx-1", state="completed")
+        self._add_session("s2", "v1", "ctx-1", state="completed")
+        self._add_session("s3", "v1", "ctx-1", state="running")  # excluded
+
+        result = self.db.list_context_sessions("app1", "ctx-1")
+        assert len(result) == 2
+        assert [s.id for s in result] == ["s1", "s2"]
+
+    def test_isolates_by_context_id(self):
+        self._add_session("s1", "v1", "ctx-1")
+        self._add_session("s2", "v1", "ctx-2")
+
+        result = self.db.list_context_sessions("app1", "ctx-1")
+        assert len(result) == 1
+        assert result[0].id == "s1"
+
+    def test_isolates_by_app_id(self):
+        self._add_session("s1", "v1", "ctx-1")
+        self._add_session("s2", "v2", "ctx-1")  # different app
+
+        result = self.db.list_context_sessions("app1", "ctx-1")
+        assert len(result) == 1
+        assert result[0].id == "s1"
+
+    def test_respects_limit(self):
+        for i in range(5):
+            self._add_session(f"s{i}", "v1", "ctx-1")
+
+        result = self.db.list_context_sessions("app1", "ctx-1", limit=3)
+        assert len(result) == 3
+
+    def test_limit_returns_newest_sessions_in_order(self):
+        """Regression: limit must return the newest N sessions, not oldest."""
+        for i in range(12):
+            self._add_session(f"s{i:02d}", "v1", "ctx-1")
+
+        result = self.db.list_context_sessions("app1", "ctx-1", limit=3)
+        ids = [s.id for s in result]
+        # Newest 3, ascending order
+        assert ids == ["s09", "s10", "s11"]
+
+    def test_empty_for_no_matches(self):
+        result = self.db.list_context_sessions("app1", "ctx-none")
+        assert result == []
+
+
+class TestConversationHistory:
+    """Test coordinator conversation history injection."""
+
+    def setup_method(self):
+        from skitter.db import App, AppVersion, DBSession, DBTask, SqliteDB
+
+        self.db = SqliteDB(":memory:")
+        self.db.create_app(App(id="app1", name="App1"))
+        self.db.create_app_version(
+            AppVersion(
+                id="v1",
+                app_id="app1",
+                version=1,
+                graph_json=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "step",
+                                "agent": "researcher",
+                                "description": "Do it",
+                                "needs": [],
+                                "terminal": True,
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+        # Create a prior completed session with result
+        self.db.create_session(
+            DBSession(
+                id="prior-1",
+                app_version_id="v1",
+                request_task_id="rtid-prior-1",
+                context_id="ctx-1",
+                request_json=A2ARequest(
+                    text="what is skitter?", request_id="r0"
+                ).to_json(),
+            )
+        )
+        self.db.create_task(
+            DBTask(
+                id="prior-1/step",
+                session_id="prior-1",
+                node_id="step",
+                agent="researcher",
+                terminal="1",
+            )
+        )
+        self.db.update_task(
+            "prior-1/step", state="completed", result="Skitter is an MQTT assistant."
+        )
+        self.db.update_session_state(
+            "prior-1", "completed", result="Skitter is an MQTT assistant."
+        )
+
+    def teardown_method(self):
+        self.db.close()
+
+    def _make_coordinator(self):
+        from skitter.coordinator import Coordinator
+
+        sup = Coordinator(self.db)
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        sup._client = mock_client
+        return sup, mock_client
+
+    def test_build_conversation_history(self):
+        sup, _ = self._make_coordinator()
+        history = sup._build_conversation_history("app1", "ctx-1")
+        assert "## Conversation history" in history
+        assert "what is skitter?" in history
+        assert "Skitter is an MQTT assistant." in history
+
+    def test_empty_history_for_no_context(self):
+        sup, _ = self._make_coordinator()
+        assert sup._build_conversation_history("app1", "") == ""
+
+    def test_empty_history_for_unknown_context(self):
+        sup, _ = self._make_coordinator()
+        assert sup._build_conversation_history("app1", "ctx-unknown") == ""
+
+    @pytest.mark.asyncio
+    async def test_history_injected_in_dispatched_prompt(self):
+        sup, mock_client = self._make_coordinator()
+
+        req = A2ARequest(text="tell me more", request_id="r1", context_id="ctx-1")
+        version = self.db.get_current_version("app1")
+
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+            app_id="app1",
+        )
+        state.conversation_history = sup._build_conversation_history("app1", "ctx-1")
+        await sup.dispatch_ready(state)
+
+        dispatched = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatched) == 1
+        prompt = dispatched[0]["params"]["message"]["parts"][0]["text"]
+        assert "Conversation history" in prompt
+        assert "what is skitter?" in prompt
+        assert "Skitter is an MQTT assistant." in prompt
+        assert "tell me more" in prompt
+
+    @pytest.mark.asyncio
+    async def test_no_history_without_context_id(self):
+        sup, mock_client = self._make_coordinator()
+
+        req = A2ARequest(text="fresh start", request_id="r2", context_id="ctx-new")
+        version = self.db.get_current_version("app1")
+
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="reply/t",
+            caller_correlation="corr",
+            app_id="app1",
+        )
+        await sup.dispatch_ready(state)
+
+        dispatched = [
+            json.loads(call.args[1])
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatched) == 1
+        prompt = dispatched[0]["params"]["message"]["parts"][0]["text"]
+        assert "Conversation history" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_app_id_stored_on_session_state(self):
+        sup, _ = self._make_coordinator()
+        req = A2ARequest(text="go", request_id="r3")
+        version = self.db.get_current_version("app1")
+        state = sup.create_session_from_graph(
+            graph_json=version.graph_json,
+            app_version_id=version.id,
+            request=req,
+            caller_reply_topic="",
+            caller_correlation="",
+            app_id="app1",
+        )
+        assert state.app_id == "app1"
+
+
 class TestTaskTarget:
     def test_defaults(self):
         from skitter.a2a import TaskTarget
@@ -2526,69 +2803,99 @@ class TestTaskTarget:
 
 
 class TestDBConfig:
-    def test_load_db_config_default(self, tmp_path):
-        from skitter.config import load_db_config
+    def test_load_config_db_default(self, tmp_path):
+        from skitter.config import load_config
 
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("default_runtime: claude\n")
-        with patch("skitter.config.CONFIG_FILE", config_file):
-            cfg = load_db_config()
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("default_runtime: claude\n")
+        with patch.dict("os.environ", {"SKITTER_HOME": str(tmp_path)}, clear=False):
+            cfg = load_config().db
         assert cfg.backend == "sqlite"
         assert "skitter.db" in cfg.sqlite_path
 
-    def test_load_db_config_custom(self, tmp_path):
-        from skitter.config import load_db_config
+    def test_load_config_db_custom(self, tmp_path):
+        from skitter.config import load_config
 
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
             "db:\n  backend: postgres\n  postgres_dsn: postgresql://localhost/skitter\n"
         )
-        with patch("skitter.config.CONFIG_FILE", config_file):
-            cfg = load_db_config()
+        with patch.dict("os.environ", {"SKITTER_HOME": str(tmp_path)}, clear=False):
+            cfg = load_config().db
         assert cfg.backend == "postgres"
         assert cfg.postgres_dsn == "postgresql://localhost/skitter"
 
-    def test_load_llm_config_default(self, tmp_path):
-        from skitter.config import load_llm_config
+    def test_load_config_llm_default(self, tmp_path):
+        from skitter.config import load_config
 
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("")
-        with patch("skitter.config.CONFIG_FILE", config_file):
-            cfg = load_llm_config()
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("")
+        with patch.dict(
+            "os.environ",
+            {"SKITTER_HOME": str(tmp_path), "SKITTER_LLM_MODEL": ""},
+            clear=False,
+        ):
+            cfg = load_config().llm
         assert cfg.model == ""
 
-    def test_load_llm_config_custom(self, tmp_path):
-        from skitter.config import load_llm_config
+    def test_load_config_llm_custom(self, tmp_path):
+        from skitter.config import load_config
 
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("llm:\n  model: claude-haiku-4-5-20251001\n")
-        with patch("skitter.config.CONFIG_FILE", config_file):
-            cfg = load_llm_config()
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("llm:\n  model: claude-haiku-4-5-20251001\n")
+        with patch.dict(
+            "os.environ",
+            {"SKITTER_HOME": str(tmp_path), "SKITTER_LLM_MODEL": ""},
+            clear=False,
+        ):
+            cfg = load_config().llm
         assert cfg.model == "claude-haiku-4-5-20251001"
 
 
 class TestLLMComplete:
-    def _mock_response(self, content="test response"):
+    def setup_method(self):
+        import skitter.llm
+
+        skitter.llm._client_cache.clear()
+
+    def _mock_anthropic_response(self, content="test response"):
+        from unittest.mock import AsyncMock
+
+        mock_block = MagicMock()
+        mock_block.text = content
+        mock_resp = MagicMock()
+        mock_resp.content = [mock_block] if content is not None else []
+        mock_create = AsyncMock(return_value=mock_resp)
+        mock_client = MagicMock()
+        mock_client.messages.create = mock_create
+        return mock_client, mock_create
+
+    def _mock_openai_responses(self, content="test response"):
+        """Mock for OpenAI Responses API (native OpenAI models)."""
         from unittest.mock import AsyncMock
 
         mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = content
-        mock_ac = AsyncMock(return_value=mock_resp)
-        return mock_ac
+        mock_resp.output_text = content
+        mock_create = AsyncMock(return_value=mock_resp)
+        mock_client = MagicMock()
+        mock_client.responses.create = mock_create
+        return mock_client, mock_create
 
     @pytest.mark.asyncio
-    async def test_complete_calls_litellm(self):
+    async def test_complete_calls_anthropic(self):
         from skitter.llm import complete
 
-        mock_ac = self._mock_response("test response")
-        with patch("litellm.acompletion", mock_ac):
-            result = await complete("hello", model="test-model")
+        mock_client, mock_create = self._mock_anthropic_response("test response")
+        with (
+            patch("anthropic.AsyncAnthropic", return_value=mock_client),
+            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+        ):
+            result = await complete("hello", model="claude-sonnet-4-6")
 
         assert result == "test response"
-        mock_ac.assert_called_once()
-        assert mock_ac.call_args.kwargs["model"] == "test-model"
-        msgs = mock_ac.call_args.kwargs["messages"]
+        mock_create.assert_called_once()
+        assert mock_create.call_args.kwargs["model"] == "claude-sonnet-4-6"
+        msgs = mock_create.call_args.kwargs["messages"]
         assert len(msgs) == 1
         assert msgs[0]["role"] == "user"
 
@@ -2596,21 +2903,85 @@ class TestLLMComplete:
     async def test_complete_with_system(self):
         from skitter.llm import complete
 
-        mock_ac = self._mock_response("ok")
-        with patch("litellm.acompletion", mock_ac):
-            await complete("hello", system="be helpful", model="test-model")
+        mock_client, mock_create = self._mock_anthropic_response("ok")
+        with (
+            patch("anthropic.AsyncAnthropic", return_value=mock_client),
+            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+        ):
+            await complete("hello", system="be helpful", model="claude-sonnet-4-6")
 
-        msgs = mock_ac.call_args.kwargs["messages"]
-        assert len(msgs) == 2
-        assert msgs[0]["role"] == "system"
-        assert msgs[1]["role"] == "user"
+        assert mock_create.call_args.kwargs["system"] == "be helpful"
+        msgs = mock_create.call_args.kwargs["messages"]
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_complete_openai_uses_responses_api(self):
+        from skitter.config import LLMConfig
+        from skitter.llm import complete
+
+        mock_client, mock_create = self._mock_openai_responses("openai response")
+        cfg = LLMConfig(model="gpt-5.4-mini", api="openai")
+        with (
+            patch("openai.AsyncOpenAI", return_value=mock_client),
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
+            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+        ):
+            result = await complete("hello", model="gpt-5.4-mini")
+
+        assert result == "openai response"
+        mock_create.assert_called_once()
+        assert mock_create.call_args.kwargs["model"] == "gpt-5.4-mini"
+        assert mock_create.call_args.kwargs["input"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_complete_openai_with_system_uses_instructions(self):
+        from skitter.config import LLMConfig
+        from skitter.llm import complete
+
+        mock_client, mock_create = self._mock_openai_responses("ok")
+        cfg = LLMConfig(model="gpt-5.4-mini", api="openai")
+        with (
+            patch("openai.AsyncOpenAI", return_value=mock_client),
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
+            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+        ):
+            await complete("hello", system="be helpful", model="gpt-5.4-mini")
+
+        assert mock_create.call_args.kwargs["instructions"] == "be helpful"
+        assert mock_create.call_args.kwargs["input"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_complete_openai_with_base_url(self):
+        """base_url is passed to the OpenAI client."""
+        from skitter.config import LLMConfig
+        from skitter.llm import complete
+
+        mock_client, mock_create = self._mock_openai_responses("custom response")
+        cfg = LLMConfig(
+            model="custom-model",
+            api="openai",
+            base_url="https://api.example.com/v1",
+        )
+        with (
+            patch("openai.AsyncOpenAI", return_value=mock_client) as mock_cls,
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
+            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+        ):
+            result = await complete("hello", model="custom-model")
+
+        assert result == "custom response"
+        assert mock_cls.call_args.kwargs["base_url"] == "https://api.example.com/v1"
 
     @pytest.mark.asyncio
     async def test_complete_no_model_raises(self):
         from skitter.llm import complete
 
         with (
-            patch("skitter.llm.load_llm_config", return_value=MagicMock(model="")),
+            patch(
+                "skitter.llm.load_config",
+                return_value=MagicMock(llm=MagicMock(model="")),
+            ),
             patch.dict("os.environ", {"SKITTER_LLM_MODEL": ""}),
         ):
             with pytest.raises(ValueError, match="No LLM model configured"):
@@ -2620,10 +2991,13 @@ class TestLLMComplete:
     async def test_complete_none_content_raises(self):
         from skitter.llm import complete
 
-        mock_ac = self._mock_response(None)
-        with patch("litellm.acompletion", mock_ac):
+        mock_client, _ = self._mock_anthropic_response(None)
+        with (
+            patch("anthropic.AsyncAnthropic", return_value=mock_client),
+            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+        ):
             with pytest.raises(ValueError, match="no text content"):
-                await complete("hello", model="test-model")
+                await complete("hello", model="claude-sonnet-4-6")
 
 
 # --- Graph generation and validation ---
@@ -3773,7 +4147,7 @@ class TestWriteAheadDispatch:
 
         task = self.db.get_task(f"{sid}/step")
         assert task.reply_topic != ""
-        assert f"/{A2A_UNIT}/" in task.reply_topic
+        assert f"/{a2a_unit()}/" in task.reply_topic
 
 
 class TestSessionRecovery:
@@ -4243,3 +4617,682 @@ class TestRetryCorrelationRotation:
         assert correlations[2] != "corr-orig"
         # All three must be unique
         assert len(set(correlations)) == 3
+
+
+# --- Services (container management) ---
+
+
+class TestServices:
+    def test_resolve_env_docker_tier(self):
+        from skitter.config import SkitterConfig, BrokerConfig, LLMConfig
+
+        cfg = SkitterConfig(
+            llm=LLMConfig(model="claude-sonnet-4-6", api="anthropic"),
+            broker=BrokerConfig(tier="docker"),
+            org="myorg",
+            unit="myunit",
+        )
+        with patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "sk-test"}):
+            from skitter.services import _resolve_env
+
+            env = _resolve_env(cfg)
+        assert env["MQTT_BROKER_URL"] == "mqtt://skitter-emqx:1883"
+        assert env["SKITTER_LLM_API_KEY"] == "sk-test"
+        assert env["SKITTER_LLM_MODEL"] == "claude-sonnet-4-6"
+        assert env["SKITTER_A2A_ORG"] == "myorg"
+        assert env["SKITTER_A2A_UNIT"] == "myunit"
+
+    def test_resolve_env_external_tier(self):
+        from skitter.config import SkitterConfig, BrokerConfig, LLMConfig
+
+        cfg = SkitterConfig(
+            llm=LLMConfig(model="gpt-5.4-mini", api="openai"),
+            broker=BrokerConfig(tier="serverless", url="mqtts://broker.emqx.io:8883"),
+            org="org",
+            unit="unit",
+        )
+        with patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "sk-openai"}):
+            from skitter.services import _resolve_env
+
+            env = _resolve_env(cfg)
+        assert env["MQTT_BROKER_URL"] == "mqtts://broker.emqx.io:8883"
+
+    def test_generate_compose_includes_broker(self):
+        from skitter.config import SkitterConfig, BrokerConfig
+        from skitter.services import _generate_compose, BROKER_IMAGE
+
+        cfg = SkitterConfig(broker=BrokerConfig(tier="docker"))
+        result = yaml.safe_load(_generate_compose(cfg, []))
+        assert "emqx" in result["services"]
+        assert result["services"]["emqx"]["image"] == BROKER_IMAGE
+
+    def test_agent_container_name(self):
+        from skitter.services import _agent_container_name
+
+        assert _agent_container_name("researcher") == "skitter-agent-researcher"
+
+    def test_discover_agents(self, tmp_path):
+        from skitter.services import _discover_agents
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "researcher.md").write_text(
+            "---\nname: researcher\ndescription: test\nruntime: claude\n---\nInstructions"
+        )
+        (agents_dir / "coder.toml").write_text(
+            'name = "coder"\nruntime = "codex"\ndescription = "a coder"'
+        )
+        with patch.dict("os.environ", {"SKITTER_HOME": str(tmp_path)}, clear=False):
+            agents = _discover_agents()
+        assert len(agents) == 2
+        ids = {a[0] for a in agents}
+        assert "researcher" in ids
+        assert "coder" in ids
+
+
+# ---------------------------------------------------------------------------
+# M3: SKITTER_HOME resolution
+# ---------------------------------------------------------------------------
+
+
+class TestSkitterHomeResolution:
+    def test_default_path(self):
+        from skitter.config import skitter_home
+
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("SKITTER_HOME", None)
+            result = skitter_home()
+        from pathlib import Path
+
+        assert result == Path.home() / ".skitter"
+
+    def test_env_override(self, tmp_path):
+        from skitter.config import skitter_home
+
+        with patch.dict("os.environ", {"SKITTER_HOME": str(tmp_path)}, clear=False):
+            result = skitter_home()
+        assert result == tmp_path
+
+    def test_config_file_derives_from_home(self, tmp_path):
+        from skitter.config import config_file
+
+        with patch.dict("os.environ", {"SKITTER_HOME": str(tmp_path)}, clear=False):
+            result = config_file()
+        assert result == tmp_path / "config.yaml"
+
+    def test_load_config_uses_skitter_home(self, tmp_path):
+        from skitter.config import load_config
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("broker:\n  tier: public\n  url: mqtt://example.com:1883\n")
+        with patch.dict(
+            "os.environ",
+            {"SKITTER_HOME": str(tmp_path), "SKITTER_LLM_MODEL": ""},
+            clear=False,
+        ):
+            cfg = load_config()
+        assert cfg.broker.tier == "public"
+        assert cfg.broker.url == "mqtt://example.com:1883"
+
+
+# ---------------------------------------------------------------------------
+# M4: ask arg parsing
+# ---------------------------------------------------------------------------
+
+
+class TestAskArgParsing:
+    def test_basic_args(self):
+        from skitter.__main__ import _parse_request_args
+
+        agent, prompt, ctx = _parse_request_args(["my-agent", "hello", "world"])
+        assert agent == "my-agent"
+        assert prompt == "hello world"
+        assert ctx == ""
+
+    def test_with_context(self):
+        from skitter.__main__ import _parse_request_args
+
+        agent, prompt, ctx = _parse_request_args(
+            ["my-agent", "hello", "--context", "ctx-123"]
+        )
+        assert agent == "my-agent"
+        assert prompt == "hello"
+        assert ctx == "ctx-123"
+
+    def test_context_before_prompt(self):
+        from skitter.__main__ import _parse_request_args
+
+        agent, prompt, ctx = _parse_request_args(
+            ["my-agent", "--context", "ctx-123", "hello"]
+        )
+        assert agent == "my-agent"
+        assert prompt == "hello"
+        assert ctx == "ctx-123"
+
+    def test_missing_args(self):
+        from skitter.__main__ import _parse_request_args
+
+        agent, prompt, ctx = _parse_request_args(["only-agent"])
+        assert agent == ""
+        assert prompt == ""
+
+
+# ---------------------------------------------------------------------------
+# M5: status helpers
+# ---------------------------------------------------------------------------
+
+
+class TestStatusHelpers:
+    def test_next_action_no_config(self):
+        from skitter.services import _next_action
+
+        assert "setup" in _next_action(False, [], [], [])
+
+    def test_next_action_no_runtimes(self):
+        from skitter.services import _next_action
+
+        assert "Install" in _next_action(True, [], [], [])
+
+    def test_next_action_not_running(self):
+        from skitter.services import _next_action
+
+        result = _next_action(True, ["claude"], [], [])
+        assert "skitter up" in result
+
+    def test_next_action_no_agents(self):
+        from skitter.services import _next_action
+
+        containers = [("skitter-emqx", "Up 5 minutes", "emqx")]
+        result = _next_action(True, ["claude"], containers, [])
+        assert "create-agent" in result
+
+    def test_next_action_all_good(self):
+        from skitter.services import _next_action
+
+        containers = [("skitter-emqx", "Up 5 minutes", "emqx")]
+        agents = [("my-agent", "my-agent.md", "claude")]
+        result = _next_action(True, ["claude"], containers, agents)
+        assert "skitter ask my-agent" in result
+
+    def test_runtime_detection(self):
+        from skitter.config import detect_runtimes
+
+        runtimes = detect_runtimes()
+        assert "claude" in runtimes
+        assert "codex" in runtimes
+        # Values are either a path string or None
+        for v in runtimes.values():
+            assert v is None or isinstance(v, str)
+
+    def test_compose_coordinator_bind_mounts_skitter_home(self, tmp_path):
+        """Regression: coordinator must bind-mount the caller's SKITTER_HOME,
+        not a named Docker volume."""
+        from skitter.config import SkitterConfig, BrokerConfig
+        from skitter.services import _generate_compose
+
+        cfg = SkitterConfig(broker=BrokerConfig(tier="docker"))
+        with patch.dict("os.environ", {"SKITTER_HOME": str(tmp_path)}, clear=False):
+            result = yaml.safe_load(_generate_compose(cfg, []))
+        coord_vols = result["services"]["coordinator"]["volumes"]
+        home_mount = [v for v in coord_vols if "/home/skitter/.skitter" in v]
+        assert home_mount, "Expected a bind mount for .skitter"
+        assert home_mount[0].startswith(str(tmp_path) + ":")
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestSetupNonInteractive:
+    """Regression tests for skitter setup --non-interactive edge cases."""
+
+    def test_skips_llm_when_api_key_missing(self):
+        """Non-interactive must not require API credentials."""
+        from skitter.setup import _collect_llm
+
+        # No ANTHROPIC_API_KEY in environment
+        with patch.dict("os.environ", {}, clear=True):
+            result = _collect_llm(non_interactive=True, standalone=False, existing={})
+        assert result is None
+
+    def test_returns_llm_config_when_api_key_present(self):
+        from skitter.setup import _collect_llm
+
+        env = {"SKITTER_LLM_API_KEY": "sk-test-key"}
+        with patch.dict("os.environ", env, clear=True):
+            result = _collect_llm(non_interactive=True, standalone=False, existing={})
+        assert result is not None
+        assert result["api"] == "anthropic"
+        assert "model" in result
+
+    def test_respects_custom_api(self):
+        from skitter.setup import _collect_llm
+
+        env = {
+            "SKITTER_LLM_API": "openai",
+            "SKITTER_LLM_API_KEY": "sk-openai",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            result = _collect_llm(non_interactive=True, standalone=False, existing={})
+        assert result is not None
+        assert result["api"] == "openai"
+
+
+class TestSetupVerifyPassesLLMConfig:
+    """_verify must pass LLM config to check() without mutating os.environ."""
+
+    def test_does_not_mutate_environ(self):
+        from skitter.setup import _verify
+
+        llm_cfg = {
+            "model": "gpt-5.4-mini",
+            "api": "openai",
+        }
+        broker_cfg = {"tier": "docker"}
+        env_before = set(os.environ)
+        with patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "sk-test"}, clear=False):
+            with patch("skitter.setup.asyncio.run"):
+                with patch("skitter.llm.check", new=MagicMock()):
+                    _verify(llm_cfg, broker_cfg)
+        new_keys = set(os.environ) - env_before
+        assert "SKITTER_LLM_MODEL" not in new_keys
+
+
+class TestSetupPreservesOrgPrefix:
+    """P2 regression: public-broker re-run must preserve existing org_prefix."""
+
+    def test_reuses_existing_org_prefix(self):
+        from skitter.setup import _collect_broker
+
+        existing = {"tier": "public", "org_prefix": "skitter-abc12345"}
+        result = _collect_broker(non_interactive=True, existing=existing)
+        # Non-interactive always picks docker tier, so test the public path directly
+        # by calling the function in interactive mode with mocked input
+        with patch("skitter.setup._prompt_choice", return_value="public"):
+            with patch("skitter.setup._prompt", return_value="y"):
+                result = _collect_broker(non_interactive=False, existing=existing)
+        assert result["org_prefix"] == "skitter-abc12345"
+
+    def test_generates_new_prefix_when_none_exists(self):
+        from skitter.setup import _collect_broker
+
+        with patch("skitter.setup._prompt_choice", return_value="public"):
+            with patch("skitter.setup._prompt", return_value="y"):
+                result = _collect_broker(non_interactive=False, existing={})
+        assert result["org_prefix"].startswith("skitter-")
+
+
+# ---------------------------------------------------------------------------
+# A2A lazy namespace resolution
+# ---------------------------------------------------------------------------
+
+
+class TestA2ALazyNamespace:
+    """P1 regression: A2A_ORG/A2A_UNIT must resolve lazily, not at import time."""
+
+    @staticmethod
+    def _reset_namespace():
+        import skitter.a2a as a2a_mod
+
+        a2a_mod._ns_resolved = False
+
+    def test_namespace_resolves_from_config(self, tmp_path):
+        """Setting SKITTER_HOME before first access must affect the namespace."""
+        import skitter.a2a as a2a_mod
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("org: custom-org\nunit: custom-unit\n")
+
+        self._reset_namespace()
+
+        with patch.dict(
+            "os.environ",
+            {"SKITTER_HOME": str(tmp_path)},
+            clear=False,
+        ):
+            org = a2a_mod.a2a_org()
+            unit = a2a_mod.a2a_unit()
+        assert org == "custom-org"
+        assert unit == "custom-unit"
+
+        self._reset_namespace()
+
+    def test_topic_builders_use_lazy_namespace(self, tmp_path):
+        import skitter.a2a as a2a_mod
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("org: myorg\nunit: myunit\n")
+
+        self._reset_namespace()
+
+        with patch.dict(
+            "os.environ",
+            {"SKITTER_HOME": str(tmp_path)},
+            clear=False,
+        ):
+            topic = a2a_mod.topic_request("test-agent")
+        assert topic == "$a2a/v1/request/myorg/myunit/test-agent"
+
+        self._reset_namespace()
+
+
+# --- Skill support ---
+
+
+class TestSkillLoading:
+    """Tests for _load_skills and skill frontmatter parsing."""
+
+    def test_load_skills(self, tmp_path):
+        """Skills are loaded from ~/.skitter/skills/<name>/SKILL.md."""
+        from skitter.agent_runner import _load_skills
+
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "web-search").mkdir(parents=True)
+        (skills_dir / "web-search" / "SKILL.md").write_text(
+            "---\n"
+            "name: web-search\n"
+            "description: Search the web for current information\n"
+            "---\n"
+            "Use search engines to find answers.\n"
+        )
+        (skills_dir / "summarize").mkdir()
+        (skills_dir / "summarize" / "SKILL.md").write_text(
+            "---\n"
+            "name: summarize\n"
+            "description: Summarize long text\n"
+            "---\n"
+            "Create concise summaries.\n"
+        )
+
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            result = _load_skills(["web-search", "summarize"])
+
+        assert len(result) == 2
+        assert result[0].id == "web-search"
+        assert result[0].name == "web-search"
+        assert result[0].description == "Search the web for current information"
+        assert result[1].id == "summarize"
+
+    def test_load_skills_missing(self, tmp_path):
+        """Missing skill names are skipped with a warning."""
+        from skitter.agent_runner import _load_skills
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            result = _load_skills(["nonexistent"])
+
+        assert result == []
+
+    def test_load_skills_bad_frontmatter(self, tmp_path):
+        """Skill with missing frontmatter is skipped."""
+        from skitter.agent_runner import _load_skills
+
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "bad").mkdir(parents=True)
+        (skills_dir / "bad" / "SKILL.md").write_text("No frontmatter here.\n")
+
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            result = _load_skills(["bad"])
+
+        assert result == []
+
+
+class TestSkillLinks:
+    """Tests for _setup_skill_links symlink creation."""
+
+    def test_setup_skill_links_claude(self, tmp_path):
+        """Claude agent gets .claude/skills/<name> symlinks."""
+        from skitter.agent_runner import _setup_skill_links
+
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "web-search").mkdir(parents=True)
+        (skills_dir / "web-search" / "SKILL.md").write_text(
+            "---\nname: web-search\n---\n"
+        )
+
+        resource_dir = tmp_path / "resource"
+        resource_dir.mkdir()
+
+        agent = AgentDef(
+            id="test",
+            name="test",
+            runtime="claude",
+            skill_refs=["web-search"],
+        )
+
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            _setup_skill_links(agent, resource_dir)
+
+        link = resource_dir / ".claude" / "skills" / "web-search"
+        assert link.is_symlink()
+        assert link.resolve() == (skills_dir / "web-search").resolve()
+
+    def test_setup_skill_links_codex(self, tmp_path):
+        """Codex agent gets .agents/skills/<name> symlinks."""
+        from skitter.agent_runner import _setup_skill_links
+
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "debug").mkdir(parents=True)
+        (skills_dir / "debug" / "SKILL.md").write_text("---\nname: debug\n---\n")
+
+        resource_dir = tmp_path / "resource"
+        resource_dir.mkdir()
+
+        agent = AgentDef(
+            id="test",
+            name="test",
+            runtime="codex",
+            skill_refs=["debug"],
+        )
+
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            _setup_skill_links(agent, resource_dir)
+
+        link = resource_dir / ".agents" / "skills" / "debug"
+        assert link.is_symlink()
+        assert link.resolve() == (skills_dir / "debug").resolve()
+
+    def test_setup_skill_links_idempotent(self, tmp_path):
+        """Running setup twice does not error."""
+        from skitter.agent_runner import _setup_skill_links
+
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "s1").mkdir(parents=True)
+        (skills_dir / "s1" / "SKILL.md").write_text("---\nname: s1\n---\n")
+
+        resource_dir = tmp_path / "resource"
+        resource_dir.mkdir()
+
+        agent = AgentDef(
+            id="test",
+            name="test",
+            runtime="claude",
+            skill_refs=["s1"],
+        )
+
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            _setup_skill_links(agent, resource_dir)
+            _setup_skill_links(agent, resource_dir)
+
+        link = resource_dir / ".claude" / "skills" / "s1"
+        assert link.is_symlink()
+
+    def test_setup_skill_links_stale_removed(self, tmp_path):
+        """Stale symlinks for removed skills are cleaned up."""
+        from skitter.agent_runner import _setup_skill_links
+
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "old-skill").mkdir(parents=True)
+        (skills_dir / "old-skill" / "SKILL.md").write_text("---\nname: old\n---\n")
+        (skills_dir / "new-skill").mkdir(parents=True)
+        (skills_dir / "new-skill" / "SKILL.md").write_text("---\nname: new\n---\n")
+
+        resource_dir = tmp_path / "resource"
+        resource_dir.mkdir()
+
+        # First: link old-skill
+        agent_v1 = AgentDef(
+            id="test",
+            name="test",
+            runtime="claude",
+            skill_refs=["old-skill"],
+        )
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            _setup_skill_links(agent_v1, resource_dir)
+
+        assert (resource_dir / ".claude" / "skills" / "old-skill").is_symlink()
+
+        # Second: only new-skill referenced
+        agent_v2 = AgentDef(
+            id="test",
+            name="test",
+            runtime="claude",
+            skill_refs=["new-skill"],
+        )
+        with patch("skitter.config.skills_dir", return_value=skills_dir):
+            _setup_skill_links(agent_v2, resource_dir)
+
+        assert not (resource_dir / ".claude" / "skills" / "old-skill").exists()
+        assert (resource_dir / ".claude" / "skills" / "new-skill").is_symlink()
+
+
+class TestBuildCardWithSkills:
+    """Tests for discovery card skill population."""
+
+    def test_card_with_skills(self):
+        from skitter.config import SkillDef
+        from skitter.discovery import build_card
+
+        agent = AgentDef(
+            id="researcher",
+            name="Researcher",
+            description="Research agent",
+            skills=[
+                SkillDef(
+                    id="web-search", name="Web Search", description="Search the web"
+                ),
+                SkillDef(
+                    id="summarize", name="Summarize", description="Summarize text"
+                ),
+            ],
+        )
+        card = build_card(agent, url="mqtt://test:1883")
+        assert len(card["skills"]) == 2
+        assert card["skills"][0]["id"] == "web-search"
+        assert card["skills"][0]["name"] == "Web Search"
+        assert card["skills"][0]["description"] == "Search the web"
+        assert card["skills"][1]["id"] == "summarize"
+
+    def test_card_without_skills_has_default(self):
+        from skitter.discovery import build_card
+
+        agent = AgentDef(id="writer", name="Writer", description="Writes")
+        card = build_card(agent, url="mqtt://test:1883")
+        assert len(card["skills"]) == 1
+        assert card["skills"][0]["id"] == "default"
+        assert card["skills"][0]["name"] == "Writer"
+
+
+class TestAgentSkillRefs:
+    """Tests for skill_refs parsing from agent definitions."""
+
+    def test_md_agent_with_skills(self, tmp_path):
+        from skitter.agent_runner import _load_md_agent
+
+        agent_file = tmp_path / "test.md"
+        agent_file.write_text(
+            "---\n"
+            "name: test\n"
+            "description: Test agent\n"
+            "runtime: claude\n"
+            "skills: [web-search, summarize]\n"
+            "---\n"
+            "Instructions here.\n"
+        )
+        agent = _load_md_agent(agent_file)
+        assert agent.skill_refs == ["web-search", "summarize"]
+
+    def test_md_agent_without_skills(self, tmp_path):
+        from skitter.agent_runner import _load_md_agent
+
+        agent_file = tmp_path / "test.md"
+        agent_file.write_text(
+            "---\nname: test\ndescription: Test agent\n---\nInstructions here.\n"
+        )
+        agent = _load_md_agent(agent_file)
+        assert agent.skill_refs == []
+
+    def test_toml_agent_with_skills(self, tmp_path):
+        from skitter.agent_runner import _load_toml_agent
+
+        agent_file = tmp_path / "test.toml"
+        agent_file.write_text(
+            'name = "test"\n'
+            'description = "Test agent"\n'
+            'runtime = "codex"\n'
+            'skills = ["debug", "test-runner"]\n'
+            'developer_instructions = "Instructions."\n'
+        )
+        agent = _load_toml_agent(agent_file)
+        assert agent.skill_refs == ["debug", "test-runner"]
+
+
+class TestBuildCliCmd:
+    """Tests for _build_cli_cmd with maxTurns and tools."""
+
+    def test_claude_max_turns(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="test", name="test", runtime="claude", max_turns=5)
+        cmd = _build_cli_cmd(agent, "hello")
+        assert "--max-turns" in cmd
+        idx = cmd.index("--max-turns")
+        assert cmd[idx + 1] == "5"
+
+    def test_claude_tools(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(
+            id="test",
+            name="test",
+            runtime="claude",
+            tools=["Read", "Grep", "Bash"],
+        )
+        cmd = _build_cli_cmd(agent, "hello")
+        assert "--allowedTools" in cmd
+        idx = cmd.index("--allowedTools")
+        assert cmd[idx + 1] == "Read,Grep,Bash"
+
+    def test_claude_no_max_turns_when_zero(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="test", name="test", runtime="claude", max_turns=0)
+        cmd = _build_cli_cmd(agent, "hello")
+        assert "--max-turns" not in cmd
+
+    def test_claude_no_tools_when_empty(self):
+        from skitter.agent_runner import _build_cli_cmd
+
+        agent = AgentDef(id="test", name="test", runtime="claude")
+        cmd = _build_cli_cmd(agent, "hello")
+        assert "--allowedTools" not in cmd
+
+    def test_md_agent_reads_max_turns_and_tools(self, tmp_path):
+        from skitter.agent_runner import _load_md_agent
+
+        agent_file = tmp_path / "test.md"
+        agent_file.write_text(
+            "---\n"
+            "name: test\n"
+            "runtime: claude\n"
+            "maxTurns: 10\n"
+            "tools: Read, Grep, Bash\n"
+            "---\n"
+            "Instructions.\n"
+        )
+        agent = _load_md_agent(agent_file)
+        assert agent.max_turns == 10
+        assert agent.tools == ["Read", "Grep", "Bash"]

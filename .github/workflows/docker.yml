@@ -29,6 +29,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract version from pyproject.toml
+        id: version
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - uses: docker/metadata-action@v6
         id: meta
         with:
@@ -36,6 +42,7 @@ jobs:
           tags: |
             type=sha
             type=raw,value=latest
+            type=raw,value=${{ steps.version.outputs.version }}
 
       - uses: docker/build-push-action@v7
         with:

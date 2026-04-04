@@ -1,32 +1,32 @@
-"""Create agent definitions and skills via LLM expansion.
+"""Create agent definitions and skills via runtime-backed generation.
 
     skitter create-agent <name> <prompt> [options]
 
-Generates an agent definition file in ./agents/ by expanding a short
-prompt into a complete definition via the configured LLM. Optionally
-creates skill files too.
+Generates an agent definition file in ~/.skitter/agents/ by expanding a
+short prompt into a complete definition using the selected runtime
+(claude or codex). Optionally creates skill files too.
 """
 
 import argparse
-import asyncio
 import logging
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
+
+from skitter.runtime_cli import clean_output, parse_stream_output
 
 log = logging.getLogger("skitter.create_agent")
 
 KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
-# Maps runtime -> (file extension, agent directory for symlink)
-RUNTIME_INFO: dict[str, tuple[str, str]] = {
-    "claude": (".md", ".claude/agents"),
-    "codex": (".toml", ".codex/agents"),
-    "copilot": (".md", ".github/agents"),
-    "gemini": (".md", ".gemini/agents"),
-    "qwen": (".md", ".qwen/agents"),
+# Maps runtime -> file extension
+RUNTIME_EXT: dict[str, str] = {
+    "claude": ".md",
+    "codex": ".toml",
 }
+
 
 MD_FORMAT = """\
 File format: YAML frontmatter between --- delimiters, followed by system instructions.
@@ -37,6 +37,7 @@ Frontmatter fields:
 - runtime (required): the runtime that executes this agent
 - description (required): one-line description (under 80 chars)
 - model (optional): model name or variant
+- skills (optional): list of skill names from ~/.skitter/skills/ to attach to this agent
 - maxTurns (optional): max conversation turns (default 3 for simple tasks, up to 15 for complex ones)
 - tools (optional): comma-separated list of allowed tools. \
 Available: Read, Grep, Glob, Bash, WebSearch, WebFetch, Write, Edit, NotebookEdit. \
@@ -93,7 +94,7 @@ def _build_agent_prompt(
             "Do NOT include the full skill instructions in the agent definition."
         )
 
-    ext, _ = RUNTIME_INFO[runtime]
+    ext = RUNTIME_EXT[runtime]
     format_spec = TOML_FORMAT if ext == ".toml" else MD_FORMAT
     parts.append(f"\nRuntime value for this agent: {runtime}")
     parts.append(f"\n{format_spec}")
@@ -124,26 +125,24 @@ def _build_skill_prompt(
     )
 
 
-def _clean_output(text: str, fmt: str = "md") -> str:
-    """Strip markdown fences and preamble from LLM output.
+def _inject_skill_refs(content: str, skill_names: list[str], fmt: str) -> str:
+    """Ensure the agent definition includes a ``skills`` field listing skill names.
 
-    *fmt* is "md" (YAML frontmatter) or "toml".
+    For md: adds ``skills: [a, b]`` to the YAML frontmatter if missing.
+    For toml: adds ``skills = ["a", "b"]`` if missing.
     """
-    # Remove markdown fences
-    lines = [ln for ln in text.splitlines(True) if not ln.startswith("```")]
-    text = "".join(lines)
-    # Strip preamble before actual file content
-    if fmt == "md" or text.lstrip().startswith("---"):
-        idx = text.find("---")
+    if fmt == "md":
+        idx = content.find("\n---", 3)
         if idx >= 0:
-            text = text[idx:]
+            frontmatter = content[:idx]
+            if "\nskills:" not in frontmatter and not frontmatter.startswith("skills:"):
+                names = ", ".join(skill_names)
+                content = frontmatter + f"\nskills: [{names}]" + content[idx:]
     elif fmt == "toml":
-        for marker in ("name", "model", "description", "developer_instructions"):
-            idx = text.find(marker)
-            if idx >= 0:
-                text = text[idx:]
-                break
-    return text.strip()
+        if not re.search(r"^\s*skills\s*=", content, re.MULTILINE):
+            quoted = ", ".join(f'"{n}"' for n in skill_names)
+            content += f"\nskills = [{quoted}]\n"
+    return content
 
 
 def _parse_skill(value: str) -> tuple[str, str]:
@@ -162,30 +161,74 @@ def _parse_skill(value: str) -> tuple[str, str]:
     return name, desc
 
 
-def _symlink(src: Path, dst: Path) -> None:
-    """Create a symlink from dst -> src, overwriting if needed."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.is_symlink() or dst.exists():
-        dst.unlink()
-    dst.symlink_to(src.resolve())
+def _build_generate_cmd(prompt: str, runtime: str) -> list[str]:
+    """Build a CLI command for one-shot generation."""
+    if runtime == "codex":
+        return [
+            "codex",
+            "exec",
+            "--json",
+            "--full-auto",
+            "--ephemeral",
+            "--color",
+            "never",
+            "--skip-git-repo-check",
+            "-c",
+            "approval_policy=never",
+            prompt,
+        ]
+    return [
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--permission-mode",
+        "auto",
+        "--verbose",
+    ]
 
 
-async def _generate(llm_prompt: str) -> str:
-    from skitter.llm import complete
+def _generate(prompt: str, runtime: str) -> str:
+    """Generate text using the selected runtime CLI."""
+    cmd = _build_generate_cmd(prompt, runtime)
+    binary = cmd[0]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except FileNotFoundError:
+        print(f"Error: '{binary}' CLI not found on PATH.", file=sys.stderr)
+        sys.exit(1)
 
-    return await complete(llm_prompt)
+    texts = parse_stream_output(proc.stdout, runtime)
+
+    if not texts:
+        if proc.returncode:
+            print(
+                f"Error: {binary} CLI exited with code {proc.returncode}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Error: {binary} CLI produced no parseable output",
+                file=sys.stderr,
+            )
+        if proc.stderr:
+            print(proc.stderr[:500], file=sys.stderr)
+        sys.exit(1)
+
+    return "\n".join(texts)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="skitter create-agent",
-        description="Create an agent definition via LLM expansion.",
+        description="Create an agent definition via runtime-backed generation.",
     )
     parser.add_argument("name", help="Agent name (kebab-case)")
     parser.add_argument("prompt", help="What the agent should do (plain English)")
     parser.add_argument(
         "--runtime",
-        choices=list(RUNTIME_INFO),
+        choices=list(RUNTIME_EXT),
         default="claude",
         help="Runtime (default: claude)",
     )
@@ -215,9 +258,11 @@ def run(argv: list[str] | None = None) -> None:
     if not KEBAB_RE.match(args.name):
         parser.error(f"name must be kebab-case (e.g. my-agent), got: {args.name}")
 
-    agents_dir = Path("agents")
-    agents_dir.mkdir(exist_ok=True)
-    ext, link_dir_str = RUNTIME_INFO[args.runtime]
+    from skitter.config import skitter_home
+
+    agents_dir = skitter_home() / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    ext = RUNTIME_EXT[args.runtime]
     outfile = agents_dir / f"{args.name}{ext}"
 
     if outfile.exists() and not args.force and not args.dry_run:
@@ -236,43 +281,35 @@ def run(argv: list[str] | None = None) -> None:
         for sname, sdesc in args.skill
     }
 
-    # Generate all in parallel
-    _AGENT_KEY = object()  # sentinel to avoid collision with skill names
-
-    async def _generate_all():
-        tasks = {_AGENT_KEY: _generate(agent_prompt)}
-        for sname, sprompt in skill_prompts.items():
-            tasks[sname] = _generate(sprompt)
-
-        print("Generating agent definition...", file=sys.stderr)
-        if skill_prompts:
-            skill_names = ", ".join(skill_prompts)
-            print(f"Generating skills: {skill_names}...", file=sys.stderr)
-
-        results = {}
-        gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        for key, result in zip(tasks, gathered):
-            if isinstance(result, Exception):
-                print(f"Error generating {key}: {result}", file=sys.stderr)
-                sys.exit(1)
-            results[key] = result
-        return results
-
-    results = asyncio.run(_generate_all())
+    # Generate agent + skills sequentially
+    print("Generating agent definition...", file=sys.stderr)
+    agent_text = _generate(agent_prompt, args.runtime)
+    skill_texts: dict[str, str] = {}
+    for sname, sprompt in skill_prompts.items():
+        print(f"Generating skill: {sname}...", file=sys.stderr)
+        skill_texts[sname] = _generate(sprompt, args.runtime)
 
     # Clean up outputs
     fmt = "toml" if ext == ".toml" else "md"
-    agent_content = _clean_output(results.pop(_AGENT_KEY), fmt)
+    agent_content = clean_output(agent_text, fmt)
     skill_contents = {
-        sname: _clean_output(content, "md") for sname, content in results.items()
+        sname: clean_output(content, "md") for sname, content in skill_texts.items()
     }
+
+    # Ensure the agent definition references its skills
+    if skill_contents:
+        agent_content = _inject_skill_refs(agent_content, list(skill_contents), fmt)
+
+    from skitter.config import skills_dir as _skills_dir
+
+    skills_base = _skills_dir()
 
     # Dry run
     if args.dry_run:
         print(f"=== {outfile} ===")
         print(agent_content)
         for sname, content in skill_contents.items():
-            print(f"\n=== .agents/skills/{sname}/SKILL.md ===")
+            print(f"\n=== {skills_base / sname / 'SKILL.md'} ===")
             print(content)
         return
 
@@ -292,32 +329,20 @@ def run(argv: list[str] | None = None) -> None:
 
     # Write agent definition
     outfile.write_text(agent_content + "\n")
+    print(f"Created {outfile}", file=sys.stderr)
 
-    # Symlink into runtime's agent directory
-    link_dir = Path(link_dir_str)
-    _symlink(outfile, link_dir / outfile.name)
-
-    print(f"Created {outfile} (symlinked to {link_dir}/)", file=sys.stderr)
-
-    # Write skills
+    # Write skills to shared library
     for sname, content in skill_contents.items():
-        skill_dir = Path(f".agents/skills/{sname}")
+        skill_dir = skills_base / sname
         skill_file = skill_dir / "SKILL.md"
         skill_dir.mkdir(parents=True, exist_ok=True)
         skill_file.write_text(content + "\n")
-
-        # Symlink to .claude/skills/ for Claude Code discovery
-        claude_skill = Path(f".claude/skills/{sname}/SKILL.md")
-        _symlink(skill_file, claude_skill)
-
-        print(
-            f"Created {skill_file} (symlinked to .claude/skills/{sname}/)",
-            file=sys.stderr,
-        )
+        print(f"Created {skill_file}", file=sys.stderr)
 
     print(file=sys.stderr)
     print(agent_content, file=sys.stderr)
-    print(f"\nRun:  uv run python -m skitter agent-runner {outfile}", file=sys.stderr)
+    print(f"\nStart with:  skitter up --agent {args.name}", file=sys.stderr)
+    print(f"Or directly:  skitter agent-runner {outfile}", file=sys.stderr)
 
 
 def main() -> None:

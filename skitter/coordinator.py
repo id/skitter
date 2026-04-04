@@ -30,8 +30,8 @@ from skitter.runtime_api import (
     coordinator_card,
 )
 from skitter.a2a import (
-    A2A_ORG,
-    A2A_UNIT,
+    a2a_org,
+    a2a_unit,
     A2A_INVALID_PARAMS,
     A2ARequest,
     A2AResponse,
@@ -62,9 +62,6 @@ from skitter.mqtt import (
     mqtt_client_kwargs,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
-)
 log = logging.getLogger("skitter.coordinator")
 
 
@@ -91,7 +88,9 @@ class SessionState:
     session_id: str  # internal; coordinator-generated UUID
     request_task_id: str  # incoming A2A Task.id; used for dedup and wire replies
     app_version_id: str
+    app_id: str = ""
     context_id: str = ""
+    conversation_history: str = ""
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     graph: dict[str, SessionTask] = field(default_factory=dict)
@@ -196,6 +195,9 @@ class DiscoveryRegistry:
 class Coordinator:
     """A2A orchestrator with DB-backed state."""
 
+    _MAX_HISTORY_TURNS = 10  # recent completed sessions to replay
+    _MAX_RESULT_CHARS = 2000  # truncate per-turn result in history
+
     def __init__(self, db: DB) -> None:
         self._db = db
         self._sessions: dict[str, SessionState] = {}  # session_id → state
@@ -205,10 +207,18 @@ class Coordinator:
         self._reply_subscriptions: set[str] = set()
         self._app_clients: dict[str, aiomqtt.Client] = {}  # app_id -> dedicated client
         self._app_tasks: dict[str, asyncio.Task] = {}  # app_id -> forwarding task
+        # (app_id, context_id) → session_id for cancel-and-replace
+        self._context_active: dict[tuple[str, str], str] = {}
 
     @property
     def registry(self) -> DiscoveryRegistry:
         return self._registry
+
+    def _clear_context_active(self, state: SessionState) -> None:
+        """Remove context_active entry if this session is still the active one."""
+        key = (state.app_id, state.context_id)
+        if key[1] and self._context_active.get(key) == state.session_id:
+            del self._context_active[key]
 
     # --- Session events ---
 
@@ -236,8 +246,10 @@ class Coordinator:
         if data:
             payload["data"] = data
         try:
+            event_topic = topic_a2a_event(RUNTIME_AGENT_ID)
+            log.debug("MQTT → %s (event=%s)", event_topic, event_type)
             await self._client.publish(
-                topic_a2a_event(RUNTIME_AGENT_ID),
+                event_topic,
                 json.dumps(payload),
                 qos=1,
             )
@@ -245,6 +257,35 @@ class Coordinator:
             log.warning(
                 "Failed to publish %s event for session %s", event_type, session_id
             )
+
+    # --- Conversation continuity ---
+
+    def _build_conversation_history(self, app_id: str, context_id: str) -> str:
+        """Build a conversation history block from prior completed sessions."""
+        if not context_id:
+            return ""
+        sessions = self._db.list_context_sessions(
+            app_id, context_id, limit=self._MAX_HISTORY_TURNS
+        )
+        if not sessions:
+            return ""
+
+        turns: list[str] = []
+        for sess in sessions:
+            user_text = ""
+            if sess.request_json:
+                try:
+                    user_text = A2ARequest.from_json(sess.request_json).text
+                except Exception:
+                    log.warning("Failed to parse request_json for session %s", sess.id)
+            result_text = sess.result or "(no result)"
+            if len(result_text) > self._MAX_RESULT_CHARS:
+                result_text = result_text[: self._MAX_RESULT_CHARS] + "..."
+            n = len(turns) + 1
+            turns.append(
+                f"### Turn {n}\n**User:** {user_text}\n**Response:** {result_text}"
+            )
+        return "## Conversation history\n\n" + "\n\n".join(turns)
 
     # --- Session creation ---
 
@@ -256,6 +297,7 @@ class Coordinator:
         caller_reply_topic: str,
         caller_correlation: str,
         variables: dict[str, str] | None = None,
+        app_id: str = "",
     ) -> SessionState:
         """Create a new session from an orchestration graph."""
         session_id = str(uuid.uuid4())
@@ -284,6 +326,7 @@ class Coordinator:
             session_id=session_id,
             request_task_id=request_task_id,
             app_version_id=app_version_id,
+            app_id=app_id,
             context_id=request.context_id or "",
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
@@ -339,14 +382,17 @@ class Coordinator:
         task = state.graph[node_id]
         target = task.target or TaskTarget(agent=task.agent)
 
+        parts: list[str] = []
+        if state.conversation_history:
+            parts.append(state.conversation_history)
         context = _build_context(state, task)
-        prompt = task.description
         if context:
-            prompt = f"{context}\n\n{prompt}"
-
+            parts.append(context)
+        parts.append(task.description)
         user_request = state.variables.get("user_request", "")
         if user_request:
-            prompt = f"{prompt}\n\nUser request: {user_request}"
+            parts.append(f"User request: {user_request}")
+        prompt = "\n\n".join(parts)
 
         correlation = uuid.uuid4().hex[:16]
         reply_t = topic_reply("skitter", f"{state.session_id}/{node_id}")
@@ -386,9 +432,9 @@ class Coordinator:
             correlation_data=correlation,
         )
         if self._client:
-            await self._client.publish(
-                request_topic, a2a_req.to_json(), qos=1, properties=props
-            )
+            req_json = a2a_req.to_json()
+            log.debug("MQTT → %s (%d bytes)", request_topic, len(req_json))
+            await self._client.publish(request_topic, req_json, qos=1, properties=props)
 
         log.info(
             "Dispatched task %s/%s → %s (req=%s)",
@@ -431,6 +477,9 @@ class Coordinator:
             return
 
         kind, content = classify_reply(data)
+        log.debug(
+            "Reply %s/%s: kind=%s content=%.120s", session_id, node_id, kind, content
+        )
 
         if kind == REPLY_ARTIFACT:
             # Accumulate artifact content; terminal status follows separately
@@ -463,6 +512,7 @@ class Coordinator:
             metadata={"type": msg_type, "task_name": node_id},
         )
         props = make_properties(correlation_data=state.caller_correlation)
+        log.debug("MQTT → %s (stream forward)", state.caller_reply_topic)
         await self._client.publish(
             state.caller_reply_topic, event, qos=1, properties=props
         )
@@ -540,7 +590,6 @@ class Coordinator:
         """Finalize a completed session; send result to caller."""
         if state.session_id not in self._sessions:
             return  # already finalized (race with timeout/failure)
-        self._db.update_session_state(state.session_id, TaskState.COMPLETED)
 
         # Find terminal task results
         terminal_tids = _find_terminal_tasks(state)
@@ -550,6 +599,11 @@ class Coordinator:
                 result_parts.append(state.results[tid])
 
         result_text = "\n\n".join(result_parts) if result_parts else "(no result)"
+
+        # Persist result on session for conversation continuity
+        self._db.update_session_state(
+            state.session_id, TaskState.COMPLETED, result=result_text
+        )
 
         await self._publish_completed(
             state.caller_reply_topic,
@@ -562,6 +616,7 @@ class Coordinator:
         await self._publish_event("session_completed", state.session_id)
         self._sessions.pop(state.session_id, None)
         self._request_task_index.pop(state.request_task_id, None)
+        self._clear_context_active(state)
         log.info("Session %s completed", state.session_id)
 
     async def _fail_session(self, state: SessionState, error: str) -> None:
@@ -590,6 +645,7 @@ class Coordinator:
         )
         self._sessions.pop(state.session_id, None)
         self._request_task_index.pop(state.request_task_id, None)
+        self._clear_context_active(state)
         log.info("Session %s failed", state.session_id)
 
     # --- Runtime API ---
@@ -633,6 +689,7 @@ class Coordinator:
         if not state:
             return
         self._request_task_index.pop(state.request_task_id, None)
+        self._clear_context_active(state)
         now = datetime.now(timezone.utc).isoformat()
 
         # Send CancelTask to agents with inflight tasks
@@ -711,7 +768,7 @@ class Coordinator:
 
         client = aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/{app_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/{app_id}",
             ),
         )
         await client.__aenter__()
@@ -731,6 +788,7 @@ class Coordinator:
                 topic = str(mqtt_msg.topic)
                 payload_bytes = mqtt_msg.payload
                 payload = payload_bytes.decode() if payload_bytes else ""
+                log.debug("MQTT ← %s [app=%s] (%d bytes)", topic, app_id, len(payload))
                 if not payload or "/request/" not in topic or "/cancel" in topic:
                     continue
 
@@ -857,6 +915,22 @@ class Coordinator:
             )
             return
 
+        # Cancel-and-replace: if a session is already running for this
+        # (app_id, context_id), cancel it before starting the new one.
+        if incoming_ctx:
+            ctx_key = (agent_id, incoming_ctx)
+            prev_sid = self._context_active.get(ctx_key)
+            if prev_sid and prev_sid in self._sessions:
+                log.info(
+                    "Canceling session %s (superseded by new request for %s/%s)",
+                    prev_sid,
+                    agent_id,
+                    incoming_ctx,
+                )
+                self._db.update_session_state(prev_sid, TaskState.CANCELED)
+                await self._cancel_session_cleanup(prev_sid)
+
+        history = self._build_conversation_history(agent_id, incoming_ctx)
         state = self.create_session_from_graph(
             graph_json=version.graph_json,
             app_version_id=version.id,
@@ -864,7 +938,11 @@ class Coordinator:
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
             variables=req.variables,
+            app_id=agent_id,
         )
+        state.conversation_history = history
+        if incoming_ctx:
+            self._context_active[(agent_id, incoming_ctx)] = state.session_id
         await self._start_session(state, f"App '{agent_id}'")
 
     async def _publish_completed(
@@ -886,6 +964,7 @@ class Coordinator:
                 artifact_text=artifact_text,
                 context_id=context_id,
             )
+            log.debug("MQTT → %s (artifact, %d bytes)", reply_topic, len(artifact))
             await self._client.publish(reply_topic, artifact, qos=1, properties=props)
         event = make_status_event(
             request_id=correlation,
@@ -893,6 +972,7 @@ class Coordinator:
             state=TaskState.COMPLETED,
             context_id=context_id,
         )
+        log.debug("MQTT → %s (completed)", reply_topic)
         await self._client.publish(reply_topic, event, qos=1, properties=props)
 
     async def _reply_existing_state(
@@ -1039,10 +1119,14 @@ class Coordinator:
             if not tasks:
                 continue
 
+            app_version = self._db.get_app_version(db_session.app_version_id)
+            app_id = app_version.app_id if app_version else ""
+
             state = SessionState(
                 session_id=db_session.id,
                 request_task_id=db_session.request_task_id,
                 app_version_id=db_session.app_version_id,
+                app_id=app_id,
                 context_id=db_session.context_id,
                 caller_reply_topic=db_session.caller_reply_topic,
                 caller_correlation=db_session.caller_correlation,
@@ -1080,6 +1164,13 @@ class Coordinator:
 
             self._sessions[state.session_id] = state
             self._request_task_index[state.request_task_id] = state.session_id
+
+            # Restore cancel-and-replace tracking so a new request with the
+            # same (app_id, context_id) supersedes this recovered session.
+            if state.context_id and state.app_id:
+                self._context_active[(state.app_id, state.context_id)] = (
+                    state.session_id
+                )
 
             # Dispatch any newly ready tasks
             await self.dispatch_ready(state)
@@ -1124,7 +1215,7 @@ class Coordinator:
         """Fail fast if another coordinator is already running on this broker."""
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}-lock-check",
+                identifier=f"{a2a_org()}/{a2a_unit()}/{RUNTIME_AGENT_ID}-lock-check",
             ),
         ) as client:
             await client.subscribe(topic_coordinator_lock(), qos=1)
@@ -1154,7 +1245,7 @@ class Coordinator:
         try:
             async with aiomqtt.Client(
                 **mqtt_client_kwargs(
-                    identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}",
+                    identifier=f"{a2a_org()}/{a2a_unit()}/{RUNTIME_AGENT_ID}",
                     will=lwt,
                 ),
             ) as client:
@@ -1196,6 +1287,7 @@ class Coordinator:
                     topic = str(mqtt_msg.topic)
                     payload_bytes = mqtt_msg.payload
                     payload = payload_bytes.decode() if payload_bytes else ""
+                    log.debug("MQTT ← %s (%d bytes)", topic, len(payload))
 
                     if "/discovery/" in topic:
                         self.handle_discovery(topic, payload_bytes or b"")
@@ -1228,7 +1320,7 @@ class Coordinator:
             try:
                 async with aiomqtt.Client(
                     **mqtt_client_kwargs(
-                        identifier=f"{A2A_ORG}/{A2A_UNIT}/{RUNTIME_AGENT_ID}-cleanup",
+                        identifier=f"{a2a_org()}/{a2a_unit()}/{RUNTIME_AGENT_ID}-cleanup",
                     ),
                 ) as client:
                     await client.publish(

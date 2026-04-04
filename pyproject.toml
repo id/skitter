@@ -2,10 +2,23 @@
 name = "skitter"
 version = "0.2.0"
 description = "AI agent orchestrator using A2A-over-MQTT"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "aiomqtt>=2.5.0",
-    "litellm>=1.60",
+    "anthropic>=0.88",
+    "openai>=2.30",
     "python-dotenv>=1.2.1",
     "typer>=0.9.0",
     "rich>=13.0.0",
@@ -19,6 +32,11 @@ skitter = "skitter.__main__:dispatch"
 [project.optional-dependencies]
 cloud = ["boto3>=1.35"]
 postgres = ["psycopg[binary]>=3.1", "psycopg_pool>=3.1"]
+
+[project.urls]
+Homepage = "https://github.com/id/skitter"
+Repository = "https://github.com/id/skitter"
+Issues = "https://github.com/id/skitter/issues"
 
 [build-system]
 requires = ["hatchling"]

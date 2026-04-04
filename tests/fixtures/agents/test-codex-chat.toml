@@ -1,0 +1,4 @@
+name = "test-codex-chat"
+description = "Multi-turn conversational test agent (Codex)"
+model = "gpt-5.4-mini"
+developer_instructions = "You are a helpful assistant. Follow the user's instructions exactly. Keep responses short."

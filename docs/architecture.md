@@ -168,11 +168,12 @@ What it does:
 5. Handles `CancelTask`: kills the subprocess, replies with `canceled` state
 6. Validates Task.id presence; rejects requests without it
 7. Deduplicates by Task.id (in-memory, 5-minute TTL); returns existing task state on duplicates
+8. Captures CLI-native session ID (`session_id` from Claude, `thread_id` from Codex) and maps it to the A2A `context_id` for multi-turn resume
 
 The agent-runner reads metadata from native definition files and delegates execution to the respective CLI tool. Claude agents are references to registered agent names (resolved by `claude --agent <name>`). Codex agents carry their instructions inline (passed via `codex exec -c developer_instructions=...`). Runtime is inferred from the file extension.
 
 Permissions and isolation:
-- **Claude agents**: `--permission-mode auto` with filesystem sandbox (writes restricted to `/tmp`)
+- **Claude agents**: `--permission-mode auto` with filesystem sandbox (writes restricted to `/tmp`). On resume, `--permission-mode` and `--settings` are omitted (inherited from the original session).
 - **Codex agents**: `--full-auto` (workspace-write sandbox), `--ephemeral`, `approval_policy=never`
 
 ## Runtime API

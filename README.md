@@ -1,174 +1,222 @@
 # Skitter
 
-AI agent orchestrator using A2A-over-MQTT.
+Skitter turns Claude Code and Codex into MQTT-addressable AI agents.
 
-Two modes:
+## What You Can Do in 2 Minutes
 
-- **Standalone agents**: direct A2A-over-MQTT requests to individual agents, no coordinator needed.
-- **Composed apps**: multi-agent workflows orchestrated by a coordinator that generates a dependency graph and dispatches work.
-
-Works with any A2A-over-MQTT agent. Ships with a built-in agent-runner that wraps Claude Code and Codex CLI.
-
-## Quickstart (Local)
-
-**Prerequisites:** Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker (only needed to run the local EMQX broker), and at least one agent CLI: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex), installed and authenticated.
+Prerequisites: Python 3.11+, [uv](https://docs.astral.sh/uv/), and at least one agent CLI ([Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex)) installed and authenticated.
 
 ```bash
-# Start MQTT broker (Docker required for this step)
-docker compose up -d
-
 # Install
-uv sync
+pip install skitter
+# or: uv tool install skitter
+# or from source: pip install git+https://github.com/id/skitter.git
 
-# Configure LLM provider (used by create-agent and coordinator)
-cp .env.example .env
-# Edit .env: set your API key and model
-```
+# Configure broker and (optionally) LLM provider
+skitter setup
 
-### Run a standalone agent
+# Create an agent and start services
+skitter create-agent random-x "returns a random number as JSON"
+skitter up
 
-No coordinator needed. Create an agent definition, start an agent-runner, and send it a request.
-
-```bash
-# Create an agent definition
-uv run skitter create-agent random-x "returns a random number as JSON"
-
-# Terminal 1: start the agent
-uv run skitter agent-runner agents/random-x.md
-
-# Terminal 2: send a request
-uv run skitter request random-x "go"
+# Ask it something
+skitter ask random-x "go"
 # => {"x": 73}
 ```
 
-The agent-runner reads metadata from the definition file, publishes a discovery card, and handles A2A requests independently. It supports Claude Code (`.md`) and Codex (`.toml`) definitions. Use `uv run skitter create-agent` to generate definitions, or write them by hand. Any A2A-over-MQTT compliant process works too.
+All `skitter` examples below assume a package install. If running from source, use `uv run skitter` instead.
 
-### Create a composed app
+## Under the Hood
 
-Composed apps need a coordinator, which uses an LLM to generate orchestration graphs (configured via `.env` above).
+- **Agent runner** wraps Claude Code or Codex CLI as an A2A-over-MQTT agent. It reads a definition file from `~/.skitter/agents/`, publishes a discovery card, and handles requests independently.
+- **Definitions** live in `~/.skitter/agents/` (or `$SKITTER_HOME/agents/`). Claude agents use `.md` (YAML frontmatter + system instructions); Codex agents use `.toml`.
+- **MQTT** carries all discovery, requests, and replies. Subscribe to `$a2a/v1/#` with any MQTT client to watch everything in real time.
+- **Coordinator** is only needed for composed (multi-agent) apps. It uses an LLM to generate a dependency graph and dispatches work to agents via MQTT.
+- **Runtime auth** is separate from coordinator config. Claude Code and Codex authenticate with their own credentials; the coordinator's LLM config is only for graph generation.
 
-Create two more agents alongside random-x:
+## Support Matrix
+
+| Runtime | Auth | Multi-turn | Streaming |
+|---------|------|------------|-----------|
+| Claude Code (`.md`) | Claude OAuth or API key | Yes (via `context_id`) | Yes |
+| Codex (`.toml`) | OpenAI API key | Yes (via `context_id`) | No |
+
+Any A2A-over-MQTT compliant process can also serve as an agent; the built-in runner is a convenience.
+
+## Service Management
+
+`skitter up` starts the broker (Docker tier), coordinator, and all agents from `~/.skitter/agents/`.
 
 ```bash
-uv run skitter create-agent random-y "returns a random number as JSON"
-uv run skitter create-agent sum "extracts numbers from input and returns their sum as JSON"
+skitter up                    # start everything
+skitter up --broker-only      # just the broker (run coordinator from source)
+skitter up --agent random-x   # start a single agent
+skitter status                # readiness overview
+skitter logs emqx             # view broker logs
+skitter logs coordinator      # view coordinator logs
+skitter down                  # stop everything
+skitter down --agent random-x # stop a single agent
+skitter doctor                # check config, broker, agents, LLM
 ```
 
-Start the agents, coordinator, then create and run the app:
+`skitter status` shows: config path, available runtimes, broker tier, container state, agent count, and a recommended next action.
+
+## Composed Apps
+
+Composed apps need a coordinator, which uses an LLM to generate orchestration graphs.
+
+Create agents and a multi-agent workflow:
 
 ```bash
-# Terminal 1: start agents
-uv run skitter agent-runner agents/random-x.md
-uv run skitter agent-runner agents/random-y.md
-uv run skitter agent-runner agents/sum.md
+skitter create-agent random-x "returns a random number as JSON"
+skitter create-agent random-y "returns a random number as JSON"
+skitter create-agent sum "extracts numbers from input and returns their sum as JSON"
 
-# Terminal 2: start coordinator
-uv run skitter
+skitter up
 
-# Terminal 3: create an app and run it
-uv run skitter create-app "Add Numbers" \
+skitter create-app "Add Numbers" \
   "Generate two random numbers in parallel, then sum them" \
   --agents random-x,random-y,sum --id add-numbers
 
-uv run skitter request add-numbers "go"
+skitter ask add-numbers "go"
 # => {"y": 73} ... {"x": 47} ... {"sum": 120}
 ```
 
-The coordinator generates a fan-out/fan-in graph: random-x and random-y run in parallel, then sum receives both results.
-
-Open `dashboard.html` in a browser to watch requests execute in real time (connects to the broker via WebSocket).
-
-Use `chat` for interactive sessions with any agent:
+Use `chat` for interactive sessions:
 
 ```bash
-uv run skitter chat random-x
-uv run skitter chat add-numbers
+skitter chat random-x
+skitter chat add-numbers
 ```
 
-## How It Works
+Open `dashboard.html` in a browser to watch requests in real time (connects via WebSocket).
+
+## Multi-turn Conversations
+
+Both Claude Code and Codex agents support multi-turn via A2A `context_id`. The agent-runner captures the CLI's native session ID on the first request and uses it to resume on subsequent requests with the same `context_id`.
+
+```bash
+skitter ask researcher "analyze this data"
+# context_id: abc123
+
+skitter ask researcher "now summarize" --context abc123
+```
+
+## Architecture
 
 ```
-                      ┌────────────┐
-  ┌────────┐          │            │        ┌─────────┐
-  │ Client │<────────>│            │<──────>│ Agent A │
-  └────────┘          │    MQTT    │        └─────────┘
-                      │   Broker   │        ┌─────────┐
-  ┌─────────────┐     │            │<──────>│ Agent B │
-  │ Coordinator │<───>│            │        └─────────┘
-  └─────────────┘     │            │        ┌─────────┐
-   app cards          │            │<──────>│ Agent C │
-                      └────────────┘        └─────────┘
+                      +------------+
+  +--------+          |            |        +---------+
+  | Client |<-------->|            |<------>| Agent A |
+  +--------+          |    MQTT    |        +---------+
+                      |   Broker   |        +---------+
+  +-------------+     |            |<------>| Agent B |
+  | Coordinator |<--->|            |        +---------+
+  +-------------+     |            |        +---------+
+   app cards          |            |<------>| Agent C |
+                      +------------+        +---------+
                                              agent cards
 ```
 
-All participants connect to the broker via MQTT pub/sub.
+All participants connect via MQTT pub/sub. Topics follow the [A2A-over-MQTT](docs/spec/a2a-over-mqtt-transport.md) scheme:
 
-**Standalone agents** handle requests directly. Clients publish to the agent's request topic; the agent processes and replies. Each agent publishes its own discovery card. Any A2A-over-MQTT compliant process works.
-
-**Composed apps** are multi-agent workflows. The coordinator subscribes to each app's request topic, creates a DB-backed session, dispatches A2A requests following the dependency graph, and returns the final result to the caller. The coordinator publishes an app card for each composed workflow.
-
-Topics follow the [A2A-over-MQTT](docs/spec/a2a-over-mqtt-transport.md) scheme.
-
-## Agent Runner
-
-The built-in agent-runner wraps Claude Code and Codex CLI as A2A-over-MQTT agents. It reads metadata from definition files (`.md` for Claude, `.toml` for Codex), publishes a discovery card, and delegates execution to the respective CLI tool. Runtime is inferred from the file extension.
-
-Use `skitter create-agent` to generate definitions, or write them by hand:
-
-```bash
-# Generate via LLM
-uv run skitter create-agent coder "writes clean, idiomatic code" --runtime codex
-
-# Or write by hand
-uv run skitter agent-runner agents/coder.toml
+```
+$a2a/v1/discovery/{org}/{unit}/{agent_id}   # Retained discovery cards
+$a2a/v1/request/{org}/{unit}/{agent_id}     # Requests
+$a2a/v1/reply/{org}/{unit}/{agent_id}/...   # Replies
+$a2a/v1/event/{org}/{unit}/{agent_id}       # Lifecycle events
 ```
 
-Agent definitions live in `agents/` and are symlinked into `.claude/agents/` or `.codex/agents/` so the respective CLI discovers them by name.
+**Standalone agents** handle requests directly. **Composed apps** are orchestrated by the coordinator, which creates a DB-backed session, dispatches A2A requests following a dependency graph, and returns the final result.
 
-### Permissions and isolation
+## LLM Provider Configuration
 
-**Claude agents** run with `--permission-mode auto` and a filesystem sandbox: writes are restricted to `/tmp`.
+The coordinator uses an LLM for graph generation in composed apps. Configure during `skitter setup` or via environment variables. Not needed for standalone agents.
 
-**Codex agents** run with `--full-auto`, `--ephemeral`, and `approval_policy=never`. The session is ephemeral and workspace-write sandboxed.
+Set `SKITTER_LLM_API_KEY` with your API key, then configure the provider:
 
-## Running Agents in Docker
+- **Anthropic** (default): `llm.api: anthropic`
+- **OpenAI**: `llm.api: openai`
+- **Custom endpoint**: set `llm.base_url` and declare the protocol family via `llm.api`
 
-`Dockerfile.agent` packages the agent-runner with both Claude Code and Codex binaries. Use it to run agents in isolated containers.
+Runtime auth (Claude Code, Codex) is separate: agents use their own credentials (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or OAuth).
+
+## SKITTER_HOME
+
+By default, skitter stores config and agent definitions in `~/.skitter/`. Override with:
 
 ```bash
-# Build
-docker build -f Dockerfile.agent -t skitter-agent .
-
-# Run a Claude agent
-# Auth: CLAUDE_CODE_OAUTH_TOKEN (from "claude setup-token") or ANTHROPIC_API_KEY
-docker run --rm \
-  -e MQTT_BROKER_URL=mqtt://your-broker:1883 \
-  -e CLAUDE_CODE_OAUTH_TOKEN=... \
-  -v ./agents/researcher.md:/app/agents/researcher.md:ro \
-  skitter-agent /app/agents/researcher.md
-
-# Run a Codex agent
-# Auth: CODEX_API_KEY, or mount ~/.codex/auth.json
-docker run --rm \
-  -e MQTT_BROKER_URL=mqtt://your-broker:1883 \
-  -e CODEX_API_KEY=... \
-  -v ./agents/coder.toml:/app/agents/coder.toml:ro \
-  skitter-agent /app/agents/coder.toml
+export SKITTER_HOME=/path/to/my/skitter
+skitter setup
 ```
 
-The container runs as a non-root user. The entrypoint is `python -m skitter.agent_runner`.
+Or per-command:
+
+```bash
+skitter --skitter-home /path/to/my/skitter status
+```
 
 ## Managing Apps and Sessions
 
 ```bash
-uv run skitter list-apps
-uv run skitter get-app add-numbers
-uv run skitter delete-app add-numbers
-uv run skitter list-sessions
-uv run skitter list-sessions add-numbers    # filter by app
-uv run skitter get-session <session-id>
-uv run skitter cancel-session <session-id>
+skitter list-apps
+skitter get-app add-numbers
+skitter delete-app add-numbers
+skitter list-sessions
+skitter list-sessions add-numbers    # filter by app
+skitter get-session <session-id>
+skitter cancel-session <session-id>
 ```
+
+## Running Agents in Docker
+
+The `ghcr.io/id/skitter/agent` image packages both Claude Code and Codex CLIs. An agent container only needs to reach an MQTT broker; no other infrastructure is required.
+
+### Minimal example (Claude agent)
+
+```bash
+docker run --rm \
+  -e MQTT_BROKER_URL=mqtt://broker.emqx.io:1883 \
+  -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
+  -e SKITTER_AGENT_PERMISSION_MODE=bypassPermissions \
+  -v ~/.skitter:/home/skitter/.skitter \
+  ghcr.io/id/skitter/agent my-agent
+```
+
+### Minimal example (Codex agent)
+
+```bash
+docker run --rm \
+  -e MQTT_BROKER_URL=mqtt://broker.emqx.io:1883 \
+  -e SKITTER_AGENT_PERMISSION_MODE=bypassPermissions \
+  -v ~/.skitter:/home/skitter/.skitter \
+  -v ~/.codex/auth.json:/home/skitter/.codex/auth.json:ro \
+  ghcr.io/id/skitter/agent my-codex-agent
+```
+
+The agent name is resolved from `SKITTER_HOME/agents/` (trying `<name>.md` then `<name>.toml`). You can also pass a full file path.
+
+### Auth
+
+| Runtime | How to provide |
+|---------|---------------|
+| Claude Code | `CLAUDE_CODE_OAUTH_TOKEN` env var |
+| Codex | Bind-mount `~/.codex/auth.json` to `/home/skitter/.codex/auth.json` |
+
+### Permission mode
+
+By default, agents sandbox file writes (`--permission-mode auto` for Claude, `--full-auto` for Codex). In Docker containers (already isolated), set `SKITTER_AGENT_PERMISSION_MODE=bypassPermissions` to enable full tool access (file generation, shell commands, etc.).
+
+### Volumes
+
+Without bind-mounts, agent-generated files and memory are lost when the container is removed. Mount these to persist them on the host:
+
+| Mount target | Purpose |
+|-------------|---------|
+| `/home/skitter/.claude` | Claude session state, auto-memory, and conversation history |
+| `/tmp/workspace` | Agent-generated files (reports, code, data) |
+
+See `docker-compose.test.yml` for a multi-agent example.
 
 ## Why MQTT?
 
@@ -178,27 +226,31 @@ Instead of a monolithic orchestrator, skitter pushes routing and fan-out into th
 - **Run agents anywhere.** Local processes, Docker containers, or cloud machines. As long as they reach the broker, they work.
 - **Free monitoring.** Subscribe to `$a2a/v1/#` with any MQTT client to watch every request, result, and event in real time.
 
-
 ## Testing
 
 ```bash
 # Unit tests (no broker needed)
 uv run pytest tests/test_unit.py -q
 
-# E2E tests (needs EMQX on localhost; no Docker or LLM API required beyond the broker)
-docker compose up -d
+# E2E tests (needs EMQX on localhost)
+docker compose up -d --wait
 uv run pytest tests/test_e2e.py -v -s
-```
 
-E2E tests run the coordinator and agent-runners in-process with mocked CLI and graph generation. Real MQTT messages flow through the local broker.
+# Acceptance tests (needs EMQX on localhost; exercises full user journey)
+uv run pytest tests/test_acceptance.py -v -s
+
+# Docker E2E tests (real CLIs in Docker; needs auth tokens in .env.test)
+docker compose --env-file .env.test -f docker-compose.test.yml up -d --wait --build
+uv run pytest tests/test_docker_e2e.py -v -s
+```
 
 ## Limitations
 
 - No built-in authentication (rely on MQTT broker auth)
 - Single coordinator instance per broker (enforced via retained MQTT lock)
-- Codex `.toml` agent definitions: `model` and `developer_instructions` are applied at runtime via CLI flags; other fields (`sandbox_mode`, etc.) are ignored
+- Codex `.toml` agents: `model` and `developer_instructions` are applied via CLI flags; other fields are ignored
 - A2A Core Conformance only; Extended Conformance features (shared pool dispatch, task handover, binary artifacts, OAuth) are not implemented
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for project structure, configuration, environment variables, testing, and the full topic scheme reference.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for project structure, development setup, configuration reference, and testing.

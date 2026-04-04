@@ -1,0 +1,46 @@
+name: Docker E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 6am UTC
+
+env:
+  CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  SKITTER_LLM_API_KEY: ${{ secrets.SKITTER_LLM_API_KEY }}
+  SKITTER_LLM_MODEL: ${{ vars.SKITTER_LLM_MODEL || 'claude-haiku-4-5' }}
+
+jobs:
+  docker-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group dev
+
+      # Codex auth: write auth.json from secret if available
+      - name: Setup Codex auth
+        env:
+          CODEX_AUTH_JSON_SECRET: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          echo "$CODEX_AUTH_JSON_SECRET" > ~/.codex/auth.json
+          echo "CODEX_AUTH_JSON=$HOME/.codex/auth.json" >> "$GITHUB_ENV"
+
+      - name: Start compose stack
+        run: |
+          docker compose -f docker-compose.test.yml up -d --wait --build
+
+      - name: Run tests
+        run: uv run pytest tests/test_docker_e2e.py -v -s
+
+      - if: always()
+        name: Dump logs
+        run: |
+          docker compose -f docker-compose.test.yml logs --tail=200
+
+      - if: always()
+        name: Tear down
+        run: |
+          docker compose -f docker-compose.test.yml down -v

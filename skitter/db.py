@@ -51,6 +51,7 @@ class DBSession:
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     state: str = "running"
+    result: str = ""
     created_at: str = ""
     completed_at: str = ""
 
@@ -98,11 +99,17 @@ class DB(Protocol):
         self, request_task_id: str
     ) -> DBSession | None: ...
     def list_sessions(self, app_id: str | None = None) -> list[DBSession]: ...
-    def update_session_state(self, session_id: str, state: str) -> None: ...
+    def list_context_sessions(
+        self, app_id: str, context_id: str, limit: int = 10
+    ) -> list[DBSession]: ...
+    def update_session_state(
+        self, session_id: str, state: str, result: str = ""
+    ) -> None: ...
 
     def create_task(self, task: DBTask) -> None: ...
     def get_task(self, row_id: str) -> DBTask | None: ...
     def list_tasks(self, session_id: str) -> list[DBTask]: ...
+
     def update_task(self, row_id: str, **fields) -> None: ...
 
     def close(self) -> None: ...
@@ -178,6 +185,13 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE task ADD COLUMN terminal TEXT DEFAULT ''",
         "UPDATE task SET terminal = '1' WHERE next = 'output' OR next = '' OR next IS NULL",
     ],
+    # v5: index on context_id for conversation continuity queries
+    [
+        "CREATE INDEX IF NOT EXISTS idx_session_context_id "
+        "ON session(context_id) WHERE context_id != ''",
+    ],
+    # v6: store final result on session for conversation continuity
+    ["ALTER TABLE session ADD COLUMN result TEXT DEFAULT ''"],
 ]
 
 _TASK_UPDATABLE_FIELDS = frozenset(
@@ -232,6 +246,7 @@ def _row_to_session(row) -> DBSession:
         caller_reply_topic=row["caller_reply_topic"] or "",
         caller_correlation=row["caller_correlation"] or "",
         state=row["state"] or "running",
+        result=row["result"] or "",
         created_at=row["created_at"] or "",
         completed_at=row["completed_at"] or "",
     )
@@ -416,11 +431,27 @@ class SqliteDB:
             ).fetchall()
         return [_row_to_session(r) for r in rows]
 
-    def update_session_state(self, session_id: str, state: str) -> None:
+    def list_context_sessions(
+        self, app_id: str, context_id: str, limit: int = 10
+    ) -> list[DBSession]:
+        rows = self._conn.execute(
+            "SELECT * FROM ("
+            "SELECT s.* FROM session s "
+            "JOIN app_version av ON s.app_version_id = av.id "
+            "WHERE av.app_id = ? AND s.context_id = ? AND s.state = 'completed' "
+            "ORDER BY s.created_at DESC LIMIT ?"
+            ") sub ORDER BY created_at ASC",
+            (app_id, context_id, limit),
+        ).fetchall()
+        return [_row_to_session(r) for r in rows]
+
+    def update_session_state(
+        self, session_id: str, state: str, result: str = ""
+    ) -> None:
         if state in ("completed", "failed", "canceled"):
             self._conn.execute(
-                "UPDATE session SET state = ?, completed_at = ? WHERE id = ?",
-                (state, _now(), session_id),
+                "UPDATE session SET state = ?, result = ?, completed_at = ? WHERE id = ?",
+                (state, result, _now(), session_id),
             )
         else:
             self._conn.execute(
@@ -637,11 +668,27 @@ class PostgresDB:
             rows = self._fetchall("SELECT * FROM session ORDER BY created_at DESC")
         return [_row_to_session(r) for r in rows]
 
-    def update_session_state(self, session_id: str, state: str) -> None:
+    def list_context_sessions(
+        self, app_id: str, context_id: str, limit: int = 10
+    ) -> list[DBSession]:
+        rows = self._fetchall(
+            "SELECT * FROM ("
+            "SELECT s.* FROM session s "
+            "JOIN app_version av ON s.app_version_id = av.id "
+            "WHERE av.app_id = %s AND s.context_id = %s AND s.state = 'completed' "
+            "ORDER BY s.created_at DESC LIMIT %s"
+            ") sub ORDER BY created_at ASC",
+            (app_id, context_id, limit),
+        )
+        return [_row_to_session(r) for r in rows]
+
+    def update_session_state(
+        self, session_id: str, state: str, result: str = ""
+    ) -> None:
         if state in ("completed", "failed", "canceled"):
             self._exec(
-                "UPDATE session SET state = %s, completed_at = %s WHERE id = %s",
-                (state, _now(), session_id),
+                "UPDATE session SET state = %s, result = %s, completed_at = %s WHERE id = %s",
+                (state, result, _now(), session_id),
             )
         else:
             self._exec(
@@ -702,9 +749,9 @@ class PostgresDB:
 
 def open_db() -> SqliteDB | PostgresDB:
     """Open the database configured in ~/.skitter/config.yaml."""
-    from skitter.config import load_db_config
+    from skitter.config import load_config
 
-    cfg = load_db_config()
+    cfg = load_config().db
     if cfg.backend == "postgres":
         return PostgresDB(cfg.postgres_dsn)
     return SqliteDB(cfg.sqlite_path)

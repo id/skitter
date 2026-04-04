@@ -21,8 +21,8 @@ from skitter.config import AgentDef
 from skitter.coordinator import Coordinator
 from skitter.db import SqliteDB
 from skitter.a2a import (
-    A2A_ORG,
-    A2A_UNIT,
+    a2a_org,
+    a2a_unit,
     A2ARequest,
     REPLY_ARTIFACT,
     REPLY_ERROR,
@@ -53,16 +53,18 @@ pytestmark = [needs_mqtt, pytest.mark.asyncio]
 _cli_handlers: dict[str, object] = {}
 
 
-async def _dispatching_run_cli(agent, prompt, publish_stream, env):
+async def _dispatching_run_cli(
+    agent, prompt, publish_stream, env, resume_id=None, cwd=None
+):
     handler = _cli_handlers.get(agent.id)
     if handler:
         import inspect
 
         result = handler(agent, prompt, publish_stream, env)
         if inspect.isawaitable(result):
-            return await result
-        return result
-    return f"Response from {agent.id}"
+            result = await result
+        return result, ""
+    return f"Response from {agent.id}", ""
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +75,7 @@ async def _dispatching_run_cli(agent, prompt, publish_stream, env):
 async def _clear_retained(topic: str) -> None:
     async with aiomqtt.Client(
         **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/clear-{uuid.uuid4().hex[:6]}",
+            identifier=f"{a2a_org()}/{a2a_unit()}/clear-{uuid.uuid4().hex[:6]}",
         ),
     ) as client:
         await client.publish(topic, b"", qos=1, retain=True)
@@ -119,7 +121,7 @@ async def coordinator():
     # Clear coordinator + app discovery cards
     async with aiomqtt.Client(
         **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/cleanup-{uuid.uuid4().hex[:6]}",
+            identifier=f"{a2a_org()}/{a2a_unit()}/cleanup-{uuid.uuid4().hex[:6]}",
         ),
     ) as client:
         await client.publish(topic_coordinator_lock(), b"", qos=1, retain=True)
@@ -173,7 +175,7 @@ async def start_agent():
     if agents:
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/disco-clear-{uuid.uuid4().hex[:6]}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/disco-clear-{uuid.uuid4().hex[:6]}",
             ),
         ) as client:
             for agent_id, _ in agents:
@@ -206,7 +208,7 @@ class TestAgentRunner:
         topic = topic_discovery(aid)
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-a2a-status-{uuid.uuid4().hex[:6]}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-a2a-status-{uuid.uuid4().hex[:6]}",
             ),
         ) as client:
             await client.subscribe(topic, qos=1)
@@ -258,7 +260,7 @@ class TestAgentRunner:
         messages: list[tuple[str, str]] = []
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-stream-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-stream-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -298,7 +300,7 @@ class TestAgentRunner:
         raw_messages: list[dict] = []
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-wire-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-wire-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -380,7 +382,7 @@ class TestAgentRunner:
         task_ids_in_replies: list[str] = []
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-echo-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-echo-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -434,7 +436,7 @@ class TestAgentRunner:
 
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-notaskid-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-notaskid-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -482,7 +484,7 @@ class TestAgentRunner:
 
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-dedup-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-dedup-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -558,7 +560,7 @@ class TestAgentRunner:
 
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-cancel-reply-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-cancel-reply-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -721,7 +723,7 @@ class TestComposedApp:
         task_ids_in_replies: list[str] = []
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-tid-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-tid-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -852,7 +854,7 @@ class TestCorrelationData:
         # Subscribe to the coordinator's internal reply topic to inspect correlation
         # The coordinator subscribes to $a2a/v1/reply/{org}/{unit}/skitter/{sid}/{nid}
         # but we don't know the session_id yet. Subscribe with wildcard.
-        spy_topic = f"$a2a/v1/reply/{A2A_ORG}/{A2A_UNIT}/skitter/#"
+        spy_topic = f"$a2a/v1/reply/{a2a_org()}/{a2a_unit()}/skitter/#"
 
         test_id = uuid.uuid4().hex[:8]
         reply_t = topic_reply("test", test_id)
@@ -865,7 +867,7 @@ class TestCorrelationData:
         correlation_on_replies: list[str] = []
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-corr-spy-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-corr-spy-{test_id}",
             ),
         ) as client:
             await client.subscribe(spy_topic, qos=1)
@@ -885,7 +887,7 @@ class TestCorrelationData:
                         continue
 
                     # Capture correlation from agent replies to coordinator
-                    if f"/reply/{A2A_ORG}/{A2A_UNIT}/skitter/" in topic:
+                    if f"/reply/{a2a_org()}/{a2a_unit()}/skitter/" in topic:
                         corr_bytes = getattr(msg.properties, "CorrelationData", None)
                         if corr_bytes:
                             correlation_on_replies.append(corr_bytes.decode())
@@ -944,7 +946,7 @@ class TestCorrelationData:
 
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-spoof-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-spoof-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)
@@ -1040,7 +1042,7 @@ class TestCancellation:
 
         async with aiomqtt.Client(
             **mqtt_client_kwargs(
-                identifier=f"{A2A_ORG}/{A2A_UNIT}/test-cancel-{test_id}",
+                identifier=f"{a2a_org()}/{a2a_unit()}/test-cancel-{test_id}",
             ),
         ) as client:
             await client.subscribe(reply_t, qos=1)

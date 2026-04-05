@@ -16,8 +16,8 @@ import aiomqtt
 from rich.console import Console
 
 from skitter.a2a import (
-    A2A_ORG,
-    A2A_UNIT,
+    a2a_org,
+    a2a_unit,
     A2ARequest,
     print_reply,
     stream_request,
@@ -58,7 +58,7 @@ async def _run_chat(agent_id: str) -> None:
     req_topic = topic_request(agent_id)
 
     async with aiomqtt.Client(
-        **mqtt_client_kwargs(identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}"),
+        **mqtt_client_kwargs(identifier=f"{a2a_org()}/{a2a_unit()}/cli-{mqtt_session}"),
     ) as client:
         # Fetch discovery card
         card = await _fetch_card(client, agent_id)

@@ -1,12 +1,14 @@
 """Database interface with SQLite and PostgreSQL backends.
 
-All methods are synchronous — the coordinator calls them from async code
-via asyncio.loop.run_in_executor().
+All repository methods are synchronous. The coordinator must use AsyncDB
+(which wraps calls via asyncio.to_thread) to avoid blocking the event loop.
 """
 
+import asyncio
+import json
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -47,10 +49,11 @@ class DBSession:
     request_task_id: str = ""
     context_id: str = ""
     request_json: str = ""
-    variables: str = ""
+    variables: dict = field(default_factory=dict)
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     state: str = "running"
+    result: str = ""
     created_at: str = ""
     completed_at: str = ""
 
@@ -62,8 +65,8 @@ class DBTask:
     node_id: str
     agent: str
     description: str = ""
-    needs: str = ""
-    terminal: str = ""
+    needs: list = field(default_factory=list)
+    terminal: bool = False
     target_json: str = ""
     dispatch_task_id: str = ""
     reply_topic: str = ""
@@ -98,14 +101,102 @@ class DB(Protocol):
         self, request_task_id: str
     ) -> DBSession | None: ...
     def list_sessions(self, app_id: str | None = None) -> list[DBSession]: ...
-    def update_session_state(self, session_id: str, state: str) -> None: ...
+    def list_context_sessions(
+        self, app_id: str, context_id: str, limit: int = 10
+    ) -> list[DBSession]: ...
+    def update_session_state(
+        self, session_id: str, state: str, result: str = ""
+    ) -> None: ...
 
     def create_task(self, task: DBTask) -> None: ...
     def get_task(self, row_id: str) -> DBTask | None: ...
     def list_tasks(self, session_id: str) -> list[DBTask]: ...
+
     def update_task(self, row_id: str, **fields) -> None: ...
 
     def close(self) -> None: ...
+
+
+# --- Async facade ---
+
+
+class AsyncDB:
+    """Async wrapper around a synchronous DB, using asyncio.to_thread."""
+
+    def __init__(self, db: DB) -> None:
+        self._db = db
+
+    async def create_app(self, app: App) -> None:
+        await asyncio.to_thread(self._db.create_app, app)
+
+    async def get_app(self, app_id: str) -> App | None:
+        return await asyncio.to_thread(self._db.get_app, app_id)
+
+    async def list_apps(self) -> list[App]:
+        return await asyncio.to_thread(self._db.list_apps)
+
+    async def update_app_card(self, app_id: str, card_json: str) -> None:
+        await asyncio.to_thread(self._db.update_app_card, app_id, card_json)
+
+    async def delete_app(self, app_id: str) -> None:
+        await asyncio.to_thread(self._db.delete_app, app_id)
+
+    async def create_app_version(self, version: AppVersion) -> None:
+        await asyncio.to_thread(self._db.create_app_version, version)
+
+    async def get_app_version(self, version_id: str) -> AppVersion | None:
+        return await asyncio.to_thread(self._db.get_app_version, version_id)
+
+    async def get_current_version(self, app_id: str) -> AppVersion | None:
+        return await asyncio.to_thread(self._db.get_current_version, app_id)
+
+    async def list_app_versions(self, app_id: str) -> list[AppVersion]:
+        return await asyncio.to_thread(self._db.list_app_versions, app_id)
+
+    async def create_session(self, session: DBSession) -> None:
+        await asyncio.to_thread(self._db.create_session, session)
+
+    async def get_session(self, session_id: str) -> DBSession | None:
+        return await asyncio.to_thread(self._db.get_session, session_id)
+
+    async def get_session_by_request_task_id(
+        self, request_task_id: str
+    ) -> DBSession | None:
+        return await asyncio.to_thread(
+            self._db.get_session_by_request_task_id, request_task_id
+        )
+
+    async def list_sessions(self, app_id: str | None = None) -> list[DBSession]:
+        return await asyncio.to_thread(self._db.list_sessions, app_id)
+
+    async def list_context_sessions(
+        self, app_id: str, context_id: str, limit: int = 10
+    ) -> list[DBSession]:
+        return await asyncio.to_thread(
+            self._db.list_context_sessions, app_id, context_id, limit
+        )
+
+    async def update_session_state(
+        self, session_id: str, state: str, result: str = ""
+    ) -> None:
+        await asyncio.to_thread(
+            self._db.update_session_state, session_id, state, result
+        )
+
+    async def create_task(self, task: DBTask) -> None:
+        await asyncio.to_thread(self._db.create_task, task)
+
+    async def get_task(self, row_id: str) -> DBTask | None:
+        return await asyncio.to_thread(self._db.get_task, row_id)
+
+    async def list_tasks(self, session_id: str) -> list[DBTask]:
+        return await asyncio.to_thread(self._db.list_tasks, session_id)
+
+    async def update_task(self, row_id: str, **fields) -> None:
+        await asyncio.to_thread(self._db.update_task, row_id, **fields)
+
+    def close(self) -> None:
+        self._db.close()
 
 
 # --- Schema ---
@@ -172,12 +263,17 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE task RENAME COLUMN a2a_task_id TO dispatch_task_id",
     ],
     # v4: graph model cleanup (Phase 2) — replace next with terminal flag
-    # Old model: next pointed to a downstream task ID, or "output" for terminal tasks.
-    # The validator required next on every task, so empty/NULL means terminal.
     [
         "ALTER TABLE task ADD COLUMN terminal TEXT DEFAULT ''",
         "UPDATE task SET terminal = '1' WHERE next = 'output' OR next = '' OR next IS NULL",
     ],
+    # v5: index on context_id for conversation continuity queries
+    [
+        "CREATE INDEX IF NOT EXISTS idx_session_context_id "
+        "ON session(context_id) WHERE context_id != ''",
+    ],
+    # v6: store final result on session for conversation continuity
+    ["ALTER TABLE session ADD COLUMN result TEXT DEFAULT ''"],
 ]
 
 _TASK_UPDATABLE_FIELDS = frozenset(
@@ -222,30 +318,33 @@ def _row_to_app_version(row) -> AppVersion:
 
 
 def _row_to_session(row) -> DBSession:
+    raw_vars = row["variables"] or ""
     return DBSession(
         id=row["id"],
         app_version_id=row["app_version_id"],
         request_task_id=row["request_task_id"] or "",
         context_id=row["context_id"] or "",
         request_json=row["request_json"] or "",
-        variables=row["variables"] or "",
+        variables=json.loads(raw_vars) if raw_vars else {},
         caller_reply_topic=row["caller_reply_topic"] or "",
         caller_correlation=row["caller_correlation"] or "",
         state=row["state"] or "running",
+        result=row["result"] or "",
         created_at=row["created_at"] or "",
         completed_at=row["completed_at"] or "",
     )
 
 
 def _row_to_task(row) -> DBTask:
+    raw_needs = row["needs"] or ""
     return DBTask(
         id=row["id"],
         session_id=row["session_id"],
         node_id=row["node_id"],
         agent=row["agent"],
         description=row["description"] or "",
-        needs=row["needs"] or "",
-        terminal=row["terminal"] or "",
+        needs=json.loads(raw_needs) if raw_needs else [],
+        terminal=bool(row["terminal"]),
         target_json=row["target_json"] or "",
         dispatch_task_id=row["dispatch_task_id"] or "",
         reply_topic=row["reply_topic"] or "",
@@ -256,6 +355,221 @@ def _row_to_task(row) -> DBTask:
         started_at=row["started_at"] or "",
         completed_at=row["completed_at"] or "",
     )
+
+
+# --- Shared repository logic ---
+
+
+class _BaseDB:
+    """Shared CRUD logic; subclasses provide _exec, _fetchone, _fetchall, _ph."""
+
+    _ph: str  # placeholder: "?" for SQLite, "%s" for PostgreSQL
+
+    def _exec(self, sql: str, params=()) -> None:
+        raise NotImplementedError
+
+    def _fetchone(self, sql: str, params=()):
+        raise NotImplementedError
+
+    def _fetchall(self, sql: str, params=()):
+        raise NotImplementedError
+
+    # -- App --
+
+    def create_app(self, app: App) -> None:
+        p = self._ph
+        self._exec(
+            f"INSERT INTO app (id, name, description, card_json, created_at) "
+            f"VALUES ({p}, {p}, {p}, {p}, {p})",
+            (
+                app.id,
+                app.name,
+                app.description,
+                app.card_json,
+                app.created_at or _now(),
+            ),
+        )
+
+    def get_app(self, app_id: str) -> App | None:
+        row = self._fetchone(f"SELECT * FROM app WHERE id = {self._ph}", (app_id,))
+        return _row_to_app(row) if row else None
+
+    def list_apps(self) -> list[App]:
+        return [
+            _row_to_app(r)
+            for r in self._fetchall("SELECT * FROM app ORDER BY created_at")
+        ]
+
+    def update_app_card(self, app_id: str, card_json: str) -> None:
+        p = self._ph
+        self._exec(
+            f"UPDATE app SET card_json = {p} WHERE id = {p}", (card_json, app_id)
+        )
+
+    def delete_app(self, app_id: str) -> None:
+        self._exec(f"DELETE FROM app WHERE id = {self._ph}", (app_id,))
+
+    # -- App version --
+
+    def create_app_version(self, version: AppVersion) -> None:
+        p = self._ph
+        self._exec(
+            f"INSERT INTO app_version (id, app_id, version, source_cards, "
+            f"instructions, graph_json, created_at) VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p})",
+            (
+                version.id,
+                version.app_id,
+                version.version,
+                version.source_cards,
+                version.instructions,
+                version.graph_json,
+                version.created_at or _now(),
+            ),
+        )
+
+    def get_app_version(self, version_id: str) -> AppVersion | None:
+        row = self._fetchone(
+            f"SELECT * FROM app_version WHERE id = {self._ph}", (version_id,)
+        )
+        return _row_to_app_version(row) if row else None
+
+    def get_current_version(self, app_id: str) -> AppVersion | None:
+        row = self._fetchone(
+            f"SELECT * FROM app_version WHERE app_id = {self._ph} ORDER BY version DESC LIMIT 1",
+            (app_id,),
+        )
+        return _row_to_app_version(row) if row else None
+
+    def list_app_versions(self, app_id: str) -> list[AppVersion]:
+        return [
+            _row_to_app_version(r)
+            for r in self._fetchall(
+                f"SELECT * FROM app_version WHERE app_id = {self._ph} ORDER BY version",
+                (app_id,),
+            )
+        ]
+
+    # -- Session --
+
+    def create_session(self, session: DBSession) -> None:
+        p = self._ph
+        self._exec(
+            f"INSERT INTO session (id, app_version_id, request_task_id, context_id, "
+            f"request_json, variables, caller_reply_topic, caller_correlation, "
+            f"state, created_at) VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})",
+            (
+                session.id,
+                session.app_version_id,
+                session.request_task_id,
+                session.context_id,
+                session.request_json,
+                json.dumps(session.variables),
+                session.caller_reply_topic,
+                session.caller_correlation,
+                session.state,
+                session.created_at or _now(),
+            ),
+        )
+
+    def get_session(self, session_id: str) -> DBSession | None:
+        row = self._fetchone(
+            f"SELECT * FROM session WHERE id = {self._ph}", (session_id,)
+        )
+        return _row_to_session(row) if row else None
+
+    def get_session_by_request_task_id(self, request_task_id: str) -> DBSession | None:
+        row = self._fetchone(
+            f"SELECT * FROM session WHERE request_task_id = {self._ph}",
+            (request_task_id,),
+        )
+        return _row_to_session(row) if row else None
+
+    def list_sessions(self, app_id: str | None = None) -> list[DBSession]:
+        p = self._ph
+        if app_id:
+            rows = self._fetchall(
+                f"SELECT s.* FROM session s "
+                f"JOIN app_version av ON s.app_version_id = av.id "
+                f"WHERE av.app_id = {p} ORDER BY s.created_at DESC",
+                (app_id,),
+            )
+        else:
+            rows = self._fetchall("SELECT * FROM session ORDER BY created_at DESC")
+        return [_row_to_session(r) for r in rows]
+
+    def list_context_sessions(
+        self, app_id: str, context_id: str, limit: int = 10
+    ) -> list[DBSession]:
+        p = self._ph
+        rows = self._fetchall(
+            f"SELECT * FROM ("
+            f"SELECT s.* FROM session s "
+            f"JOIN app_version av ON s.app_version_id = av.id "
+            f"WHERE av.app_id = {p} AND s.context_id = {p} AND s.state = 'completed' "
+            f"ORDER BY s.created_at DESC LIMIT {p}"
+            f") sub ORDER BY created_at ASC",
+            (app_id, context_id, limit),
+        )
+        return [_row_to_session(r) for r in rows]
+
+    def update_session_state(
+        self, session_id: str, state: str, result: str = ""
+    ) -> None:
+        p = self._ph
+        if state in ("completed", "failed", "canceled"):
+            self._exec(
+                f"UPDATE session SET state = {p}, result = {p}, completed_at = {p} WHERE id = {p}",
+                (state, result, _now(), session_id),
+            )
+        else:
+            self._exec(
+                f"UPDATE session SET state = {p} WHERE id = {p}", (state, session_id)
+            )
+
+    # -- Task --
+
+    def create_task(self, task: DBTask) -> None:
+        p = self._ph
+        self._exec(
+            f"INSERT INTO task (id, session_id, node_id, agent, description, "
+            f"needs, terminal, target_json, state) VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})",
+            (
+                task.id,
+                task.session_id,
+                task.node_id,
+                task.agent,
+                task.description,
+                json.dumps(task.needs),
+                "1" if task.terminal else "",
+                task.target_json,
+                task.state,
+            ),
+        )
+
+    def get_task(self, row_id: str) -> DBTask | None:
+        row = self._fetchone(f"SELECT * FROM task WHERE id = {self._ph}", (row_id,))
+        return _row_to_task(row) if row else None
+
+    def list_tasks(self, session_id: str) -> list[DBTask]:
+        return [
+            _row_to_task(r)
+            for r in self._fetchall(
+                f"SELECT * FROM task WHERE session_id = {self._ph}", (session_id,)
+            )
+        ]
+
+    def update_task(self, row_id: str, **fields) -> None:
+        bad = fields.keys() - _TASK_UPDATABLE_FIELDS
+        if bad:
+            raise ValueError(f"Non-updatable fields: {bad}")
+        if not fields:
+            return
+        p = self._ph
+        set_clause = ", ".join(f"{k} = {p}" for k in fields)
+        self._exec(
+            f"UPDATE task SET {set_clause} WHERE id = {p}",
+            (*fields.values(), row_id),
+        )
 
 
 # --- SQLite implementation ---
@@ -284,196 +598,29 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         log.info("Applied migration %d", i + 1)
 
 
-class SqliteDB:
+class SqliteDB(_BaseDB):
+    _ph = "?"
+
     def __init__(self, path: str) -> None:
         if path != ":memory:":
             from pathlib import Path
 
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path)
+        self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         _migrate_sqlite(self._conn)
 
-    # -- App --
-
-    def create_app(self, app: App) -> None:
-        self._conn.execute(
-            "INSERT INTO app (id, name, description, card_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                app.id,
-                app.name,
-                app.description,
-                app.card_json,
-                app.created_at or _now(),
-            ),
-        )
+    def _exec(self, sql: str, params=()) -> None:
+        self._conn.execute(sql, params)
         self._conn.commit()
 
-    def get_app(self, app_id: str) -> App | None:
-        row = self._conn.execute("SELECT * FROM app WHERE id = ?", (app_id,)).fetchone()
-        return _row_to_app(row) if row else None
+    def _fetchone(self, sql: str, params=()):
+        return self._conn.execute(sql, params).fetchone()
 
-    def list_apps(self) -> list[App]:
-        rows = self._conn.execute("SELECT * FROM app ORDER BY created_at").fetchall()
-        return [_row_to_app(r) for r in rows]
-
-    def update_app_card(self, app_id: str, card_json: str) -> None:
-        self._conn.execute(
-            "UPDATE app SET card_json = ? WHERE id = ?", (card_json, app_id)
-        )
-        self._conn.commit()
-
-    def delete_app(self, app_id: str) -> None:
-        self._conn.execute("DELETE FROM app WHERE id = ?", (app_id,))
-        self._conn.commit()
-
-    # -- App version --
-
-    def create_app_version(self, version: AppVersion) -> None:
-        self._conn.execute(
-            "INSERT INTO app_version (id, app_id, version, source_cards, "
-            "instructions, graph_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                version.id,
-                version.app_id,
-                version.version,
-                version.source_cards,
-                version.instructions,
-                version.graph_json,
-                version.created_at or _now(),
-            ),
-        )
-        self._conn.commit()
-
-    def get_app_version(self, version_id: str) -> AppVersion | None:
-        row = self._conn.execute(
-            "SELECT * FROM app_version WHERE id = ?", (version_id,)
-        ).fetchone()
-        return _row_to_app_version(row) if row else None
-
-    def get_current_version(self, app_id: str) -> AppVersion | None:
-        row = self._conn.execute(
-            "SELECT * FROM app_version WHERE app_id = ? ORDER BY version DESC LIMIT 1",
-            (app_id,),
-        ).fetchone()
-        return _row_to_app_version(row) if row else None
-
-    def list_app_versions(self, app_id: str) -> list[AppVersion]:
-        rows = self._conn.execute(
-            "SELECT * FROM app_version WHERE app_id = ? ORDER BY version",
-            (app_id,),
-        ).fetchall()
-        return [_row_to_app_version(r) for r in rows]
-
-    # -- Session --
-
-    def create_session(self, session: DBSession) -> None:
-        self._conn.execute(
-            "INSERT INTO session (id, app_version_id, request_task_id, context_id, "
-            "request_json, variables, caller_reply_topic, caller_correlation, "
-            "state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                session.id,
-                session.app_version_id,
-                session.request_task_id,
-                session.context_id,
-                session.request_json,
-                session.variables,
-                session.caller_reply_topic,
-                session.caller_correlation,
-                session.state,
-                session.created_at or _now(),
-            ),
-        )
-        self._conn.commit()
-
-    def get_session(self, session_id: str) -> DBSession | None:
-        row = self._conn.execute(
-            "SELECT * FROM session WHERE id = ?", (session_id,)
-        ).fetchone()
-        return _row_to_session(row) if row else None
-
-    def get_session_by_request_task_id(self, request_task_id: str) -> DBSession | None:
-        row = self._conn.execute(
-            "SELECT * FROM session WHERE request_task_id = ?", (request_task_id,)
-        ).fetchone()
-        return _row_to_session(row) if row else None
-
-    def list_sessions(self, app_id: str | None = None) -> list[DBSession]:
-        if app_id:
-            rows = self._conn.execute(
-                "SELECT s.* FROM session s "
-                "JOIN app_version av ON s.app_version_id = av.id "
-                "WHERE av.app_id = ? ORDER BY s.created_at DESC",
-                (app_id,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM session ORDER BY created_at DESC"
-            ).fetchall()
-        return [_row_to_session(r) for r in rows]
-
-    def update_session_state(self, session_id: str, state: str) -> None:
-        if state in ("completed", "failed", "canceled"):
-            self._conn.execute(
-                "UPDATE session SET state = ?, completed_at = ? WHERE id = ?",
-                (state, _now(), session_id),
-            )
-        else:
-            self._conn.execute(
-                "UPDATE session SET state = ? WHERE id = ?", (state, session_id)
-            )
-        self._conn.commit()
-
-    # -- Task --
-
-    def create_task(self, task: DBTask) -> None:
-        self._conn.execute(
-            "INSERT INTO task (id, session_id, node_id, agent, description, "
-            "needs, terminal, target_json, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                task.id,
-                task.session_id,
-                task.node_id,
-                task.agent,
-                task.description,
-                task.needs,
-                task.terminal,
-                task.target_json,
-                task.state,
-            ),
-        )
-        self._conn.commit()
-
-    def get_task(self, row_id: str) -> DBTask | None:
-        row = self._conn.execute(
-            "SELECT * FROM task WHERE id = ?", (row_id,)
-        ).fetchone()
-        return _row_to_task(row) if row else None
-
-    def list_tasks(self, session_id: str) -> list[DBTask]:
-        rows = self._conn.execute(
-            "SELECT * FROM task WHERE session_id = ?", (session_id,)
-        ).fetchall()
-        return [_row_to_task(r) for r in rows]
-
-    def update_task(self, row_id: str, **fields) -> None:
-        bad = fields.keys() - _TASK_UPDATABLE_FIELDS
-        if bad:
-            raise ValueError(f"Non-updatable fields: {bad}")
-        if not fields:
-            return
-        set_clause = ", ".join(f"{k} = ?" for k in fields)
-        self._conn.execute(
-            f"UPDATE task SET {set_clause} WHERE id = ?",
-            (*fields.values(), row_id),
-        )
-        self._conn.commit()
-
-    # -- Lifecycle --
+    def _fetchall(self, sql: str, params=()):
+        return self._conn.execute(sql, params).fetchall()
 
     def close(self) -> None:
         self._conn.close()
@@ -482,7 +629,9 @@ class SqliteDB:
 # --- PostgreSQL implementation ---
 
 
-class PostgresDB:
+class PostgresDB(_BaseDB):
+    _ph = "%s"
+
     def __init__(self, dsn: str) -> None:
         try:
             from psycopg.rows import dict_row
@@ -526,173 +675,6 @@ class PostgresDB:
         with self._pool.connection() as conn:
             return conn.execute(sql, params).fetchall()
 
-    # -- App --
-
-    def create_app(self, app: App) -> None:
-        self._exec(
-            "INSERT INTO app (id, name, description, card_json, created_at) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (
-                app.id,
-                app.name,
-                app.description,
-                app.card_json,
-                app.created_at or _now(),
-            ),
-        )
-
-    def get_app(self, app_id: str) -> App | None:
-        row = self._fetchone("SELECT * FROM app WHERE id = %s", (app_id,))
-        return _row_to_app(row) if row else None
-
-    def list_apps(self) -> list[App]:
-        return [
-            _row_to_app(r)
-            for r in self._fetchall("SELECT * FROM app ORDER BY created_at")
-        ]
-
-    def update_app_card(self, app_id: str, card_json: str) -> None:
-        self._exec("UPDATE app SET card_json = %s WHERE id = %s", (card_json, app_id))
-
-    def delete_app(self, app_id: str) -> None:
-        self._exec("DELETE FROM app WHERE id = %s", (app_id,))
-
-    # -- App version --
-
-    def create_app_version(self, version: AppVersion) -> None:
-        self._exec(
-            "INSERT INTO app_version (id, app_id, version, source_cards, "
-            "instructions, graph_json, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (
-                version.id,
-                version.app_id,
-                version.version,
-                version.source_cards,
-                version.instructions,
-                version.graph_json,
-                version.created_at or _now(),
-            ),
-        )
-
-    def get_app_version(self, version_id: str) -> AppVersion | None:
-        row = self._fetchone("SELECT * FROM app_version WHERE id = %s", (version_id,))
-        return _row_to_app_version(row) if row else None
-
-    def get_current_version(self, app_id: str) -> AppVersion | None:
-        row = self._fetchone(
-            "SELECT * FROM app_version WHERE app_id = %s ORDER BY version DESC LIMIT 1",
-            (app_id,),
-        )
-        return _row_to_app_version(row) if row else None
-
-    def list_app_versions(self, app_id: str) -> list[AppVersion]:
-        return [
-            _row_to_app_version(r)
-            for r in self._fetchall(
-                "SELECT * FROM app_version WHERE app_id = %s ORDER BY version",
-                (app_id,),
-            )
-        ]
-
-    # -- Session --
-
-    def create_session(self, session: DBSession) -> None:
-        self._exec(
-            "INSERT INTO session (id, app_version_id, request_task_id, context_id, "
-            "request_json, variables, caller_reply_topic, caller_correlation, "
-            "state, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                session.id,
-                session.app_version_id,
-                session.request_task_id,
-                session.context_id,
-                session.request_json,
-                session.variables,
-                session.caller_reply_topic,
-                session.caller_correlation,
-                session.state,
-                session.created_at or _now(),
-            ),
-        )
-
-    def get_session(self, session_id: str) -> DBSession | None:
-        row = self._fetchone("SELECT * FROM session WHERE id = %s", (session_id,))
-        return _row_to_session(row) if row else None
-
-    def get_session_by_request_task_id(self, request_task_id: str) -> DBSession | None:
-        row = self._fetchone(
-            "SELECT * FROM session WHERE request_task_id = %s", (request_task_id,)
-        )
-        return _row_to_session(row) if row else None
-
-    def list_sessions(self, app_id: str | None = None) -> list[DBSession]:
-        if app_id:
-            rows = self._fetchall(
-                "SELECT s.* FROM session s "
-                "JOIN app_version av ON s.app_version_id = av.id "
-                "WHERE av.app_id = %s ORDER BY s.created_at DESC",
-                (app_id,),
-            )
-        else:
-            rows = self._fetchall("SELECT * FROM session ORDER BY created_at DESC")
-        return [_row_to_session(r) for r in rows]
-
-    def update_session_state(self, session_id: str, state: str) -> None:
-        if state in ("completed", "failed", "canceled"):
-            self._exec(
-                "UPDATE session SET state = %s, completed_at = %s WHERE id = %s",
-                (state, _now(), session_id),
-            )
-        else:
-            self._exec(
-                "UPDATE session SET state = %s WHERE id = %s", (state, session_id)
-            )
-
-    # -- Task --
-
-    def create_task(self, task: DBTask) -> None:
-        self._exec(
-            "INSERT INTO task (id, session_id, node_id, agent, description, "
-            "needs, terminal, target_json, state) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                task.id,
-                task.session_id,
-                task.node_id,
-                task.agent,
-                task.description,
-                task.needs,
-                task.terminal,
-                task.target_json,
-                task.state,
-            ),
-        )
-
-    def get_task(self, row_id: str) -> DBTask | None:
-        row = self._fetchone("SELECT * FROM task WHERE id = %s", (row_id,))
-        return _row_to_task(row) if row else None
-
-    def list_tasks(self, session_id: str) -> list[DBTask]:
-        return [
-            _row_to_task(r)
-            for r in self._fetchall(
-                "SELECT * FROM task WHERE session_id = %s", (session_id,)
-            )
-        ]
-
-    def update_task(self, row_id: str, **fields) -> None:
-        bad = fields.keys() - _TASK_UPDATABLE_FIELDS
-        if bad:
-            raise ValueError(f"Non-updatable fields: {bad}")
-        if not fields:
-            return
-        set_clause = ", ".join(f"{k} = %s" for k in fields)
-        self._exec(
-            f"UPDATE task SET {set_clause} WHERE id = %s",
-            (*fields.values(), row_id),
-        )
-
-    # -- Lifecycle --
-
     def close(self) -> None:
         self._pool.close()
 
@@ -702,9 +684,9 @@ class PostgresDB:
 
 def open_db() -> SqliteDB | PostgresDB:
     """Open the database configured in ~/.skitter/config.yaml."""
-    from skitter.config import load_db_config
+    from skitter.config import load_config
 
-    cfg = load_db_config()
+    cfg = load_config().db
     if cfg.backend == "postgres":
         return PostgresDB(cfg.postgres_dsn)
     return SqliteDB(cfg.sqlite_path)

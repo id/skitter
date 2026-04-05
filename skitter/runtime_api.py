@@ -1,17 +1,17 @@
 """Runtime state query handler.
 
-Registered as ``skitter`` — handles structured queries and
+Registered as ``skitter`` -- handles structured queries and
 returns typed result objects. JSON serialization happens at the
 coordinator's reply boundary.
 
 Queries:
-    list apps           → all apps with current version info
-    get app {id}        → app details + version history
-    list sessions [id]  → sessions, optionally filtered by app
-    get session {id}    → session with all task states
-    cancel session {id} → cancel a running session
-    create app {json}   → create a composed app from agent IDs + instructions
-    delete app {id}     → delete an app and all its versions/sessions/tasks
+    list apps           -> all apps with current version info
+    get app {id}        -> app details + version history
+    list sessions [id]  -> sessions, optionally filtered by app
+    get session {id}    -> session with all task states
+    cancel session {id} -> cancel a running session
+    create app {json}   -> create a composed app from agent IDs + instructions
+    delete app {id}     -> delete an app and all its versions/sessions/tasks
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import uuid
 
 from skitter.a2a import TaskState
 from skitter.config import AgentDef
-from skitter.db import App, AppVersion, DB
+from skitter.db import App, AppVersion, AsyncDB
 from skitter.discovery import build_card
 from skitter.graph_gen import GraphValidationError, generate_graph
 
@@ -117,7 +117,7 @@ def coordinator_card() -> dict:
 
 
 async def handle_query(
-    db: DB, text: str, registry: DiscoveryRegistry | None = None
+    db: AsyncDB, text: str, registry: DiscoveryRegistry | None = None
 ) -> QueryResult:
     """Parse a query command and return a typed result."""
     parts = text.strip().split(None, 2)
@@ -129,28 +129,28 @@ async def handle_query(
     arg = parts[2].strip() if len(parts) > 2 else ""
 
     if verb == "list" and noun in ("apps", "app"):
-        return _list_apps(db)
+        return await _list_apps(db)
     if verb == "get" and noun == "app" and arg:
-        return _get_app(db, arg)
+        return await _get_app(db, arg)
     if verb == "list" and noun in ("sessions", "session"):
-        return _list_sessions(db, app_id=arg or None)
+        return await _list_sessions(db, app_id=arg or None)
     if verb == "get" and noun == "session" and arg:
-        return _get_session(db, arg)
+        return await _get_session(db, arg)
     if verb == "cancel" and noun == "session" and arg:
-        return _cancel_session(db, arg)
+        return await _cancel_session(db, arg)
     if verb == "create" and noun == "app" and arg:
         return await _handle_create_app(db, arg, registry)
     if verb == "delete" and noun == "app" and arg:
-        return _delete_app(db, arg)
+        return await _delete_app(db, arg)
 
     return ErrorResult(f"Unknown query: {text.strip()}")
 
 
-def _list_apps(db: DB) -> DataResult:
-    apps = db.list_apps()
+async def _list_apps(db: AsyncDB) -> DataResult:
+    apps = await db.list_apps()
     items = []
     for app in apps:
-        current = db.get_current_version(app.id)
+        current = await db.get_current_version(app.id)
         items.append(
             {
                 "id": app.id,
@@ -163,11 +163,11 @@ def _list_apps(db: DB) -> DataResult:
     return DataResult(data={"apps": items})
 
 
-def _get_app(db: DB, app_id: str) -> QueryResult:
-    app = db.get_app(app_id)
+async def _get_app(db: AsyncDB, app_id: str) -> QueryResult:
+    app = await db.get_app(app_id)
     if not app:
         return ErrorResult(f"App not found: {app_id}")
-    versions = db.list_app_versions(app_id)
+    versions = await db.list_app_versions(app_id)
     return DataResult(
         data={
             "id": app.id,
@@ -181,8 +181,8 @@ def _get_app(db: DB, app_id: str) -> QueryResult:
     )
 
 
-def _list_sessions(db: DB, app_id: str | None = None) -> DataResult:
-    sessions = db.list_sessions(app_id=app_id)
+async def _list_sessions(db: AsyncDB, app_id: str | None = None) -> DataResult:
+    sessions = await db.list_sessions(app_id=app_id)
     return DataResult(
         data={
             "sessions": [
@@ -199,16 +199,16 @@ def _list_sessions(db: DB, app_id: str | None = None) -> DataResult:
     )
 
 
-def _resolve_session(db: DB, ref: str):
+async def _resolve_session(db: AsyncDB, ref: str):
     """Look up a session by internal ID or request_task_id."""
-    return db.get_session(ref) or db.get_session_by_request_task_id(ref)
+    return await db.get_session(ref) or await db.get_session_by_request_task_id(ref)
 
 
-def _get_session(db: DB, session_id: str) -> QueryResult:
-    session = _resolve_session(db, session_id)
+async def _get_session(db: AsyncDB, session_id: str) -> QueryResult:
+    session = await _resolve_session(db, session_id)
     if not session:
         return ErrorResult(f"Session not found: {session_id}")
-    tasks = db.list_tasks(session.id)
+    tasks = await db.list_tasks(session.id)
     return DataResult(
         data={
             "id": session.id,
@@ -232,31 +232,31 @@ def _get_session(db: DB, session_id: str) -> QueryResult:
     )
 
 
-def _cancel_session(db: DB, session_id: str) -> QueryResult:
-    session = _resolve_session(db, session_id)
+async def _cancel_session(db: AsyncDB, session_id: str) -> QueryResult:
+    session = await _resolve_session(db, session_id)
     if not session:
         return ErrorResult(f"Session not found: {session_id}")
     if session.state != "running":
         return ErrorResult(f"Session not running (state={session.state})")
-    db.update_session_state(session.id, TaskState.CANCELED)
+    await db.update_session_state(session.id, TaskState.CANCELED)
     return CancelSessionResult(session_id=session.id)
 
 
-def _delete_app(db: DB, app_id: str) -> QueryResult:
-    app = db.get_app(app_id)
+async def _delete_app(db: AsyncDB, app_id: str) -> QueryResult:
+    app = await db.get_app(app_id)
     if not app:
         return ErrorResult(f"App not found: {app_id}")
-    running = [s for s in db.list_sessions(app_id=app_id) if s.state == "running"]
+    running = [s for s in await db.list_sessions(app_id=app_id) if s.state == "running"]
     if running:
         return ErrorResult(
             f"App has {len(running)} running session(s); cancel them first"
         )
-    db.delete_app(app_id)
+    await db.delete_app(app_id)
     return DeleteAppResult(app_id=app_id)
 
 
-def create_app(
-    db: DB,
+async def create_app(
+    db: AsyncDB,
     *,
     app_id: str = "",
     name: str,
@@ -269,12 +269,12 @@ def create_app(
     app_id = app_id or uuid.uuid4().hex[:12]
     source_cards = source_cards or []
 
-    existing = db.get_app(app_id)
+    existing = await db.get_app(app_id)
     if existing:
-        current = db.get_current_version(app_id)
+        current = await db.get_current_version(app_id)
         next_version = (current.version + 1) if current else 1
     else:
-        db.create_app(App(id=app_id, name=name, description=description))
+        await db.create_app(App(id=app_id, name=name, description=description))
         next_version = 1
 
     version_id = f"{app_id}-v{next_version}"
@@ -288,7 +288,7 @@ def create_app(
         instructions=instructions,
         graph_json=graph_json,
     )
-    db.create_app_version(av)
+    await db.create_app_version(av)
 
     # Build and persist discovery card
     agent_def = AgentDef(id=app_id, name=name, description=description)
@@ -307,15 +307,15 @@ def create_app(
     card = build_card(agent_def, metadata=metadata)
     card_json = json.dumps(card)
 
-    db.update_app_card(app_id, card_json)
-    app = db.get_app(app_id)
+    await db.update_app_card(app_id, card_json)
+    app = await db.get_app(app_id)
 
     log.info("Created app %s v%d (%d tasks)", app_id, next_version, len(tasks))
     return app, av, card_json
 
 
 async def _handle_create_app(
-    db: DB, arg: str, registry: DiscoveryRegistry | None
+    db: AsyncDB, arg: str, registry: DiscoveryRegistry | None
 ) -> QueryResult:
     """Create a composed app from agent IDs + natural language instructions."""
     try:
@@ -361,12 +361,12 @@ async def _handle_create_app(
         graph = await generate_graph(instructions, cards)
     except GraphValidationError as e:
         return ErrorResult(f"Graph generation failed: {e}")
-    except Exception:
+    except Exception as e:
         log.exception("Unexpected error generating graph")
-        return ErrorResult("Graph generation failed unexpectedly")
+        return ErrorResult(f"Graph generation failed: {e}")
 
     description = spec.get("description", "")
-    app, version, card_json = create_app(
+    app, version, card_json = await create_app(
         db,
         app_id=app_id,
         name=name,

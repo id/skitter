@@ -12,7 +12,7 @@ USER skitter
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Codex CLI (binary from GitHub releases)
-ARG CODEX_VERSION=0.114.0
+ARG CODEX_VERSION=0.118.0
 ARG TARGETARCH
 RUN mkdir -p /home/skitter/.local/bin && \
     ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") && \
@@ -21,16 +21,16 @@ RUN mkdir -p /home/skitter/.local/bin && \
     ln -s "codex-${ARCH}-unknown-linux-gnu" /home/skitter/.local/bin/codex
 
 # Pre-create dirs so bind-mounts don't create root-owned parents
-RUN mkdir -p /home/skitter/.codex
+RUN mkdir -p /home/skitter/.codex /home/skitter/.skitter /home/skitter/.claude
 
 ENV PATH="/home/skitter/.local/bin:$PATH"
 
 WORKDIR /app
-COPY --chown=skitter pyproject.toml .
+COPY --chown=skitter pyproject.toml README.md ./
 COPY --chown=skitter skitter/ skitter/
 
 USER root
 RUN pip install --no-cache-dir .
 USER skitter
 
-ENTRYPOINT ["python", "-m", "skitter.agent_runner"]
+ENTRYPOINT ["python", "-m", "skitter", "agent-runner"]

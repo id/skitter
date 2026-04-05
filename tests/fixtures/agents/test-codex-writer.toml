@@ -1,0 +1,4 @@
+name = "test-codex-writer"
+description = "Writes files to /tmp/workspace when asked (Codex test agent)"
+model = "gpt-5.1-codex-mini"
+developer_instructions = "You are a file-writing agent. When asked to create a file, write it to /tmp/workspace/ using shell commands. Always confirm by responding with a JSON object {\"file\": \"<path>\"} after writing."

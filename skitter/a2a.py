@@ -16,6 +16,7 @@ import random
 import uuid
 from dataclasses import dataclass, field
 
+from skitter.config import load_config as _load_config
 from skitter.mqtt import (
     get_correlation_data,
     get_response_topic,
@@ -25,10 +26,45 @@ from skitter.mqtt import (
 
 import aiomqtt
 
-# --- A2A namespace parameters ---
+log = logging.getLogger("skitter.a2a")
 
-A2A_ORG = os.environ.get("SKITTER_A2A_ORG", "skitter")
-A2A_UNIT = os.environ.get("SKITTER_A2A_UNIT", "default")
+# --- A2A namespace parameters ---
+# Resolved lazily from unified config (env vars > ~/.skitter/config.yaml)
+# so that SKITTER_HOME set by --skitter-home is respected.
+
+_ns_resolved = False
+_a2a_org: str = "skitter"
+_a2a_unit: str = "default"
+
+
+def _ensure_namespace() -> None:
+    global _ns_resolved, _a2a_org, _a2a_unit
+    if not _ns_resolved:
+        cfg = _load_config()
+        _a2a_org = cfg.org
+        _a2a_unit = cfg.unit
+        _ns_resolved = True
+
+
+def _org() -> str:
+    _ensure_namespace()
+    return _a2a_org
+
+
+def _unit() -> str:
+    _ensure_namespace()
+    return _a2a_unit
+
+
+def a2a_org() -> str:
+    """Public accessor for the A2A org segment."""
+    return _org()
+
+
+def a2a_unit() -> str:
+    """Public accessor for the A2A unit segment."""
+    return _unit()
+
 
 # --- Topic builders ---
 
@@ -37,32 +73,32 @@ _PREFIX = "$a2a/v1"
 
 def topic_discovery(agent_id: str) -> str:
     """Retained Agent Card: $a2a/v1/discovery/{org}/{unit}/{agent_id}"""
-    return f"{_PREFIX}/discovery/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
+    return f"{_PREFIX}/discovery/{_org()}/{_unit()}/{agent_id}"
 
 
 def topic_discovery_wildcard(org: str = "", unit: str = "") -> str:
     """Wildcard for all discovery cards: $a2a/v1/discovery/{org}/{unit}/+"""
-    return f"{_PREFIX}/discovery/{org or A2A_ORG}/{unit or A2A_UNIT}/+"
+    return f"{_PREFIX}/discovery/{org or _org()}/{unit or _unit()}/+"
 
 
 def topic_request(agent_id: str) -> str:
     """Request topic: $a2a/v1/request/{org}/{unit}/{agent_id}"""
-    return f"{_PREFIX}/request/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
+    return f"{_PREFIX}/request/{_org()}/{_unit()}/{agent_id}"
 
 
 def topic_reply(agent_id: str, suffix: str) -> str:
     """Reply topic: $a2a/v1/reply/{org}/{unit}/{agent_id}/{suffix}"""
-    return f"{_PREFIX}/reply/{A2A_ORG}/{A2A_UNIT}/{agent_id}/{suffix}"
+    return f"{_PREFIX}/reply/{_org()}/{_unit()}/{agent_id}/{suffix}"
 
 
 def topic_a2a_event(agent_id: str) -> str:
     """A2A event topic: $a2a/v1/event/{org}/{unit}/{agent_id}"""
-    return f"{_PREFIX}/event/{A2A_ORG}/{A2A_UNIT}/{agent_id}"
+    return f"{_PREFIX}/event/{_org()}/{_unit()}/{agent_id}"
 
 
 def topic_coordinator_lock() -> str:
     """Coordinator lock topic: $a2a/v1/lock/{org}/{unit}/coordinator"""
-    return f"{_PREFIX}/lock/{A2A_ORG}/{A2A_UNIT}/coordinator"
+    return f"{_PREFIX}/lock/{_org()}/{_unit()}/coordinator"
 
 
 # --- Task state enum (A2A v1.0.0 Section 5.5) ---
@@ -457,8 +493,6 @@ class TaskTarget:
     """A2A agent address for task dispatch."""
 
     agent: str  # A2A agent address: {org}/{unit}/{agent_id}
-    mqtt_host: str = ""  # broker host (empty = same broker as coordinator)
-    mqtt_port: int = 8883
 
 
 # --- Requester retry/timeout profile ---
@@ -488,13 +522,14 @@ async def send_request(
 
     async with aiomqtt.Client(
         **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}",
+            identifier=f"{_org()}/{_unit()}/cli-{mqtt_session}",
         ),
     ) as client:
         props = make_properties(
             response_topic=reply_t,
             correlation_data=correlation_id,
         )
+        log.debug("MQTT → %s (%d bytes)", request_topic, len(payload))
         await client.publish(request_topic, payload, qos=1, properties=props)
 
 
@@ -532,6 +567,7 @@ async def stream_request(
             response_topic=reply_topic,
             correlation_data=current_correlation,
         )
+        log.debug("MQTT → %s (attempt %d/%d)", request_topic, attempt + 1, MAX_ATTEMPTS)
         await client.publish(request_topic, payload, qos=1, properties=props)
 
         try:
@@ -546,6 +582,10 @@ async def stream_request(
                         # Validate Correlation Data against all attempts
                         msg_corr = get_correlation_data(mqtt_msg)
                         if msg_corr not in valid_correlations:
+                            log.debug(
+                                "MQTT ← %s (ignored: correlation mismatch)",
+                                mqtt_msg.topic,
+                            )
                             continue
 
                         try:
@@ -554,6 +594,12 @@ async def stream_request(
                             continue
 
                         kind, content = classify_reply(data)
+                        log.debug(
+                            "MQTT ← %s (kind=%s, %d bytes)",
+                            mqtt_msg.topic,
+                            kind,
+                            len(content),
+                        )
                         if not kind:
                             continue
 
@@ -591,7 +637,7 @@ async def stream_replies(
 
     async with aiomqtt.Client(
         **mqtt_client_kwargs(
-            identifier=f"{A2A_ORG}/{A2A_UNIT}/cli-{mqtt_session}",
+            identifier=f"{_org()}/{_unit()}/cli-{mqtt_session}",
         ),
     ) as client:
         await client.subscribe(reply_t, qos=1)

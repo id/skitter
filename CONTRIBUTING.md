@@ -4,11 +4,11 @@
 
 ```
 skitter/
-  coordinator.py   A2A orchestrator: session management, DAG dispatch, runtime API
+  coordinator/     A2A orchestrator: session management, DAG dispatch, runtime API
   agent_runner.py  CLI-to-A2A convenience wrapper (claude/codex)
   runtime_api.py   Runtime state queries + app creation
   graph_gen.py     LLM-based graph generation + validation
-  llm.py           LLM API wrapper (litellm)
+  llm.py           LLM API wrapper (Anthropic + OpenAI SDKs)
   discovery.py     Build + parse A2A discovery cards
   db.py            Database interface (SQLite/PostgreSQL)
   pull.py          Pull discovery cards from broker, save as JSON
@@ -26,16 +26,21 @@ Key docs: `docs/architecture.md` (detailed design), `docs/spec/` (A2A and A2A-ov
 ## Development Setup
 
 ```bash
+git clone https://github.com/id/skitter.git
+cd skitter
 uv sync
+uv run skitter setup --non-interactive
 docker compose up -d   # local EMQX broker
-uv run skitter   # start coordinator
+uv run skitter         # start coordinator
 ```
+
+All development examples use `uv run skitter` (runs from source).
 
 ## Agent Runner
 
 Skitter works with any A2A-over-MQTT compliant agent. The built-in agent-runner is a convenience that wraps CLI tools (Claude Code, Codex). It reads native CLI agent definitions for metadata, then delegates execution to the respective CLI tool.
 
-**Claude agents** are references to registered Claude Code agent names. The runner reads metadata (`name`, `description`, `model`) from the `.md` frontmatter and passes the agent name to `claude --agent <name>`. Claude Code resolves and executes the agent from its own registry (`~/.claude/agents/`).
+**Claude agents** carry their system instructions in the `.md` body after the YAML frontmatter. The runner reads metadata (`name`, `description`, `model`) from the frontmatter and passes the system instructions directly to `claude -p` along with the user prompt.
 
 ```markdown
 ---
@@ -56,11 +61,58 @@ developer_instructions = "You are a senior developer."
 Start an agent-runner by pointing it at the file:
 
 ```bash
-uv run skitter agent-runner ~/.claude/agents/researcher.md
-uv run skitter agent-runner ~/.codex/agents/coder.toml
+uv run skitter agent-runner ~/.skitter/agents/researcher.md
+uv run skitter agent-runner ~/.skitter/agents/coder.toml
 ```
 
 Runtime is inferred from file extension (`.md` = Claude, `.toml` = Codex).
+
+## Skills
+
+Skills are reusable instruction modules stored under `~/.skitter/skills/`:
+
+```
+~/.skitter/skills/
+  web-search/SKILL.md
+  summarize/SKILL.md
+```
+
+Each `SKILL.md` follows the standard format (YAML frontmatter + instructions):
+
+```markdown
+---
+name: web-search
+description: Use when the user needs current information from the web
+---
+
+Search instructions here...
+```
+
+Agent definitions reference skills by name in frontmatter:
+
+```yaml
+---
+name: researcher
+description: Deep research agent
+runtime: claude
+skills: [web-search, summarize]
+---
+```
+
+At startup, the agent-runner symlinks referenced skills into the runtime-native path:
+- Claude Code: `<resource_dir>/.claude/skills/<name>/`
+- Codex: `<resource_dir>/.agents/skills/<name>/`
+
+Both runtimes discover and auto-trigger skills based on the `description` field. No prompt injection; the runtime handles skill invocation natively.
+
+Create an agent with skills:
+
+```bash
+uv run skitter create-agent researcher "research with citations" \
+  --skill "web-search: find current information from the web"
+```
+
+This generates both the skill file in `~/.skitter/skills/` and the agent definition with the skill reference.
 
 ## Configuration
 
@@ -72,22 +124,27 @@ db:
   postgres_dsn: postgresql://...
 
 llm:
-  model: anthropic/claude-haiku-4-5  # for graph generation (litellm format)
+  model: anthropic/claude-haiku-4-5  # for graph generation
 ```
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
+| `SKITTER_HOME` | `~/.skitter` | Override config and agents directory |
+| `SKITTER_LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). `DEBUG` logs all MQTT messages. |
 | `MQTT_BROKER_URL` | `mqtt://localhost:1883` | Broker URL (`mqtt://` or `mqtts://`) |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | (empty) | Broker auth |
 | `MQTT_CA_CERT` | (empty) | Path to custom CA certificate for `mqtts://` |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
-| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation (`provider/model`, e.g. `anthropic/claude-haiku-4-5`; see [litellm providers](https://docs.litellm.ai/docs/providers)) |
-| `ANTHROPIC_API_KEY` | (empty) | Anthropic API key (for Claude models) |
-| `OPENAI_API_KEY` | (empty) | OpenAI API key (for OpenAI models) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | Claude auth for agent-runners |
+| `SKITTER_LLM_MODEL` | (empty) | Coordinator LLM model (overrides `llm.model` in config) |
+| `SKITTER_LLM_API_KEY` | (empty) | Coordinator LLM API key (overrides `llm.api_key` in config) |
+| `SKITTER_LLM_API` | `anthropic` | Coordinator LLM provider: `anthropic`, `openai`, or `openai-completions` (overrides `llm.api` in config) |
+| `SKITTER_LLM_BASE_URL` | (empty) | Custom endpoint URL for coordinator LLM (overrides `llm.base_url` in config) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | OAuth token for Claude Code agents (preferred; generate via `claude setup-token`). Stored per-agent in `~/.skitter/agents/<name>.env` |
+| `ANTHROPIC_API_KEY` | (empty) | Anthropic API key for Claude Code agents (fallback). Stored per-agent in `~/.skitter/agents/<name>.env` |
+| `OPENAI_API_KEY` | (empty) | OpenAI API key for Codex agents. Stored per-agent in `~/.skitter/agents/<name>.env` |
 | `SKITTER_REPLY_FIRST_TIMEOUT` | `15.0` | Seconds to wait for first reply before retry |
 | `SKITTER_STREAM_IDLE_TIMEOUT` | `30.0` | Seconds between stream messages before timeout |
 | `SKITTER_MAX_ATTEMPTS` | `3` | Max send attempts (1 initial + retries) |
@@ -109,16 +166,27 @@ $a2a/v1/
 
 ## Testing
 
+Four test tiers, from fast/free to slow/real:
+
 ```bash
 # Unit tests (no broker needed)
-uv run pytest tests/test_unit.py -q
+uv run pytest tests/unit/ -q
 
-# E2E tests (needs EMQX on localhost, no Docker/LLM API required)
-docker compose up -d   # start local EMQX
+# E2E tests (needs EMQX on localhost)
+docker compose up -d --wait
 uv run pytest tests/test_e2e.py -v -s
+
+# Acceptance tests (needs EMQX on localhost; full CLI user journey with mock agents)
+uv run pytest tests/test_acceptance.py -v -s
+
+# Docker E2E tests (needs real auth tokens; exercises real Claude/Codex CLIs in Docker)
+docker compose --env-file .env.test -f docker-compose.test.yml up -d --wait --build
+uv run pytest tests/test_docker_e2e.py -v -s
 ```
 
-E2E tests run the coordinator and agent-runners in-process with mocked `_run_cli` (no real CLI subprocess) and mocked `generate_graph` (no LLM API). Real MQTT messages flow through EMQX on localhost. Tests cover: agent discovery, direct queries, streaming, composed app pipelines (linear + fan-out/fan-in), session cancellation, and failure propagation/cascading.
+**E2E tests** run coordinator and agent-runners in-process with mocked `_run_cli` (no real CLI) and mocked `generate_graph` (no LLM API). Real MQTT messages flow through EMQX.
+
+**Docker E2E tests** exercise real Claude Code and Codex CLIs in Docker containers against a real EMQX broker. Auth tokens are loaded from `.env.test` (not committed). Tests skip gracefully when a token is absent. `docker-compose.test.yml` includes the base `docker-compose.yml` via `include`, so only one `-f` flag is needed. Test agent definitions live in `tests/fixtures/agents/`.
 
 ## Lint and Format
 

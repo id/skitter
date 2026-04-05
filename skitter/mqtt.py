@@ -1,8 +1,8 @@
 """MQTT v5 transport helpers: connection, properties, extraction."""
 
-import os
-import ssl
-from urllib.parse import urlparse
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 from paho.mqtt.packettypes import PacketTypes
@@ -10,40 +10,29 @@ from paho.mqtt.properties import Properties
 
 import aiomqtt
 
+if TYPE_CHECKING:
+    from skitter.config import BrokerConfig
+
 load_dotenv()
 
-MQTT_BROKER_URL = os.environ.get("MQTT_BROKER_URL", "mqtt://localhost:1883")
 
-_parsed = urlparse(MQTT_BROKER_URL)
-MQTT_HOST = _parsed.hostname or "localhost"
-MQTT_TLS = _parsed.scheme == "mqtts"
-MQTT_PORT = _parsed.port or (8883 if MQTT_TLS else 1883)
-
-MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "")
-MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
-MQTT_CA_CERT = os.environ.get("MQTT_CA_CERT", "")
-
-
-def mqtt_client_kwargs(**overrides) -> dict:
+def mqtt_client_kwargs(*, broker: BrokerConfig | None = None, **overrides) -> dict:
     """Common connection kwargs for aiomqtt.Client.
+
+    Resolves broker settings from the unified config (env vars override
+    ``~/.skitter/config.yaml``), so host-side commands honour the broker
+    URL written by ``skitter setup``.
+
+    Pass *broker* explicitly to skip config loading (used by ``skitter setup``
+    to validate just-collected settings before writing config).
 
     Usage: ``async with aiomqtt.Client(**mqtt_client_kwargs(identifier=...))``
     """
-    kwargs: dict = {
-        "hostname": MQTT_HOST,
-        "port": MQTT_PORT,
-        "protocol": aiomqtt.ProtocolVersion.V5,
-    }
-    if MQTT_TLS:
-        ctx = ssl.create_default_context()
-        if MQTT_CA_CERT:
-            ctx.load_verify_locations(MQTT_CA_CERT)
-        kwargs["tls_context"] = ctx
-    if MQTT_USERNAME:
-        kwargs["username"] = MQTT_USERNAME
-        kwargs["password"] = MQTT_PASSWORD
-    kwargs.update(overrides)
-    return kwargs
+    if broker is None:
+        from skitter.config import load_config
+
+        broker = load_config().broker
+    return broker.client_kwargs(**overrides)
 
 
 # --- MQTT v5 property helpers ---
@@ -108,6 +97,31 @@ def get_response_topic(msg) -> str | None:
     if props is None:
         return None
     return getattr(props, "ResponseTopic", None)
+
+
+async def mqtt_roundtrip(
+    timeout: float = 5.0, *, broker: BrokerConfig | None = None
+) -> None:
+    """Publish-subscribe round-trip test. Raises on failure."""
+    import asyncio
+    import uuid
+
+    test_topic = f"skitter/healthcheck/{uuid.uuid4().hex[:8]}"
+    test_payload = b"healthcheck-ping"
+
+    async with aiomqtt.Client(
+        **mqtt_client_kwargs(
+            broker=broker,
+            identifier=f"skitter-healthcheck-{uuid.uuid4().hex[:6]}",
+        ),
+    ) as client:
+        await client.subscribe(test_topic, qos=1)
+        await client.publish(test_topic, test_payload, qos=1)
+        async with asyncio.timeout(timeout):
+            async for msg in client.messages:
+                if msg.payload == test_payload:
+                    return
+        raise TimeoutError("MQTT round-trip: no response")
 
 
 def get_user_property(msg, key: str) -> str | None:

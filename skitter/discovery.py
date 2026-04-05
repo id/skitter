@@ -2,8 +2,7 @@
 
 import json
 
-from skitter.config import AgentDef
-from skitter.mqtt import MQTT_BROKER_URL
+from skitter.config import AgentDef, load_config as _load_config
 
 APP_EXTENSION_URI = "urn:skitter:app"
 
@@ -19,12 +18,32 @@ def build_card(
     If metadata is provided (e.g. {"tasks": [...], "variables": [...]}),
     it is stored as an app extension in capabilities.extensions.
     """
-    url = url or MQTT_BROKER_URL
+    url = url or _load_config().broker.url
     capabilities = dict(agent.capabilities) if agent.capabilities else {}
     capabilities.setdefault("streaming", True)
     capabilities.setdefault("pushNotifications", False)
 
     tags = agent.tags if agent.tags else [agent.id]
+
+    if agent.skills:
+        skills_list = [
+            {
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+                "tags": [skill.id],
+            }
+            for skill in agent.skills
+        ]
+    else:
+        skills_list = [
+            {
+                "id": "default",
+                "name": agent.name,
+                "description": agent.description,
+                "tags": tags,
+            }
+        ]
 
     card: dict = {
         "name": agent.name,
@@ -44,14 +63,7 @@ def build_card(
         "defaultOutputModes": list(agent.output_modes)
         if agent.output_modes
         else ["text/plain"],
-        "skills": [
-            {
-                "id": "default",
-                "name": agent.name,
-                "description": agent.description,
-                "tags": tags,
-            }
-        ],
+        "skills": skills_list,
     }
 
     if metadata:

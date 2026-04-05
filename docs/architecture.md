@@ -12,7 +12,7 @@
 
 5. **Write-ahead dispatch.** The coordinator persists `request_id`, `reply_topic`, `dispatched_at` before sending A2A requests. On crash recovery, it rebuilds session state from task rows.
 
-6. **MQTT v5 as the backbone.** The broker handles routing, fan-out, and liveness tracking. Retained messages for discovery cards. LWT for crash detection.
+6. **MQTT v5 as the backbone.** The broker handles routing, fan-out, and liveness tracking. Retained messages for discovery cards. LWT for crash detection. Agents and the coordinator only need outbound connectivity to the broker; they do not need public ingress endpoints.
 
 7. **A2A-over-MQTT.** Topics follow the A2A-over-MQTT v0.1 scheme, referencing A2A v1.0.0. Requests are JSON-RPC 2.0 (`SendMessage`). Replies are `TaskStatusUpdateEvent`. MQTT v5 Response Topic + Correlation Data for reply routing. Task.id (requester-generated UUIDv4) tracks task state across retries.
 
@@ -136,7 +136,7 @@ sequenceDiagram
 
 ## Coordinator
 
-The coordinator (`skitter/coordinator.py`) is a long-lived process that:
+The coordinator (`skitter/coordinator/`) is a long-lived process that:
 
 1. Publishes its own discovery card (`skitter`) for runtime API access
 2. Subscribes to discovery (agent registry), runtime API requests, and per-app request topics
@@ -168,11 +168,12 @@ What it does:
 5. Handles `CancelTask`: kills the subprocess, replies with `canceled` state
 6. Validates Task.id presence; rejects requests without it
 7. Deduplicates by Task.id (in-memory, 5-minute TTL); returns existing task state on duplicates
+8. Captures CLI-native session ID (`session_id` from Claude, `thread_id` from Codex) and maps it to the A2A `context_id` for multi-turn resume
 
 The agent-runner reads metadata from native definition files and delegates execution to the respective CLI tool. Claude agents are references to registered agent names (resolved by `claude --agent <name>`). Codex agents carry their instructions inline (passed via `codex exec -c developer_instructions=...`). Runtime is inferred from the file extension.
 
 Permissions and isolation:
-- **Claude agents**: `--permission-mode auto` with filesystem sandbox (writes restricted to `/tmp`)
+- **Claude agents**: `--permission-mode auto` with filesystem sandbox (writes restricted to `/tmp`). On resume, `--permission-mode` and `--settings` are omitted (inherited from the original session).
 - **Codex agents**: `--full-auto` (workspace-write sandbox), `--ephemeral`, `approval_policy=never`
 
 ## Runtime API
@@ -193,10 +194,12 @@ Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` f
 
 ## Database
 
-`DB` protocol in `skitter/db.py` with two backends:
+`DB` protocol in `skitter/db.py` with two backends sharing a `_BaseDB` implementation (SQLite and PostgreSQL subclasses provide only `_exec`, `_fetchone`, `_fetchall`):
 
 - **SQLite**: default, zero config, WAL mode. Good for local/single-instance.
 - **PostgreSQL**: for high query volume. Note: only one coordinator instance per broker is supported (enforced via a retained MQTT lock message on startup).
+
+`AsyncDB` wraps any sync backend via `asyncio.to_thread()` so the coordinator never blocks the event loop on DB calls. JSON fields (`variables`, `needs`) are encoded/decoded at the repository boundary; the coordinator works with Python dicts and lists.
 
 Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
@@ -204,8 +207,10 @@ Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
 `skitter/graph_gen.py` generates orchestration graphs from natural language:
 
+This path is only used for composed apps. It requires coordinator LLM configuration (model, API, and key in `~/.skitter/config.yaml` or via env vars).
+
 1. Build prompt from agent capabilities (discovery cards) + user instructions
-2. Call LLM via `skitter/llm.py` (litellm wrapper, lazy import)
+2. Call LLM via `skitter/llm.py` (direct Anthropic/OpenAI SDK wrapper)
 3. Validate: agent refs, task ID uniqueness, cycles (DFS on `needs` edges), at least one `terminal: true` node, terminal nodes have no dependents
 4. Retry once on validation failure (include error in prompt)
 
@@ -227,10 +232,11 @@ db:
   postgres_dsn: postgresql://...
 
 llm:
-  model: anthropic/claude-haiku-4-5  # for graph generation (litellm format)
+  api: anthropic
+  model: claude-sonnet-4-6           # for graph generation
 ```
 
-Environment variables: `MQTT_BROKER_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_CA_CERT`, `SKITTER_A2A_ORG`, `SKITTER_A2A_UNIT`, `SKITTER_LLM_MODEL`, `SKITTER_REPLY_FIRST_TIMEOUT`, `SKITTER_STREAM_IDLE_TIMEOUT`, `SKITTER_MAX_ATTEMPTS`, `SKITTER_AGENT_MAX_CONCURRENT`.
+Environment variables: `MQTT_BROKER_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_CA_CERT`, `SKITTER_A2A_ORG`, `SKITTER_A2A_UNIT`, `SKITTER_LLM_API_KEY`, `SKITTER_LLM_API`, `SKITTER_LLM_MODEL`, `SKITTER_LLM_BASE_URL`, `SKITTER_REPLY_FIRST_TIMEOUT`, `SKITTER_STREAM_IDLE_TIMEOUT`, `SKITTER_MAX_ATTEMPTS`, `SKITTER_AGENT_MAX_CONCURRENT`.
 
 ## Task.id Lifecycle
 
@@ -240,7 +246,7 @@ Every A2A request carries a `Task.id` (UUIDv4) in `params.message.taskId`, gener
 2. **Responder** echoes the Task.id in all `TaskStatusUpdateEvent` replies
 3. **Retries** reuse the same Task.id with new MQTT Correlation Data
 4. **Deduplication**: responders track completed Task.ids and return existing task state on duplicates (per A2A-over-MQTT spec)
-5. **Coordinator sessions**: the coordinator uses the incoming Task.id as the session ID; dispatched sub-tasks get their own UUIDv4 Task.ids
+5. **Coordinator sessions**: the coordinator generates an internal session ID (UUIDv4) and tracks the incoming Task.id separately as `request_task_id` for dedup and wire replies; dispatched sub-tasks get their own UUIDv4 Task.ids
 
 Validation: both agent-runner and coordinator reject requests with missing Task.id (`transport_protocol_error`, code -32005).
 

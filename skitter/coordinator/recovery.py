@@ -57,7 +57,7 @@ async def recover(coord: Coordinator) -> None:
                 agent=t.agent,
                 description=t.description,
                 needs=t.needs,
-                terminal=bool(t.terminal),
+                terminal=t.terminal,
                 target=TaskTarget(agent=t.agent),
                 dispatch_task_id=t.dispatch_task_id,
             )

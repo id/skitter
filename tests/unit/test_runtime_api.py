@@ -13,18 +13,20 @@ from skitter.a2a import A2ARequest
 
 class TestAppCreation:
     def setup_method(self):
-        from skitter.db import SqliteDB
+        from skitter.db import AsyncDB, SqliteDB
 
         self.db = SqliteDB(":memory:")
+        self.adb = AsyncDB(self.db)
 
     def teardown_method(self):
         self.db.close()
 
-    def test_create_app(self):
+    @pytest.mark.asyncio
+    async def test_create_app(self):
         from skitter.runtime_api import create_app
 
-        app, version, card_json = create_app(
-            self.db,
+        app, version, card_json = await create_app(
+            self.adb,
             name="Test App",
             description="A test",
             graph={
@@ -51,12 +53,13 @@ class TestAppCreation:
         )
         assert len(wf["params"]["tasks"]) == 1
 
-    def test_provided_app_id(self):
+    @pytest.mark.asyncio
+    async def test_provided_app_id(self):
         from skitter.runtime_api import create_app
 
         app_id = "predefined_id"
-        app, version, card_json = create_app(
-            self.db,
+        app, version, card_json = await create_app(
+            self.adb,
             app_id=app_id,
             name="Test App",
             description="A test",
@@ -75,13 +78,16 @@ class TestAppCreation:
         assert app is not None
         assert app.id == app_id
 
-    def test_version_increment(self):
+    @pytest.mark.asyncio
+    async def test_version_increment(self):
         from skitter.runtime_api import create_app
 
-        app1, v1, _ = create_app(
-            self.db, app_id="my-app", name="App", graph={"tasks": []}
+        app1, v1, _ = await create_app(
+            self.adb, app_id="my-app", name="App", graph={"tasks": []}
         )
-        _, v2, _ = create_app(self.db, app_id="my-app", name="App", graph={"tasks": []})
+        _, v2, _ = await create_app(
+            self.adb, app_id="my-app", name="App", graph={"tasks": []}
+        )
         assert v1.version == 1
         assert v2.version == 2
 
@@ -91,9 +97,10 @@ class TestAppCreation:
 
 class TestRuntimeApi:
     def setup_method(self):
-        from skitter.db import SqliteDB
+        from skitter.db import AsyncDB, SqliteDB
 
         self.db = SqliteDB(":memory:")
+        self.adb = AsyncDB(self.db)
 
     def teardown_method(self):
         self.db.close()
@@ -145,7 +152,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = (await handle_query(self.db, "list apps")).to_dict()
+        result = (await handle_query(self.adb, "list apps")).to_dict()
         assert len(result["apps"]) == 1
         assert result["apps"][0]["id"] == "app1"
         assert result["apps"][0]["current_version"] == 2
@@ -154,7 +161,7 @@ class TestRuntimeApi:
     async def test_list_apps_empty(self):
         from skitter.runtime_api import handle_query
 
-        result = (await handle_query(self.db, "list apps")).to_dict()
+        result = (await handle_query(self.adb, "list apps")).to_dict()
         assert result["apps"] == []
 
     @pytest.mark.asyncio
@@ -162,7 +169,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = (await handle_query(self.db, "get app app1")).to_dict()
+        result = (await handle_query(self.adb, "get app app1")).to_dict()
         assert result["id"] == "app1"
         assert result["name"] == "App One"
         assert len(result["versions"]) == 2
@@ -173,7 +180,7 @@ class TestRuntimeApi:
     async def test_get_app_not_found(self):
         from skitter.runtime_api import ErrorResult, handle_query
 
-        result = await handle_query(self.db, "get app nonexistent")
+        result = await handle_query(self.adb, "get app nonexistent")
         assert isinstance(result, ErrorResult)
 
     @pytest.mark.asyncio
@@ -181,7 +188,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = (await handle_query(self.db, "list sessions")).to_dict()
+        result = (await handle_query(self.adb, "list sessions")).to_dict()
         assert len(result["sessions"]) == 1
         assert result["sessions"][0]["id"] == "s1"
         assert result["sessions"][0]["state"] == "running"
@@ -191,10 +198,10 @@ class TestRuntimeApi:
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = (await handle_query(self.db, "list sessions app1")).to_dict()
+        result = (await handle_query(self.adb, "list sessions app1")).to_dict()
         assert len(result["sessions"]) == 1
 
-        result = (await handle_query(self.db, "list sessions nonexistent")).to_dict()
+        result = (await handle_query(self.adb, "list sessions nonexistent")).to_dict()
         assert result["sessions"] == []
 
     @pytest.mark.asyncio
@@ -202,7 +209,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = (await handle_query(self.db, "get session s1")).to_dict()
+        result = (await handle_query(self.adb, "get session s1")).to_dict()
         assert result["id"] == "s1"
         assert result["state"] == "running"
         assert len(result["tasks"]) == 2
@@ -218,7 +225,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import handle_query
 
         self._populate()
-        result = (await handle_query(self.db, "get session rtid-s1")).to_dict()
+        result = (await handle_query(self.adb, "get session rtid-s1")).to_dict()
         assert result["id"] == "s1"
         assert result["state"] == "running"
 
@@ -226,7 +233,7 @@ class TestRuntimeApi:
     async def test_get_session_not_found(self):
         from skitter.runtime_api import ErrorResult, handle_query
 
-        result = await handle_query(self.db, "get session nonexistent")
+        result = await handle_query(self.adb, "get session nonexistent")
         assert isinstance(result, ErrorResult)
 
     @pytest.mark.asyncio
@@ -234,7 +241,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import CancelSessionResult, handle_query
 
         self._populate()
-        result = await handle_query(self.db, "cancel session s1")
+        result = await handle_query(self.adb, "cancel session s1")
         assert isinstance(result, CancelSessionResult)
         assert result.session_id == "s1"
 
@@ -247,7 +254,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import CancelSessionResult, handle_query
 
         self._populate()
-        result = await handle_query(self.db, "cancel session rtid-s1")
+        result = await handle_query(self.adb, "cancel session rtid-s1")
         assert isinstance(result, CancelSessionResult)
         assert result.session_id == "s1"
 
@@ -260,7 +267,7 @@ class TestRuntimeApi:
 
         self._populate()
         self.db.update_session_state("s1", "completed")
-        result = await handle_query(self.db, "cancel session s1")
+        result = await handle_query(self.adb, "cancel session s1")
         assert isinstance(result, ErrorResult)
         assert "not running" in result.message.lower()
 
@@ -268,21 +275,21 @@ class TestRuntimeApi:
     async def test_cancel_session_not_found(self):
         from skitter.runtime_api import ErrorResult, handle_query
 
-        result = await handle_query(self.db, "cancel session nonexistent")
+        result = await handle_query(self.adb, "cancel session nonexistent")
         assert isinstance(result, ErrorResult)
 
     @pytest.mark.asyncio
     async def test_unknown_query(self):
         from skitter.runtime_api import ErrorResult, handle_query
 
-        result = await handle_query(self.db, "do something")
+        result = await handle_query(self.adb, "do something")
         assert isinstance(result, ErrorResult)
 
     @pytest.mark.asyncio
     async def test_empty_query(self):
         from skitter.runtime_api import ErrorResult, handle_query
 
-        result = await handle_query(self.db, "")
+        result = await handle_query(self.adb, "")
         assert isinstance(result, ErrorResult)
 
     def test_coordinator_card(self):
@@ -347,7 +354,7 @@ class TestRuntimeApi:
             "skitter.runtime_api.generate_graph", new_callable=AsyncMock
         ) as mock_gen:
             mock_gen.return_value = graph
-            result = await handle_query(self.db, f"create app {spec}", registry)
+            result = await handle_query(self.adb, f"create app {spec}", registry)
 
         assert isinstance(result, CreateAppResult)
         assert result.version == 1
@@ -376,7 +383,7 @@ class TestRuntimeApi:
                 "agents": ["reader", "missing-agent"],
             }
         )
-        result = await handle_query(self.db, f"create app {spec}", registry)
+        result = await handle_query(self.adb, f"create app {spec}", registry)
         assert isinstance(result, ErrorResult)
         assert "missing-agent" in result.message
 
@@ -385,7 +392,7 @@ class TestRuntimeApi:
         from skitter.runtime_api import ErrorResult, handle_query
 
         spec = json.dumps({"name": "Test", "instructions": "Do stuff", "agents": ["a"]})
-        result = await handle_query(self.db, f"create app {spec}")
+        result = await handle_query(self.adb, f"create app {spec}")
         assert isinstance(result, ErrorResult)
         assert "registry" in result.message.lower()
 
@@ -449,9 +456,10 @@ class TestRuntimeApiIntegration:
     """Integration tests: create app, run session lifecycle, verify events + queries."""
 
     def setup_method(self):
-        from skitter.db import SqliteDB
+        from skitter.db import AsyncDB, SqliteDB
 
         self.db = SqliteDB(":memory:")
+        self.adb = AsyncDB(self.db)
 
     def teardown_method(self):
         self.db.close()
@@ -467,11 +475,11 @@ class TestRuntimeApiIntegration:
         sup._client = mock_client
         return sup, mock_client
 
-    def _create_test_app(self):
+    async def _create_test_app(self):
         from skitter.runtime_api import create_app
 
-        return create_app(
-            self.db,
+        return await create_app(
+            self.adb,
             app_id="test-app",
             name="Test App",
             description="Integration test app",
@@ -498,7 +506,7 @@ class TestRuntimeApiIntegration:
     async def test_session_lifecycle_events(self):
         """Create app, dispatch session, complete tasks — verify all events."""
         sup, mock_client = self._make_coordinator()
-        self._create_test_app()
+        await self._create_test_app()
 
         # Create session
         req = A2ARequest(text="test request", request_id="r1")
@@ -566,7 +574,7 @@ class TestRuntimeApiIntegration:
     async def test_session_failure_events(self):
         """Verify task_failed and session_failed events."""
         sup, mock_client = self._make_coordinator()
-        self._create_test_app()
+        await self._create_test_app()
 
         req = A2ARequest(text="test", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -605,7 +613,7 @@ class TestRuntimeApiIntegration:
     async def test_query_via_runtime_handler(self):
         """Verify queries through _handle_runtime_query produce correct A2A replies."""
         sup, mock_client = self._make_coordinator()
-        self._create_test_app()
+        await self._create_test_app()
 
         # Query: list apps
         req = A2ARequest(text="list apps", request_id="q1")
@@ -633,7 +641,7 @@ class TestRuntimeApiIntegration:
     async def test_query_get_session_via_handler(self):
         """Verify get session query returns task details."""
         sup, mock_client = self._make_coordinator()
-        self._create_test_app()
+        await self._create_test_app()
 
         # Create a session
         req = A2ARequest(text="test", request_id="r1")
@@ -671,7 +679,7 @@ class TestRuntimeApiIntegration:
     async def test_cancel_via_handler_cleans_up(self):
         """Verify cancel session cleans up DB + in-memory state."""
         sup, mock_client = self._make_coordinator()
-        self._create_test_app()
+        await self._create_test_app()
 
         req = A2ARequest(text="test", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -815,7 +823,7 @@ class TestRuntimeApiIntegration:
     async def test_delete_app(self):
         """Verify delete app removes from DB and replies with deleted_app."""
         sup, mock_client = self._make_coordinator()
-        self._create_test_app()
+        await self._create_test_app()
         assert self.db.get_app("test-app") is not None
 
         req = A2ARequest(text="delete app test-app", request_id="q1")
@@ -844,7 +852,7 @@ class TestRuntimeApiIntegration:
     async def test_delete_app_with_running_sessions(self):
         """Verify delete app fails when sessions are running."""
         sup, mock_client = self._make_coordinator()
-        self._create_test_app()
+        await self._create_test_app()
 
         # Create a running session
         req = A2ARequest(text="test", request_id="r1")

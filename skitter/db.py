@@ -66,7 +66,7 @@ class DBTask:
     agent: str
     description: str = ""
     needs: list = field(default_factory=list)
-    terminal: str = ""
+    terminal: bool = False
     target_json: str = ""
     dispatch_task_id: str = ""
     reply_topic: str = ""
@@ -344,7 +344,7 @@ def _row_to_task(row) -> DBTask:
         agent=row["agent"],
         description=row["description"] or "",
         needs=json.loads(raw_needs) if raw_needs else [],
-        terminal=row["terminal"] or "",
+        terminal=bool(row["terminal"]),
         target_json=row["target_json"] or "",
         dispatch_task_id=row["dispatch_task_id"] or "",
         reply_topic=row["reply_topic"] or "",
@@ -540,7 +540,7 @@ class _BaseDB:
                 task.agent,
                 task.description,
                 json.dumps(task.needs),
-                task.terminal,
+                "1" if task.terminal else "",
                 task.target_json,
                 task.state,
             ),

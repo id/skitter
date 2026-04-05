@@ -244,10 +244,11 @@ class TestCoordinatorDispatchCompliance:
     def teardown_method(self):
         self.db.close()
 
-    def _make_coordinator_with_app(self):
+    async def _make_coordinator_with_app(self):
         from unittest.mock import AsyncMock, MagicMock
 
         from skitter.coordinator import Coordinator
+        from skitter.db import AsyncDB
         from skitter.runtime_api import create_app
 
         sup = Coordinator(self.db)
@@ -256,8 +257,8 @@ class TestCoordinatorDispatchCompliance:
         mock_client.subscribe = AsyncMock()
         sup._client = mock_client
 
-        create_app(
-            self.db,
+        await create_app(
+            AsyncDB(self.db),
             app_id="test-app",
             name="Test",
             graph={
@@ -279,7 +280,7 @@ class TestCoordinatorDispatchCompliance:
         """Coordinator must generate a UUIDv4 task_id for dispatched A2A requests."""
         import uuid as uuid_mod
 
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -317,7 +318,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_dispatch_sets_correlation_data(self):
         """Dispatched A2A requests must include MQTT Correlation Data."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -344,7 +345,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_reply_with_correct_correlation_is_accepted(self):
         """Replies with matching MQTT Correlation Data must be processed."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -380,7 +381,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_reply_with_wrong_correlation_is_dropped(self):
         """Replies with mismatched MQTT Correlation Data must be dropped."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -415,7 +416,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_reply_with_missing_correlation_is_dropped(self):
         """Replies omitting MQTT Correlation Data must be dropped when expected."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -450,7 +451,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_cancel_uses_a2a_task_id(self):
         """CancelTask must reference the dispatched Task.id and include MQTT v5 properties."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -493,7 +494,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_handle_request_deduplicates_by_task_id(self):
         """Second request with same Task.id must reply with current state, not create a new session."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -534,7 +535,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_dedup_completed_session_returns_stored_state(self):
         """Duplicate Task.id for a completed session must reply with completed state."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -581,7 +582,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_context_id_mismatch_returns_error(self):
         """Duplicate Task.id with different context_id must return -32602."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1", context_id="ctx-original")
         version = self.db.get_current_version("test-app")
@@ -616,7 +617,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_context_id_mismatch_db_session_returns_error(self):
         """Duplicate Task.id in DB with different context_id must return -32602."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1", context_id="ctx-original")
         version = self.db.get_current_version("test-app")
@@ -653,7 +654,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_send_error_includes_a2a_error_data(self):
         """_send_error must include data.a2a_error for transport error codes."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         await sup._send_error(
             "reply/t", "corr-1", "Agent offline", code=A2A_RESPONDER_UNAVAILABLE
@@ -671,7 +672,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_forward_stream_qos_1(self):
         """Forwarded stream updates to caller must use QoS 1."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -699,7 +700,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_dispatch_includes_user_request_in_prompt(self):
         """Dispatched A2A request must append user request to prompt text."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="find latest news", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -724,7 +725,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_dispatch_omits_user_request_when_empty(self):
         """Dispatched prompt must not contain 'User request:' when request text is empty."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -749,7 +750,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_dispatched_request_has_context_id(self):
         """Dispatched A2A payload must include the session's contextId."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1", context_id="ctx-dispatch-test")
         version = self.db.get_current_version("test-app")
@@ -774,7 +775,7 @@ class TestCoordinatorDispatchCompliance:
     @pytest.mark.asyncio
     async def test_submitted_ack_has_context_id(self):
         """Submitted ack event must include contextId."""
-        sup, mock_client = self._make_coordinator_with_app()
+        sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="go", request_id="r1", context_id="ctx-ack-test")
         version = self.db.get_current_version("test-app")
@@ -973,12 +974,15 @@ def _make_wired_coordinator(db):
     return sup, mock_client
 
 
-def _make_wired_coordinator_with_app(db):
+async def _make_wired_coordinator_with_app(db):
     """Create a Coordinator with mocked client and a single-step test app."""
+    from skitter.db import AsyncDB
     from skitter.runtime_api import create_app
 
     sup, mock_client = _make_wired_coordinator(db)
-    create_app(db, app_id="test-app", name="Test", graph=_SINGLE_STEP_GRAPH)
+    await create_app(
+        AsyncDB(db), app_id="test-app", name="Test", graph=_SINGLE_STEP_GRAPH
+    )
     return sup, mock_client
 
 
@@ -999,7 +1003,7 @@ class TestWriteAheadDispatch:
     @pytest.mark.asyncio
     async def test_db_updated_before_publish(self):
         """DB task must have dispatch info persisted before MQTT publish fires."""
-        sup, mock_client = _make_wired_coordinator_with_app(self.db)
+        sup, mock_client = await _make_wired_coordinator_with_app(self.db)
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -1037,7 +1041,7 @@ class TestWriteAheadDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_persists_reply_topic(self):
         """Write-ahead must persist the reply_topic for recovery."""
-        sup, mock_client = _make_wired_coordinator_with_app(self.db)
+        sup, mock_client = await _make_wired_coordinator_with_app(self.db)
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -1346,7 +1350,7 @@ class TestDedupContextEdgeCases:
     )
     async def test_dedup_empty_context_allows_dedup(self, stored_ctx, incoming_ctx):
         """Empty context_id on either side allows dedup (untracked context)."""
-        sup, mock_client = _make_wired_coordinator_with_app(self.db)
+        sup, mock_client = await _make_wired_coordinator_with_app(self.db)
         req = await self._create_session(sup, stored_ctx)
 
         mock_client.publish.reset_mock()
@@ -1369,7 +1373,7 @@ class TestDedupContextEdgeCases:
     @pytest.mark.asyncio
     async def test_identity_session_id_is_internal(self):
         """session_id is coordinator-generated; request_task_id holds requester's Task.id."""
-        sup, _ = _make_wired_coordinator_with_app(self.db)
+        sup, _ = await _make_wired_coordinator_with_app(self.db)
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")
@@ -1391,7 +1395,7 @@ class TestDedupContextEdgeCases:
     @pytest.mark.asyncio
     async def test_dedup_looks_up_by_request_task_id(self):
         """Dedup: coordinator looks up session via _request_task_index by incoming Task.id."""
-        sup, _ = _make_wired_coordinator_with_app(self.db)
+        sup, _ = await _make_wired_coordinator_with_app(self.db)
 
         req = A2ARequest(text="go", request_id="r1")
         version = self.db.get_current_version("test-app")

@@ -5,11 +5,107 @@ handled once at the group level. Individual command modules supply the
 implementation logic; this file handles only argument parsing and dispatch.
 """
 
+import asyncio
+import json
 import os
+import sys
+import uuid
 
+import aiomqtt
 import click
+from rich import box
+from rich.console import Console
+from rich.table import Table
 
+from skitter.a2a import (
+    A2ARequest,
+    REPLY_ARTIFACT,
+    REPLY_ERROR,
+    REPLY_FAILED,
+    REPLY_TIMEOUT,
+    stream_replies,
+    topic_discovery,
+    topic_discovery_wildcard,
+    topic_request,
+)
 from skitter.config import configure_logging
+from skitter.discovery import parse_card
+from skitter.mqtt import mqtt_client_kwargs
+
+_console = Console()
+
+
+# --- Helpers for broker/coordinator queries ---
+
+
+async def _fetch_cards(
+    topic: str, *, first_only: bool = False, timeout: float = 3.0
+) -> list[tuple[str, dict]]:
+    """Subscribe to a discovery topic and collect retained cards."""
+    cards: list[tuple[str, dict]] = []
+    async with aiomqtt.Client(**mqtt_client_kwargs()) as client:
+        await client.subscribe(topic, qos=1)
+        try:
+            async with asyncio.timeout(timeout):
+                async for msg in client.messages:
+                    if not msg.payload:
+                        continue
+                    try:
+                        card = parse_card(msg.payload)
+                        parts = str(msg.topic).split("/")
+                        agent_id = parts[-1] if parts else ""
+                        cards.append((agent_id, card))
+                        if first_only:
+                            break
+                    except Exception:
+                        continue
+        except TimeoutError:
+            pass
+    return cards
+
+
+async def _query_json(text: str) -> dict:
+    """Send a query to the coordinator and return the parsed JSON artifact."""
+    request_id = f"req-{uuid.uuid4().hex[:8]}"
+    req = A2ARequest(text=text, request_id=request_id, sender="cli")
+
+    artifact = ""
+    async for kind, content in stream_replies(
+        topic_request("skitter"), req.to_json(), request_id
+    ):
+        if kind == REPLY_ARTIFACT:
+            artifact = content
+            break
+        elif kind in (REPLY_ERROR, REPLY_FAILED):
+            print(f"Error: {content}", file=sys.stderr)
+            raise SystemExit(1)
+        elif kind == REPLY_TIMEOUT:
+            print("Error: coordinator not reachable", file=sys.stderr)
+            raise SystemExit(1)
+
+    if not artifact:
+        print("Error: empty response from coordinator", file=sys.stderr)
+        raise SystemExit(1)
+    return json.loads(artifact)
+
+
+def _query_or_exit(text: str) -> dict:
+    """Run a coordinator query; exit on error."""
+    data = asyncio.run(_query_json(text))
+    if "error" in data:
+        print(f"Error: {data['error']}", file=sys.stderr)
+        raise SystemExit(1)
+    return data
+
+
+def _table(*columns: str) -> Table:
+    t = Table(box=box.MARKDOWN, show_edge=True, pad_edge=True)
+    for col in columns:
+        t.add_column(col, no_wrap=(col == "ID"))
+    return t
+
+
+# --- CLI group ---
 
 
 @click.group(invoke_without_command=True)
@@ -64,8 +160,6 @@ def request(agent_id, prompt, context_id):
 @click.argument("agent_id")
 def chat(agent_id):
     """Start an interactive A2A chat session."""
-    import asyncio
-
     from skitter.cli import _run_chat
 
     try:
@@ -160,8 +254,6 @@ def doctor():
 @click.argument("agent_path")
 def agent_runner(agent_path):
     """Run a standalone A2A agent process."""
-    import asyncio
-
     from skitter.agent_runner import run
 
     asyncio.run(run(agent_path))
@@ -208,18 +300,25 @@ def create_agent(name, prompt, runtime, model, skills, dry_run, edit, force):
 @cli.command("list-agents")
 def list_agents():
     """List agents discovered from broker."""
-    from skitter.manage import list_agents as _list_agents
-
-    _list_agents([])
+    agents = asyncio.run(_fetch_cards(topic_discovery_wildcard()))
+    if not agents:
+        print("No agents.")
+        return
+    t = _table("ID", "NAME", "DESCRIPTION")
+    for agent_id, card in sorted(agents):
+        t.add_row(agent_id, card.get("name", ""), card.get("description", ""))
+    _console.print(t)
 
 
 @cli.command("get-agent")
 @click.argument("agent_id")
 def get_agent(agent_id):
     """Get agent discovery card (JSON)."""
-    from skitter.manage import get_agent as _get_agent
-
-    _get_agent([agent_id])
+    results = asyncio.run(_fetch_cards(topic_discovery(agent_id), first_only=True))
+    if not results:
+        print(f"Agent '{agent_id}' not found.", file=sys.stderr)
+        raise SystemExit(1)
+    print(json.dumps(results[0][1], indent=2))
 
 
 @cli.command("create-app")
@@ -230,65 +329,90 @@ def get_agent(agent_id):
 @click.option("--description", default="", help="App description.")
 def create_app(name, instructions, agents, app_id, description):
     """Create a composed multi-agent app."""
-    from skitter.manage import create_app as _create_app
+    agent_ids = [a.strip() for a in agents.split(",") if a.strip()]
+    if not agent_ids:
+        raise click.BadParameter(
+            "must list at least one agent ID", param_hint="--agents"
+        )
 
-    argv = [name, instructions, "--agents", agents]
+    spec: dict = {
+        "name": name,
+        "instructions": instructions,
+        "agents": agent_ids,
+    }
     if app_id:
-        argv.extend(["--id", app_id])
+        spec["id"] = app_id
     if description:
-        argv.extend(["--description", description])
-    _create_app(argv)
+        spec["description"] = description
+
+    data = asyncio.run(_query_json(f"create app {json.dumps(spec)}"))
+    created = data.get("created_app", {})
+    if created:
+        print(f"Created app '{created['app_id']}' v{created['version']}")
+    else:
+        print(json.dumps(data, indent=2))
 
 
 @cli.command("list-apps")
 def list_apps():
     """List all apps."""
-    from skitter.manage import list_apps as _list_apps
-
-    _list_apps([])
+    data = asyncio.run(_query_json("list apps"))
+    apps = data.get("apps", [])
+    if not apps:
+        print("No apps.")
+        return
+    t = _table("ID", "NAME", "VERSION")
+    for app in apps:
+        ver = app.get("current_version")
+        t.add_row(app["id"], app.get("name", ""), str(ver) if ver is not None else "")
+    _console.print(t)
 
 
 @cli.command("get-app")
 @click.argument("app_id")
 def get_app(app_id):
     """Get app details (JSON)."""
-    from skitter.manage import get_app as _get_app
-
-    _get_app([app_id])
+    data = _query_or_exit(f"get app {app_id}")
+    print(json.dumps(data, indent=2))
 
 
 @cli.command("delete-app")
 @click.argument("app_id")
 def delete_app(app_id):
     """Delete an app and all its data."""
-    from skitter.manage import delete_app as _delete_app
-
-    _delete_app([app_id])
+    data = _query_or_exit(f"delete app {app_id}")
+    print(f"Deleted app '{data.get('deleted_app', app_id)}'")
 
 
 @cli.command("list-sessions")
 @click.argument("app_id", required=False, default="")
 def list_sessions(app_id):
     """List sessions (optionally filter by app ID)."""
-    from skitter.manage import list_sessions as _list_sessions
-
-    argv = [app_id] if app_id else []
-    _list_sessions(argv)
+    q = f"list sessions {app_id}" if app_id else "list sessions"
+    data = asyncio.run(_query_json(q))
+    sessions = data.get("sessions", [])
+    if not sessions:
+        print("No sessions.")
+        return
+    t = _table("ID", "APP", "STATE", "CREATED")
+    for s in sessions:
+        t.add_row(
+            s["id"], s.get("app_version_id", ""), s["state"], s.get("created_at", "")
+        )
+    _console.print(t)
 
 
 @cli.command("get-session")
 @click.argument("session_id")
 def get_session(session_id):
     """Get session details (JSON)."""
-    from skitter.manage import get_session as _get_session
-
-    _get_session([session_id])
+    data = _query_or_exit(f"get session {session_id}")
+    print(json.dumps(data, indent=2))
 
 
 @cli.command("cancel-session")
 @click.argument("session_id")
 def cancel_session(session_id):
     """Cancel a running session."""
-    from skitter.manage import cancel_session as _cancel_session
-
-    _cancel_session([session_id])
+    data = _query_or_exit(f"cancel session {session_id}")
+    print(f"Canceled session '{data.get('canceled', session_id)}'")

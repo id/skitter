@@ -75,7 +75,6 @@ class Coordinator:
     _MAX_RESULT_CHARS = 2000  # truncate per-turn result in history
 
     def __init__(self, db: DB) -> None:
-        self._db = db  # sync: used by runtime_api (to be migrated)
         self._adb = AsyncDB(db)
         self._sessions: dict[str, SessionState] = {}  # session_id → state
         self._request_task_index: dict[str, str] = {}  # request_task_id → session_id
@@ -235,7 +234,7 @@ class Coordinator:
                 agent=agent,
                 description=description,
                 needs=needs,
-                terminal="1" if terminal else "",
+                terminal=terminal,
             )
             await self._adb.create_task(db_task)
 
@@ -370,7 +369,7 @@ class Coordinator:
 
         Caller must pass a validated A2ARequest (v5 props and Task.id already checked).
         """
-        result = await runtime_query(self._db, req.text, self._registry)
+        result = await runtime_query(self._adb, req.text, self._registry)
 
         try:
             if isinstance(result, CancelSessionResult):

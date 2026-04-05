@@ -1058,8 +1058,8 @@ def workspace():
 
 
 @needs_claude
-class TestAgentCapabilities:
-    """Tests that verify agents can use tools to generate files and retain memory."""
+class TestClaudeAgentCapabilities:
+    """Claude agent capabilities: file generation and memory."""
 
     pytestmark = pytest.mark.asyncio
 

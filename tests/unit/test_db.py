@@ -377,8 +377,7 @@ class TestTaskTarget:
         from skitter.a2a import TaskTarget
 
         t = TaskTarget(agent="researcher")
-        assert t.mqtt_host == ""
-        assert t.mqtt_port == 8883
+        assert t.agent == "researcher"
 
 
 class TestDBConfig:

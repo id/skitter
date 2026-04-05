@@ -246,9 +246,7 @@ class Coordinator:
                 description=description,
                 needs=json.dumps(needs),
                 terminal="1" if terminal else "",
-                target_json=json.dumps(
-                    {"agent": target.agent, "mqtt_host": target.mqtt_host}
-                ),
+                target_json=json.dumps({"agent": target.agent}),
             )
             await self._adb.create_task(db_task)
 

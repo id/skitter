@@ -8,12 +8,21 @@ import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import aiomqtt
 
 from skitter.config import safe_format
+from skitter.coordinator.models import (
+    SessionState,
+    SessionTask,
+    build_context,
+    compute_ready,
+    find_terminal_tasks,
+    is_graph_task_terminal,
+    propagate_failure,
+)
+from skitter.coordinator.registry import DiscoveryRegistry
 from skitter.db import (
     AsyncDB,
     DB,
@@ -21,7 +30,7 @@ from skitter.db import (
     DBTask,
     open_db,
 )
-from skitter.discovery import is_app_card, parse_card
+from skitter.discovery import parse_card
 from skitter.runtime_api import (
     AGENT_ID as RUNTIME_AGENT_ID,
     CancelSessionResult,
@@ -64,130 +73,6 @@ from skitter.mqtt import (
 )
 
 log = logging.getLogger("skitter.coordinator")
-
-
-# --- In-memory session state for dependency resolution ---
-
-
-@dataclass
-class SessionTask:
-    """Per-task state within a session."""
-
-    agent: str
-    description: str
-    needs: list[str] = field(default_factory=list)
-    terminal: bool = False
-    target: TaskTarget | None = None
-    dispatch_correlation: str = ""  # MQTT Correlation Data sent with dispatch
-    dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for CancelTask
-
-
-@dataclass
-class SessionState:
-    """In-memory state for an active session."""
-
-    session_id: str  # internal; coordinator-generated UUID
-    request_task_id: str  # incoming A2A Task.id; used for dedup and wire replies
-    app_version_id: str
-    app_id: str = ""
-    context_id: str = ""
-    conversation_history: str = ""
-    caller_reply_topic: str = ""
-    caller_correlation: str = ""
-    graph: dict[str, SessionTask] = field(default_factory=dict)
-    results: dict[str, str] = field(default_factory=dict)
-    pending: set[str] = field(default_factory=set)
-    inflight: set[str] = field(default_factory=set)
-    failed: set[str] = field(default_factory=set)
-    variables: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def a2a_state(self) -> TaskState:
-        """Derive A2A task state from session progress."""
-        if self.pending or self.inflight:
-            return TaskState.WORKING
-        if self.failed:
-            return TaskState.FAILED
-        return TaskState.COMPLETED
-
-
-def _compute_ready(state: SessionState) -> list[str]:
-    """Return node_ids that are pending and have all needs satisfied."""
-    ready = []
-    for tid in list(state.pending):
-        task = state.graph[tid]
-        if all(n in state.results or n in state.failed for n in task.needs):
-            # If any need failed, this task fails too
-            if any(n in state.failed for n in task.needs):
-                continue
-            ready.append(tid)
-    return ready
-
-
-def _propagate_failure(state: SessionState, failed_tid: str) -> list[str]:
-    """Mark all transitively dependent tasks as failed. Returns newly failed node_ids."""
-    newly_failed = []
-    queue = [failed_tid]
-    while queue:
-        tid = queue.pop(0)
-        for other_tid, task in state.graph.items():
-            if other_tid in state.failed:
-                continue
-            if tid in task.needs:
-                state.failed.add(other_tid)
-                state.pending.discard(other_tid)
-                newly_failed.append(other_tid)
-                queue.append(other_tid)
-    return newly_failed
-
-
-def _build_context(state: SessionState, task: SessionTask) -> str:
-    """Build context string from upstream results for a join task."""
-    if not task.needs:
-        return ""
-    parts = []
-    for need_id in task.needs:
-        if need_id in state.results:
-            parts.append(f"## Input from task '{need_id}'\n{state.results[need_id]}")
-    return "\n\n".join(parts)
-
-
-def _is_graph_task_terminal(t: dict) -> bool:
-    """True if the graph task dict has ``terminal: true``."""
-    return bool(t.get("terminal", False))
-
-
-def _find_terminal_tasks(state: SessionState) -> list[str]:
-    """Find terminal tasks in a session."""
-    return [tid for tid, task in state.graph.items() if task.terminal]
-
-
-# --- Discovery registry ---
-
-
-class DiscoveryRegistry:
-    """In-memory registry of discovered A2A agent cards."""
-
-    def __init__(self) -> None:
-        self._cards: dict[str, dict] = {}  # agent_id → card dict
-
-    def update(self, agent_id: str, card: dict) -> None:
-        self._cards[agent_id] = card
-        log.info("Registry: updated card for %s", agent_id)
-
-    def remove(self, agent_id: str) -> None:
-        if agent_id in self._cards:
-            del self._cards[agent_id]
-            log.info("Registry: removed card for %s", agent_id)
-
-    def get(self, agent_id: str) -> dict | None:
-        return self._cards.get(agent_id)
-
-    def list_agents(self) -> list[str]:
-        return [aid for aid, card in self._cards.items() if not is_app_card(card)]
-
-    def list_apps(self) -> list[str]:
-        return [aid for aid, card in self._cards.items() if is_app_card(card)]
 
 
 # --- Coordinator ---
@@ -340,7 +225,7 @@ class Coordinator:
             description = safe_format(t.get("description", ""), variables)
             needs = t.get("needs", [])
             agent = t.get("agent", "")
-            terminal = _is_graph_task_terminal(t)
+            terminal = is_graph_task_terminal(t)
             target = TaskTarget(agent=agent)
 
             state.graph[tid] = SessionTask(
@@ -375,7 +260,7 @@ class Coordinator:
 
     async def dispatch_ready(self, state: SessionState) -> None:
         """Dispatch all ready tasks in a session."""
-        ready = _compute_ready(state)
+        ready = compute_ready(state)
         for tid in ready:
             await self._dispatch_task(state, tid)
 
@@ -387,7 +272,7 @@ class Coordinator:
         parts: list[str] = []
         if state.conversation_history:
             parts.append(state.conversation_history)
-        context = _build_context(state, task)
+        context = build_context(state, task)
         if context:
             parts.append(context)
         parts.append(task.description)
@@ -560,7 +445,7 @@ class Coordinator:
         )
 
         # Propagate failure to downstream tasks
-        newly_failed = _propagate_failure(state, node_id)
+        newly_failed = propagate_failure(state, node_id)
         for ftid in newly_failed:
             cascade_error = f"Skipped: upstream task '{node_id}' failed"
             await self._adb.update_task(
@@ -594,7 +479,7 @@ class Coordinator:
             return  # already finalized (race with timeout/failure)
 
         # Find terminal task results
-        terminal_tids = _find_terminal_tasks(state)
+        terminal_tids = find_terminal_tasks(state)
         result_parts = []
         for tid in terminal_tids:
             if tid in state.results:

@@ -785,7 +785,10 @@ class TestRuntimeApiIntegration:
             patch(
                 "skitter.runtime_api.generate_graph", new_callable=AsyncMock
             ) as mock_gen,
-            patch("skitter.coordinator.aiomqtt.Client", return_value=mock_app_client),
+            patch(
+                "skitter.coordinator.service.aiomqtt.Client",
+                return_value=mock_app_client,
+            ),
         ):
             mock_gen.return_value = graph
             await sup._handle_runtime_query(req, "reply/q", "corr-q1")

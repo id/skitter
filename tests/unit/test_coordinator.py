@@ -818,8 +818,8 @@ class TestDependencyResolution:
         )
         assert state.variables == {}
 
-    def test_compute_ready_no_needs(self):
-        from skitter.coordinator import SessionState, SessionTask as ST, _compute_ready
+    def testcompute_ready_no_needs(self):
+        from skitter.coordinator import SessionState, SessionTask as ST, compute_ready
 
         state = SessionState(
             session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
@@ -827,11 +827,11 @@ class TestDependencyResolution:
         state.graph["a"] = ST(agent="r", description="d", needs=[])
         state.graph["b"] = ST(agent="r", description="d", needs=["a"])
         state.pending = {"a", "b"}
-        ready = _compute_ready(state)
+        ready = compute_ready(state)
         assert ready == ["a"]
 
-    def test_compute_ready_after_completion(self):
-        from skitter.coordinator import SessionState, SessionTask as ST, _compute_ready
+    def testcompute_ready_after_completion(self):
+        from skitter.coordinator import SessionState, SessionTask as ST, compute_ready
 
         state = SessionState(
             session_id="s1", request_task_id="rtid-s1", app_version_id="v1"
@@ -840,14 +840,14 @@ class TestDependencyResolution:
         state.graph["b"] = ST(agent="r", description="d", needs=["a"])
         state.results["a"] = "done"
         state.pending = {"b"}
-        ready = _compute_ready(state)
+        ready = compute_ready(state)
         assert ready == ["b"]
 
-    def test_propagate_failure(self):
+    def testpropagate_failure(self):
         from skitter.coordinator import (
             SessionState,
             SessionTask as ST,
-            _propagate_failure,
+            propagate_failure,
         )
 
         state = SessionState(
@@ -858,17 +858,17 @@ class TestDependencyResolution:
         state.graph["c"] = ST(agent="r", description="d", needs=["b"])
         state.failed.add("a")
         state.pending = {"b", "c"}
-        newly_failed = _propagate_failure(state, "a")
+        newly_failed = propagate_failure(state, "a")
         assert "b" in newly_failed
         assert "c" in newly_failed
         assert "b" in state.failed
         assert "c" in state.failed
 
-    def test_find_terminal_tasks(self):
+    def testfind_terminal_tasks(self):
         from skitter.coordinator import (
             SessionState,
             SessionTask as ST,
-            _find_terminal_tasks,
+            find_terminal_tasks,
         )
 
         state = SessionState(
@@ -877,14 +877,14 @@ class TestDependencyResolution:
         state.graph["a"] = ST(agent="r", description="d")
         state.graph["b"] = ST(agent="r", description="d", terminal=True)
         state.graph["c"] = ST(agent="r", description="d", terminal=True)
-        terminals = _find_terminal_tasks(state)
+        terminals = find_terminal_tasks(state)
         assert set(terminals) == {"b", "c"}
 
-    def test_build_context(self):
+    def testbuild_context(self):
         from skitter.coordinator import (
             SessionState,
             SessionTask as ST,
-            _build_context,
+            build_context,
         )
 
         state = SessionState(
@@ -893,7 +893,7 @@ class TestDependencyResolution:
         state.results["a"] = "result A"
         state.results["b"] = "result B"
         task = ST(agent="w", description="d", needs=["a", "b"])
-        ctx = _build_context(state, task)
+        ctx = build_context(state, task)
         assert "result A" in ctx
         assert "result B" in ctx
         assert "task 'a'" in ctx
@@ -1297,7 +1297,7 @@ class TestSessionRecovery:
         state = sup._sessions["sess-1"]
         assert "step-b" in state.inflight
 
-        with patch("skitter.coordinator.asyncio.sleep", new_callable=AsyncMock):
+        with patch("skitter.coordinator.service.asyncio.sleep", new_callable=AsyncMock):
             await sup._timeout_inflight(state, "step-b", timeout=120.0)
 
         assert "step-b" in state.failed

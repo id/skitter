@@ -30,6 +30,8 @@ jobs:
 
       - name: Start compose stack
         run: |
+          mkdir -p tests/workspace tests/claude-state
+          export SKITTER_UID=$(id -u) SKITTER_GID=$(id -g)
           docker compose -f docker-compose.test.yml up -d --wait --build
 
       - name: Run tests

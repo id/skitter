@@ -4,8 +4,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Non-root user
-RUN useradd -m -s /bin/bash skitter
+# Non-root user (UID/GID configurable for bind-mount compatibility)
+ARG UID=1000
+ARG GID=1000
+RUN groupadd -g $GID skitter && useradd -m -s /bin/bash -u $UID -g $GID skitter
 USER skitter
 
 # Claude CLI (binary, no Node.js needed)

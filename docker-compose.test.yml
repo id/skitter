@@ -25,6 +25,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
+      args:
+        UID: ${SKITTER_UID:-1000}
+        GID: ${SKITTER_GID:-1000}
     depends_on:
       emqx:
         condition: service_healthy

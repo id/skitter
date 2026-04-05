@@ -32,14 +32,30 @@ class TestLLMComplete:
         mock_client.responses.create = mock_create
         return mock_client, mock_create
 
+    def _mock_openai_chat(self, content="test response"):
+        """Mock for OpenAI Chat Completions API (3rd-party compatible)."""
+
+        mock_message = MagicMock()
+        mock_message.content = content
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice] if content is not None else []
+        mock_create = AsyncMock(return_value=mock_resp)
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = mock_create
+        return mock_client, mock_create
+
     @pytest.mark.asyncio
     async def test_complete_calls_anthropic(self):
+        from skitter.config import LLMConfig
         from skitter.llm import complete
 
+        cfg = LLMConfig(model="claude-sonnet-4-6", api="anthropic", api_key="test-key")
         mock_client, mock_create = self._mock_anthropic_response("test response")
         with (
             patch("anthropic.AsyncAnthropic", return_value=mock_client),
-            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
         ):
             result = await complete("hello", model="claude-sonnet-4-6")
 
@@ -52,12 +68,14 @@ class TestLLMComplete:
 
     @pytest.mark.asyncio
     async def test_complete_with_system(self):
+        from skitter.config import LLMConfig
         from skitter.llm import complete
 
+        cfg = LLMConfig(model="claude-sonnet-4-6", api="anthropic", api_key="test-key")
         mock_client, mock_create = self._mock_anthropic_response("ok")
         with (
             patch("anthropic.AsyncAnthropic", return_value=mock_client),
-            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
         ):
             await complete("hello", system="be helpful", model="claude-sonnet-4-6")
 
@@ -72,11 +90,10 @@ class TestLLMComplete:
         from skitter.llm import complete
 
         mock_client, mock_create = self._mock_openai_responses("openai response")
-        cfg = LLMConfig(model="gpt-5.4-mini", api="openai")
+        cfg = LLMConfig(model="gpt-5.4-mini", api="openai", api_key="test-key")
         with (
             patch("openai.AsyncOpenAI", return_value=mock_client),
             patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
-            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
         ):
             result = await complete("hello", model="gpt-5.4-mini")
 
@@ -91,11 +108,10 @@ class TestLLMComplete:
         from skitter.llm import complete
 
         mock_client, mock_create = self._mock_openai_responses("ok")
-        cfg = LLMConfig(model="gpt-5.4-mini", api="openai")
+        cfg = LLMConfig(model="gpt-5.4-mini", api="openai", api_key="test-key")
         with (
             patch("openai.AsyncOpenAI", return_value=mock_client),
             patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
-            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
         ):
             await complete("hello", system="be helpful", model="gpt-5.4-mini")
 
@@ -113,11 +129,11 @@ class TestLLMComplete:
             model="custom-model",
             api="openai",
             base_url="https://api.example.com/v1",
+            api_key="test-key",
         )
         with (
             patch("openai.AsyncOpenAI", return_value=mock_client) as mock_cls,
             patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
-            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
         ):
             result = await complete("hello", model="custom-model")
 
@@ -139,13 +155,56 @@ class TestLLMComplete:
                 await complete("hello")
 
     @pytest.mark.asyncio
-    async def test_complete_none_content_raises(self):
+    async def test_complete_openai_completions_uses_chat_api(self):
+        from skitter.config import LLMConfig
         from skitter.llm import complete
 
+        mock_client, mock_create = self._mock_openai_chat("chat response")
+        cfg = LLMConfig(
+            model="moonshot-v1-8k", api="openai-completions", api_key="test-key"
+        )
+        with (
+            patch("openai.AsyncOpenAI", return_value=mock_client),
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
+        ):
+            result = await complete("hello", model="moonshot-v1-8k")
+
+        assert result == "chat response"
+        mock_create.assert_called_once()
+        messages = mock_create.call_args.kwargs["messages"]
+        assert len(messages) == 1
+        assert messages[0] == {"role": "user", "content": "hello"}
+
+    @pytest.mark.asyncio
+    async def test_complete_openai_completions_with_system(self):
+        from skitter.config import LLMConfig
+        from skitter.llm import complete
+
+        mock_client, mock_create = self._mock_openai_chat("ok")
+        cfg = LLMConfig(
+            model="moonshot-v1-8k", api="openai-completions", api_key="test-key"
+        )
+        with (
+            patch("openai.AsyncOpenAI", return_value=mock_client),
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
+        ):
+            await complete("hello", system="be helpful", model="moonshot-v1-8k")
+
+        messages = mock_create.call_args.kwargs["messages"]
+        assert len(messages) == 2
+        assert messages[0] == {"role": "system", "content": "be helpful"}
+        assert messages[1] == {"role": "user", "content": "hello"}
+
+    @pytest.mark.asyncio
+    async def test_complete_none_content_raises(self):
+        from skitter.config import LLMConfig
+        from skitter.llm import complete
+
+        cfg = LLMConfig(model="claude-sonnet-4-6", api="anthropic", api_key="test-key")
         mock_client, _ = self._mock_anthropic_response(None)
         with (
             patch("anthropic.AsyncAnthropic", return_value=mock_client),
-            patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "test-key"}),
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
         ):
             with pytest.raises(ValueError, match="no text content"):
                 await complete("hello", model="claude-sonnet-4-6")

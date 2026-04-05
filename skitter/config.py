@@ -44,6 +44,12 @@ def skills_dir() -> Path:
     return skitter_home() / "skills"
 
 
+def write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
+    """Write a .env file (KEY=value per line)."""
+    lines = [f"{k}={v}" for k, v in env_vars.items() if v]
+    env_path.write_text("\n".join(lines) + "\n" if lines else "")
+
+
 # --- Agent definition ---
 
 
@@ -87,8 +93,9 @@ class DBConfig:
 @dataclass
 class LLMConfig:
     model: str = ""
-    api: str = "anthropic"  # anthropic or openai
+    api: str = "anthropic"  # anthropic, openai, or openai-completions
     base_url: str = ""
+    api_key: str = ""
 
 
 # --- Unified config ---
@@ -145,38 +152,6 @@ class SkitterConfig:
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     org: str = "skitter"
     unit: str = "default"
-
-    def to_env(self, *, broker_hostname: str = "") -> dict[str, str]:
-        """Build environment dict for container processes.
-
-        When *broker_hostname* is provided (e.g. a Docker container name),
-        it replaces the hostname in the broker URL. Used by services.py to
-        point containers at the broker's internal Docker hostname.
-        """
-        env: dict[str, str] = {}
-
-        if broker_hostname:
-            env["MQTT_BROKER_URL"] = f"mqtt://{broker_hostname}:1883"
-        else:
-            env["MQTT_BROKER_URL"] = self.broker.url
-        if self.broker.username:
-            env["MQTT_USERNAME"] = self.broker.username
-        if self.broker.password:
-            env["MQTT_PASSWORD"] = self.broker.password
-        if self.broker.ca_cert:
-            env["MQTT_CA_CERT"] = self.broker.ca_cert
-
-        if self.llm.model:
-            env["SKITTER_LLM_MODEL"] = self.llm.model
-        if self.llm.api != "anthropic":
-            env["SKITTER_LLM_API"] = self.llm.api
-        if self.llm.base_url:
-            env["SKITTER_LLM_BASE_URL"] = self.llm.base_url
-
-        env["SKITTER_A2A_ORG"] = self.org
-        env["SKITTER_A2A_UNIT"] = self.unit
-
-        return env
 
 
 # --- Config loading ---
@@ -245,20 +220,37 @@ def load_raw_config(*, strict: bool = False) -> dict:
     return data
 
 
-def load_config() -> SkitterConfig:
-    """Load unified config: env vars override ~/.skitter/config.yaml values."""
+def _env_or(key: str, fallback: str, *, file_only: bool) -> str:
+    if file_only:
+        return fallback
+    return os.environ.get(key, "") or fallback
+
+
+def load_config(*, file_only: bool = False) -> SkitterConfig:
+    """Load unified config from ~/.skitter/config.yaml.
+
+    By default, env vars override config file values. Pass ``file_only=True``
+    to ignore env vars (used when generating container env, so the host shell
+    doesn't leak into container config).
+    """
     data = load_raw_config()
 
-    # LLM: env vars override config file
     llm_data = data.get("llm", {}) or {}
     llm = LLMConfig(
-        model=os.environ.get("SKITTER_LLM_MODEL", "") or llm_data.get("model", ""),
-        api=os.environ.get("SKITTER_LLM_API", "") or llm_data.get("api", "anthropic"),
-        base_url=os.environ.get("SKITTER_LLM_BASE_URL", "")
-        or llm_data.get("base_url", ""),
+        model=_env_or(
+            "SKITTER_LLM_MODEL", llm_data.get("model", ""), file_only=file_only
+        ),
+        api=_env_or(
+            "SKITTER_LLM_API", llm_data.get("api", "anthropic"), file_only=file_only
+        ),
+        base_url=_env_or(
+            "SKITTER_LLM_BASE_URL", llm_data.get("base_url", ""), file_only=file_only
+        ),
+        api_key=_env_or(
+            "SKITTER_LLM_API_KEY", llm_data.get("api_key", ""), file_only=file_only
+        ),
     )
 
-    # DB
     db_data = data.get("db", {}) or {}
     db = DBConfig(
         backend=db_data.get("backend", "sqlite"),
@@ -266,18 +258,26 @@ def load_config() -> SkitterConfig:
         postgres_dsn=db_data.get("postgres_dsn", ""),
     )
 
-    # Broker: env vars override config file
     broker_data = data.get("broker", {}) or {}
     broker = BrokerConfig(
         tier=broker_data.get("tier", "docker"),
-        url=os.environ.get("MQTT_BROKER_URL", "")
-        or broker_data.get("url", "mqtt://localhost:1883"),
-        username=os.environ.get("MQTT_USERNAME", "") or broker_data.get("username", ""),
-        password=os.environ.get("MQTT_PASSWORD", "") or broker_data.get("password", ""),
-        ca_cert=os.environ.get("MQTT_CA_CERT", "") or broker_data.get("ca_cert", ""),
+        url=_env_or(
+            "MQTT_BROKER_URL",
+            broker_data.get("url", "mqtt://localhost:1883"),
+            file_only=file_only,
+        ),
+        username=_env_or(
+            "MQTT_USERNAME", broker_data.get("username", ""), file_only=file_only
+        ),
+        password=_env_or(
+            "MQTT_PASSWORD", broker_data.get("password", ""), file_only=file_only
+        ),
+        ca_cert=_env_or(
+            "MQTT_CA_CERT", broker_data.get("ca_cert", ""), file_only=file_only
+        ),
     )
 
-    org = os.environ.get("SKITTER_A2A_ORG", "") or data.get("org", "skitter")
-    unit = os.environ.get("SKITTER_A2A_UNIT", "") or data.get("unit", "default")
+    org = _env_or("SKITTER_A2A_ORG", data.get("org", "skitter"), file_only=file_only)
+    unit = _env_or("SKITTER_A2A_UNIT", data.get("unit", "default"), file_only=file_only)
 
     return SkitterConfig(llm=llm, db=db, broker=broker, org=org, unit=unit)

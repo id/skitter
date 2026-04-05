@@ -27,6 +27,18 @@ RUNTIME_EXT: dict[str, str] = {
     "codex": ".toml",
 }
 
+# Auth env var per runtime, in priority order
+_RUNTIME_AUTH_VARS: dict[str, list[str]] = {
+    "claude": ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+    "codex": ["OPENAI_API_KEY"],
+}
+
+_AUTH_HINTS: dict[str, str] = {
+    "CLAUDE_CODE_OAUTH_TOKEN": "generate via: claude setup-token",
+    "ANTHROPIC_API_KEY": "fallback if no OAuth token",
+    "OPENAI_API_KEY": "",
+}
+
 
 MD_FORMAT = """\
 File format: YAML frontmatter between --- delimiters, followed by system instructions.
@@ -64,6 +76,41 @@ SUFFIX = (
     "\n\nOutput ONLY the raw file contents. "
     "No markdown fences, no commentary, no questions, no explanation before or after."
 )
+
+
+_RUNTIME_AUTH_FILES: dict[str, Path] = {
+    "codex": Path.home() / ".codex" / "auth.json",
+}
+
+
+def _prompt_auth(runtime: str) -> dict[str, str]:
+    """Prompt for runtime auth credentials. Returns {VAR: value} for non-empty entries.
+
+    Skips prompting if file-based auth (e.g. codex auth.json) already exists.
+    """
+    auth_file = _RUNTIME_AUTH_FILES.get(runtime)
+    if auth_file and auth_file.is_file():
+        print(f"\nUsing existing {auth_file} for {runtime} auth.", file=sys.stderr)
+        return {}
+
+    candidates = _RUNTIME_AUTH_VARS.get(runtime, [])
+    if not candidates:
+        return {}
+
+    print(f"\n--- {runtime} auth ---\n", file=sys.stderr)
+    result: dict[str, str] = {}
+    for var in candidates:
+        default = os.environ.get(var, "")
+        hint = _AUTH_HINTS.get(var, "")
+        label = f"{var}"
+        if hint:
+            label += f" ({hint})"
+        prompt_str = f"{label} [{default[:8]}...]" if default else label
+        value = input(f"{prompt_str}: ").strip() or default
+        if value:
+            result[var] = value
+            break  # use the first available credential
+    return result
 
 
 def _build_agent_prompt(
@@ -338,6 +385,15 @@ def run(argv: list[str] | None = None) -> None:
         skill_dir.mkdir(parents=True, exist_ok=True)
         skill_file.write_text(content + "\n")
         print(f"Created {skill_file}", file=sys.stderr)
+
+    # Prompt for runtime auth and write .env
+    env_file = agents_dir / f"{args.name}.env"
+    auth_vars = _prompt_auth(args.runtime)
+    if auth_vars:
+        from skitter.config import write_env_file
+
+        write_env_file(env_file, auth_vars)
+        print(f"Created {env_file}", file=sys.stderr)
 
     print(file=sys.stderr)
     print(agent_content, file=sys.stderr)

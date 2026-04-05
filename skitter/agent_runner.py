@@ -47,9 +47,21 @@ from skitter.mqtt import (
 from skitter.runtime_cli import extract_text, extract_session_id
 
 
-def agent_env() -> dict[str, str]:
-    """Build env for agent processes — strip CLAUDECODE, prefer OAuth over API key."""
+def agent_env(agent_path: Path | None = None) -> dict[str, str]:
+    """Build env for agent processes.
+
+    Loads ``<agent>.env`` from the agent's directory if present,
+    strips CLAUDECODE, and prefers OAuth over API key.
+    """
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    if agent_path is not None:
+        env_file = agent_path.with_suffix(".env")
+        try:
+            from dotenv import dotenv_values
+
+            env.update(dotenv_values(env_file))
+        except OSError:
+            pass
     if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
         env.pop("ANTHROPIC_API_KEY", None)
     return env
@@ -66,7 +78,7 @@ _SESSION_MAP_FILE = "context_sessions.json"
 _SANDBOX_SETTINGS = json.dumps(
     {"sandbox": {"enabled": True, "filesystem": {"allowWrite": ["/tmp"]}}}
 )
-_PERMISSION_MODE = os.environ.get("SKITTER_AGENT_PERMISSION_MODE", "auto")
+_PERMISSION_MODE = os.environ.get("SKITTER_AGENT_PERMISSION_MODE", "bypassPermissions")
 
 
 def _build_cli_cmd(
@@ -462,9 +474,10 @@ def scan_agents() -> list[tuple[str, str, str]]:
     return results
 
 
-def load_agent(path_str: str) -> AgentDef:
+def load_agent(path_str: str) -> tuple[AgentDef, Path]:
     """Load an agent definition from a file path or agent name.
 
+    Returns ``(AgentDef, resolved_path)``.
     Accepts either a path to a .md/.toml file, or a bare agent name which is
     resolved from ``SKITTER_HOME/agents/`` (tries ``<name>.md`` then ``<name>.toml``).
     """
@@ -493,7 +506,7 @@ def load_agent(path_str: str) -> AgentDef:
 
     if agent.skill_refs:
         agent.skills = _load_skills(agent.skill_refs)
-    return agent
+    return agent, path
 
 
 def _load_md_agent(path) -> AgentDef:
@@ -540,17 +553,22 @@ def _load_toml_agent(path) -> AgentDef:
 
 async def run(agent_name: str) -> None:
     """Main loop: load agent from file and start."""
-    agent = load_agent(agent_name)
+    agent, agent_path = load_agent(agent_name)
     # Runtime working directory: writable location for subprocess cwd and skill
     # links.  Kept under skitter_home()/run/ so it works on both host and inside
     # containers (where the agents/ mount is read-only).
     from skitter.config import skitter_home
 
     resource_dir = skitter_home() / "run" / agent.id
-    await run_with_def(agent, resource_dir=resource_dir)
+    await run_with_def(agent, resource_dir=resource_dir, agent_path=agent_path)
 
 
-async def run_with_def(agent: AgentDef, *, resource_dir: Path | None = None) -> None:
+async def run_with_def(
+    agent: AgentDef,
+    *,
+    resource_dir: Path | None = None,
+    agent_path: Path | None = None,
+) -> None:
     """Main loop from an AgentDef (no file loading)."""
     log.info("Starting agent runner: %s (runtime=%s)", agent.id, agent.runtime)
 
@@ -561,7 +579,7 @@ async def run_with_def(agent: AgentDef, *, resource_dir: Path | None = None) -> 
             _setup_skill_links(agent, resource_dir)
             log.info("Skills linked in %s", resource_dir)
 
-    env = agent_env()
+    env = agent_env(agent_path)
     card = build_card(agent)
     card_json = json.dumps(card)
     discovery_topic = topic_discovery(agent.id)

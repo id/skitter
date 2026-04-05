@@ -138,13 +138,13 @@ llm:
 | `MQTT_CA_CERT` | (empty) | Path to custom CA certificate for `mqtts://` |
 | `SKITTER_A2A_ORG` | `skitter` | A2A topic org segment |
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
-| `SKITTER_LLM_MODEL` | (empty) | LLM model for graph generation (`provider/model`, e.g. `anthropic/claude-haiku-4-5`) |
-| `SKITTER_LLM_API_KEY` | (empty) | API key for coordinator LLM (Anthropic or OpenAI) |
-| `SKITTER_LLM_API` | `anthropic` | Coordinator LLM provider (`anthropic` or `openai`) |
-| `SKITTER_LLM_BASE_URL` | (empty) | Custom endpoint URL for coordinator LLM |
-| `ANTHROPIC_API_KEY` | (empty) | Anthropic API key (for Claude Code agent-runners; separate from coordinator) |
-| `OPENAI_API_KEY` | (empty) | OpenAI API key (for Codex agent-runners; separate from coordinator) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | Claude auth for agent-runners |
+| `SKITTER_LLM_MODEL` | (empty) | Coordinator LLM model (overrides `llm.model` in config) |
+| `SKITTER_LLM_API_KEY` | (empty) | Coordinator LLM API key (overrides `llm.api_key` in config) |
+| `SKITTER_LLM_API` | `anthropic` | Coordinator LLM provider: `anthropic`, `openai`, or `openai-completions` (overrides `llm.api` in config) |
+| `SKITTER_LLM_BASE_URL` | (empty) | Custom endpoint URL for coordinator LLM (overrides `llm.base_url` in config) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | OAuth token for Claude Code agents (preferred; generate via `claude setup-token`). Stored per-agent in `~/.skitter/agents/<name>.env` |
+| `ANTHROPIC_API_KEY` | (empty) | Anthropic API key for Claude Code agents (fallback). Stored per-agent in `~/.skitter/agents/<name>.env` |
+| `OPENAI_API_KEY` | (empty) | OpenAI API key for Codex agents. Stored per-agent in `~/.skitter/agents/<name>.env` |
 | `SKITTER_REPLY_FIRST_TIMEOUT` | `15.0` | Seconds to wait for first reply before retry |
 | `SKITTER_STREAM_IDLE_TIMEOUT` | `30.0` | Seconds between stream messages before timeout |
 | `SKITTER_MAX_ATTEMPTS` | `3` | Max send attempts (1 initial + retries) |

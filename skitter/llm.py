@@ -5,7 +5,6 @@ Optional ``llm.base_url`` overrides the endpoint for either provider.
 """
 
 import logging
-import os
 
 from skitter.config import LLMConfig, load_config
 
@@ -13,8 +12,6 @@ log = logging.getLogger("skitter.llm")
 
 # env var name → cached SDK client
 _client_cache: dict[str, object] = {}
-
-_API_KEY_ENV = "SKITTER_LLM_API_KEY"
 
 
 def _resolve_model(cfg: LLMConfig) -> str:
@@ -26,11 +23,12 @@ def _resolve_model(cfg: LLMConfig) -> str:
     return cfg.model
 
 
-def _api_key() -> str:
-    key = os.environ.get(_API_KEY_ENV, "")
+def _api_key(cfg: LLMConfig) -> str:
+    key = cfg.api_key
     if not key:
         raise ValueError(
-            f"API key not set. Set the {_API_KEY_ENV} environment variable."
+            "API key not set. Set llm.api_key in ~/.skitter/config.yaml "
+            "or the SKITTER_LLM_API_KEY environment variable."
         )
     return key
 
@@ -41,7 +39,7 @@ def _anthropic_client(cfg: LLMConfig):
     cache_key = f"anthropic:{cfg.base_url}"
     if cache_key in _client_cache:
         return _client_cache[cache_key]
-    kwargs: dict = {"api_key": _api_key()}
+    kwargs: dict = {"api_key": _api_key(cfg)}
     if cfg.base_url:
         kwargs["base_url"] = cfg.base_url
     client = AsyncAnthropic(**kwargs)
@@ -55,7 +53,7 @@ def _openai_client(cfg: LLMConfig):
     cache_key = f"openai:{cfg.base_url}"
     if cache_key in _client_cache:
         return _client_cache[cache_key]
-    kwargs: dict = {"api_key": _api_key()}
+    kwargs: dict = {"api_key": _api_key(cfg)}
     if cfg.base_url:
         kwargs["base_url"] = cfg.base_url
     client = AsyncOpenAI(**kwargs)
@@ -73,18 +71,7 @@ async def check(cfg: LLMConfig | None = None) -> None:
     model = _resolve_model(cfg)
     log.info("Checking LLM connectivity (api=%s, model=%s) ...", cfg.api, model)
 
-    if cfg.api == "openai":
-        client = _openai_client(cfg)
-        response = await client.responses.create(model=model, input="ping")
-        if not response.output_text:
-            raise ValueError("LLM returned no content")
-    else:
-        client = _anthropic_client(cfg)
-        response = await client.messages.create(
-            model=model, max_tokens=5, messages=[{"role": "user", "content": "ping"}]
-        )
-        if not response.content:
-            raise ValueError("LLM returned no content")
+    await complete("ping", model=model, cfg=cfg)
 
     log.info("LLM OK")
 
@@ -94,9 +81,11 @@ async def complete(
     *,
     system: str = "",
     model: str = "",
+    cfg: LLMConfig | None = None,
 ) -> str:
     """Call LLM API, return text response."""
-    cfg = load_config().llm
+    if cfg is None:
+        cfg = load_config().llm
     model = model or _resolve_model(cfg)
 
     log.debug(
@@ -105,6 +94,10 @@ async def complete(
     try:
         if cfg.api == "openai":
             return await _complete_openai(prompt, system=system, model=model, cfg=cfg)
+        if cfg.api == "openai-completions":
+            return await _complete_openai_chat(
+                prompt, system=system, model=model, cfg=cfg
+            )
         return await _complete_anthropic(prompt, system=system, model=model, cfg=cfg)
     except Exception:
         log.exception("LLM call failed (api=%s, model=%s)", cfg.api, model)
@@ -139,6 +132,23 @@ async def _complete_openai(
         kwargs["instructions"] = system
     response = await client.responses.create(**kwargs)
     text = response.output_text
+    if not text:
+        raise ValueError("LLM returned no text content")
+    log.debug("LLM response (%d chars)", len(text))
+    return text
+
+
+async def _complete_openai_chat(
+    prompt: str, *, system: str, model: str, cfg: LLMConfig
+) -> str:
+    """OpenAI Chat Completions API; works with any OpenAI-compatible provider."""
+    client = _openai_client(cfg)
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    response = await client.chat.completions.create(model=model, messages=messages)
+    text = response.choices[0].message.content if response.choices else ""
     if not text:
         raise ValueError("LLM returned no text content")
     log.debug("LLM response (%d chars)", len(text))

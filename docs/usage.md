@@ -44,7 +44,7 @@ You can override the home directory with `SKITTER_HOME` or `uv run skitter --ski
 
 Composed apps use the coordinator to generate and run a dependency graph across multiple agents.
 
-Before you create an app, get an API key for a supported LLM provider, export it as `SKITTER_LLM_API_KEY`, and configure the coordinator LLM in `uv run skitter setup`.
+Before you create an app, get an API key for a supported LLM provider and configure the coordinator LLM in `uv run skitter setup` (the wizard stores the key in `~/.skitter/config.yaml`).
 
 ```bash
 uv run skitter create-agent random-x "returns a random number as JSON"
@@ -77,7 +77,9 @@ uv run skitter cancel-session <session-id>
 Coordinator notes:
 
 - Standalone agents do not need coordinator LLM configuration
-- Composed apps do need coordinator LLM configuration and a provider API key exposed as `SKITTER_LLM_API_KEY` for graph generation
+- Composed apps need coordinator LLM configuration (model, API, key) for graph generation
+- The API key can be stored in `~/.skitter/config.yaml` (via `skitter setup`) or set as `SKITTER_LLM_API_KEY` env var
+- Supported LLM APIs: `anthropic`, `openai` (Responses API), `openai-completions` (Chat Completions API, for 3rd-party OpenAI-compatible providers)
 - Runtime auth for Claude Code or Codex is separate from coordinator LLM config
 
 ## Multi-turn Conversations
@@ -104,9 +106,10 @@ Important locations:
 Useful environment variables:
 
 - `SKITTER_HOME`: move config, agents, and the local database
-- `SKITTER_LLM_API_KEY`: coordinator LLM API key
-- `SKITTER_LLM_API`: coordinator provider, such as `anthropic` or `openai`
-- `SKITTER_LLM_BASE_URL`: custom coordinator endpoint
+- `SKITTER_LLM_API_KEY`: coordinator LLM API key (overrides `llm.api_key` in config)
+- `SKITTER_LLM_MODEL`: coordinator model (overrides `llm.model` in config)
+- `SKITTER_LLM_API`: coordinator provider: `anthropic`, `openai`, or `openai-completions` (overrides `llm.api` in config)
+- `SKITTER_LLM_BASE_URL`: custom coordinator endpoint (overrides `llm.base_url` in config)
 - `MQTT_BROKER_URL`: override the broker URL
 
 For the full configuration reference, see [CONTRIBUTING.md](../CONTRIBUTING.md).
@@ -115,18 +118,40 @@ For the full configuration reference, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 The `ghcr.io/id/skitter/agent` image packages both Claude Code and Codex CLIs. The container only needs network access to an MQTT broker plus the right auth material.
 
-Minimal Claude agent example:
+### Agent auth
+
+`skitter create-agent` prompts for runtime credentials and stores them in a per-agent `.env` file alongside the definition:
+
+```
+~/.skitter/agents/my-agent.md
+~/.skitter/agents/my-agent.env      # CLAUDE_CODE_OAUTH_TOKEN=...
+```
+
+`skitter up` passes each agent's `.env` to its container via `env_file:`. No secrets appear in the generated `docker-compose.yml`.
+
+Auth credentials by runtime:
+
+- **Claude Code**: `CLAUDE_CODE_OAUTH_TOKEN` (preferred; generate via `claude setup-token`) or `ANTHROPIC_API_KEY` (fallback)
+- **Codex**: `~/.codex/auth.json` (preferred; bind-mounted into containers when present) or `OPENAI_API_KEY` in `.env` (fallback)
+
+### Coordinator auth
+
+Coordinator secrets (`SKITTER_LLM_API_KEY`, broker credentials) are written to `~/.skitter/coordinator.env` at startup and referenced via `env_file:` in the compose file.
+
+### Docker agent examples
+
+Minimal Claude agent:
 
 ```bash
 docker run --rm \
   -e MQTT_BROKER_URL=mqtt://broker.emqx.io:1883 \
-  -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
   -e SKITTER_AGENT_PERMISSION_MODE=bypassPermissions \
   -v ~/.skitter:/home/skitter/.skitter \
+  --env-file ~/.skitter/agents/my-agent.env \
   ghcr.io/id/skitter/agent my-agent
 ```
 
-Minimal Codex agent example:
+Minimal Codex agent (with `auth.json` for OAuth):
 
 ```bash
 docker run --rm \
@@ -137,7 +162,18 @@ docker run --rm \
   ghcr.io/id/skitter/agent my-codex-agent
 ```
 
-Notes:
+Or with API key via `.env` file (when `auth.json` is not available):
+
+```bash
+docker run --rm \
+  -e MQTT_BROKER_URL=mqtt://broker.emqx.io:1883 \
+  -e SKITTER_AGENT_PERMISSION_MODE=bypassPermissions \
+  -v ~/.skitter:/home/skitter/.skitter \
+  --env-file ~/.skitter/agents/my-codex-agent.env \
+  ghcr.io/id/skitter/agent my-codex-agent
+```
+
+### Notes
 
 - The agent name resolves against `SKITTER_HOME/agents/`
 - Without bind mounts, agent state and generated files are lost when the container exits

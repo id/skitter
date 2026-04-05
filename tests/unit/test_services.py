@@ -14,34 +14,50 @@ class TestServices:
         from skitter.config import SkitterConfig, BrokerConfig, LLMConfig
 
         cfg = SkitterConfig(
-            llm=LLMConfig(model="claude-sonnet-4-6", api="anthropic"),
+            llm=LLMConfig(
+                model="claude-sonnet-4-6", api="anthropic", api_key="sk-test"
+            ),
             broker=BrokerConfig(tier="docker"),
             org="myorg",
             unit="myunit",
         )
-        with patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "sk-test"}):
-            from skitter.services import _resolve_env
+        from skitter.services import _resolve_env
 
-            env = _resolve_env(cfg)
+        env = _resolve_env(cfg)
         assert env["MQTT_BROKER_URL"] == "mqtt://skitter-emqx:1883"
-        assert env["SKITTER_LLM_API_KEY"] == "sk-test"
+        assert "SKITTER_LLM_API_KEY" not in env  # secrets go to coordinator.env
         assert env["SKITTER_LLM_MODEL"] == "claude-sonnet-4-6"
         assert env["SKITTER_A2A_ORG"] == "myorg"
         assert env["SKITTER_A2A_UNIT"] == "myunit"
+
+    def test_write_coordinator_env(self, tmp_path):
+        from skitter.config import SkitterConfig, BrokerConfig, LLMConfig
+
+        cfg = SkitterConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            broker=BrokerConfig(username="user", password="pass"),
+        )
+        from skitter.services import _write_coordinator_env
+
+        with patch("skitter.services.skitter_home", return_value=tmp_path):
+            env_file = _write_coordinator_env(cfg)
+        content = env_file.read_text()
+        assert "SKITTER_LLM_API_KEY=sk-test" in content
+        assert "MQTT_USERNAME=user" in content
+        assert "MQTT_PASSWORD=pass" in content
 
     def test_resolve_env_external_tier(self):
         from skitter.config import SkitterConfig, BrokerConfig, LLMConfig
 
         cfg = SkitterConfig(
-            llm=LLMConfig(model="gpt-5.4-mini", api="openai"),
+            llm=LLMConfig(model="gpt-5.4-mini", api="openai", api_key="sk-openai"),
             broker=BrokerConfig(tier="serverless", url="mqtts://broker.emqx.io:8883"),
             org="org",
             unit="unit",
         )
-        with patch.dict("os.environ", {"SKITTER_LLM_API_KEY": "sk-openai"}):
-            from skitter.services import _resolve_env
+        from skitter.services import _resolve_env
 
-            env = _resolve_env(cfg)
+        env = _resolve_env(cfg)
         assert env["MQTT_BROKER_URL"] == "mqtts://broker.emqx.io:8883"
 
     def test_generate_compose_includes_broker(self):

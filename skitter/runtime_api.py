@@ -361,9 +361,9 @@ async def _handle_create_app(
         graph = await generate_graph(instructions, cards)
     except GraphValidationError as e:
         return ErrorResult(f"Graph generation failed: {e}")
-    except Exception:
+    except Exception as e:
         log.exception("Unexpected error generating graph")
-        return ErrorResult("Graph generation failed unexpectedly")
+        return ErrorResult(f"Graph generation failed: {e}")
 
     description = spec.get("description", "")
     app, version, card_json = await create_app(

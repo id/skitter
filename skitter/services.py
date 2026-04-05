@@ -5,7 +5,6 @@ config and discovered agents, then delegates to ``docker compose``.
 """
 
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -29,9 +28,11 @@ COORDINATOR_CONTAINER = "skitter-coordinator"
 
 _CA_CERT_CONTAINER_PATH = "/etc/skitter/ca.crt"
 
-_RUNTIME_AUTH_ENVS: dict[str, list[str]] = {
-    "claude": ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-    "codex": ["OPENAI_API_KEY"],
+_RUNTIME_AUTH_FILES: dict[str, tuple[str, str]] = {
+    "codex": (
+        str(Path.home() / ".codex" / "auth.json"),
+        "/home/skitter/.codex/auth.json",
+    ),
 }
 
 _RUNTIME_SESSION_PATHS: dict[str, str] = {
@@ -120,13 +121,7 @@ def _discover_agents() -> list[tuple[str, str, str]]:
 
 def _image(name: str) -> str:
     """Container image for a skitter service."""
-    try:
-        from importlib.metadata import version
-
-        tag = version("skitter")
-    except Exception:
-        tag = "latest"
-    return f"ghcr.io/id/skitter/{name}:{tag}"
+    return f"ghcr.io/id/skitter/{name}:latest"
 
 
 # --- Compose file generation ---
@@ -137,20 +132,47 @@ def _compose_file() -> Path:
 
 
 def _resolve_env(cfg: SkitterConfig) -> dict[str, str]:
-    """Build environment dict for containers from resolved config."""
+    """Build non-secret environment dict for the coordinator container."""
     broker_host = BROKER_CONTAINER if cfg.broker.tier == "docker" else ""
-    env = cfg.to_env(broker_hostname=broker_host)
+    env: dict[str, str] = {}
+
+    if broker_host:
+        env["MQTT_BROKER_URL"] = f"mqtt://{broker_host}:1883"
+    else:
+        env["MQTT_BROKER_URL"] = cfg.broker.url
 
     # CA cert: remap host path to container path
     if cfg.broker.ca_cert:
         env["MQTT_CA_CERT"] = _CA_CERT_CONTAINER_PATH
 
-    # LLM API key from host env (not in config file)
-    api_key = os.environ.get("SKITTER_LLM_API_KEY", "")
-    if api_key:
-        env["SKITTER_LLM_API_KEY"] = api_key
+    if cfg.llm.model:
+        env["SKITTER_LLM_MODEL"] = cfg.llm.model
+    if cfg.llm.api != "anthropic":
+        env["SKITTER_LLM_API"] = cfg.llm.api
+    if cfg.llm.base_url:
+        env["SKITTER_LLM_BASE_URL"] = cfg.llm.base_url
+
+    env["SKITTER_A2A_ORG"] = cfg.org
+    env["SKITTER_A2A_UNIT"] = cfg.unit
 
     return env
+
+
+def _write_coordinator_env(cfg: SkitterConfig) -> Path:
+    """Write coordinator secrets to ~/.skitter/coordinator.env."""
+    from skitter.config import write_env_file
+
+    env_path = skitter_home() / "coordinator.env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    write_env_file(
+        env_path,
+        {
+            "SKITTER_LLM_API_KEY": cfg.llm.api_key,
+            "MQTT_USERNAME": cfg.broker.username,
+            "MQTT_PASSWORD": cfg.broker.password,
+        },
+    )
+    return env_path
 
 
 def _generate_compose(
@@ -163,6 +185,7 @@ def _generate_compose(
     services: dict = {}
     volumes: dict = {}
     env = _resolve_env(cfg)
+    coord_env_file = _write_coordinator_env(cfg)
 
     # Broker (Docker tier only)
     if cfg.broker.tier == "docker":
@@ -190,6 +213,7 @@ def _generate_compose(
     coord_svc: dict = {
         "image": _image("coordinator"),
         "container_name": COORDINATOR_CONTAINER,
+        "env_file": [str(coord_env_file)],
         "environment": env,
         "volumes": coord_volumes,
         "restart": "on-failure",
@@ -198,21 +222,44 @@ def _generate_compose(
         coord_svc["depends_on"] = depends
     services["coordinator"] = coord_svc
 
-    # Agents
-    agents_dir = str(skitter_home() / "agents")
+    # Agents: broker connection + identity (no LLM config)
+    agent_base_env: dict[str, str] = {"SKITTER_HOME": "/app"}
+    agent_base_env["MQTT_BROKER_URL"] = env["MQTT_BROKER_URL"]
+    if cfg.broker.username:
+        agent_base_env["MQTT_USERNAME"] = cfg.broker.username
+    if cfg.broker.password:
+        agent_base_env["MQTT_PASSWORD"] = cfg.broker.password
+    if "MQTT_CA_CERT" in env:
+        agent_base_env["MQTT_CA_CERT"] = env["MQTT_CA_CERT"]
+    agent_base_env["SKITTER_A2A_ORG"] = env["SKITTER_A2A_ORG"]
+    agent_base_env["SKITTER_A2A_UNIT"] = env["SKITTER_A2A_UNIT"]
+
+    agents_dir = skitter_home() / "agents"
     sd = skills_dir()
+    has_skills = sd.is_dir()
     for agent_id, filename, runtime in agents:
         cname = _agent_container_name(agent_id)
-        agent_env = dict(env)
-        agent_env["SKITTER_HOME"] = "/app"
+        agent_env = dict(agent_base_env)
 
-        for var in _RUNTIME_AUTH_ENVS.get(runtime, []):
-            val = os.environ.get(var, "")
-            if val:
-                agent_env[var] = val
+        # Per-agent .env file for auth (created by create-agent)
+        stem = Path(filename).stem
+        agent_env_file = agents_dir / f"{stem}.env"
+        agent_env_files: list[str] = []
+        if agent_env_file.is_file():
+            agent_env_files.append(str(agent_env_file))
+
+        # File-based auth (e.g. codex auth.json)
+        auth_file = _RUNTIME_AUTH_FILES.get(runtime)
+        auth_vol = (
+            f"{auth_file[0]}:{auth_file[1]}:ro"
+            if auth_file and Path(auth_file[0]).is_file()
+            else None
+        )
 
         agent_vols = [f"{agents_dir}:/app/agents:ro"]
-        if sd.is_dir():
+        if auth_vol:
+            agent_vols.append(auth_vol)
+        if has_skills:
             agent_vols.append(f"{sd}:/app/skills:ro")
         session_path = _RUNTIME_SESSION_PATHS.get(runtime)
         if session_path:
@@ -230,6 +277,8 @@ def _generate_compose(
             "command": [f"agents/{filename}"],
             "restart": "on-failure",
         }
+        if agent_env_files:
+            agent_svc["env_file"] = agent_env_files
         if depends:
             agent_svc["depends_on"] = depends
         services[f"agent-{agent_id}"] = agent_svc
@@ -252,6 +301,8 @@ def _compose(
     cmd = [
         "docker",
         "compose",
+        "--progress",
+        "quiet",
         "-f",
         str(_compose_file()),
         "-p",
@@ -274,7 +325,7 @@ def up(argv: list[str] | None = None) -> None:
         if idx + 1 < len(argv):
             single_agent = argv[idx + 1]
 
-    cfg = load_config()
+    cfg = load_config(file_only=True)
 
     if cfg.broker.tier != "docker":
         print(f"Verifying external broker ({cfg.broker.url})...")

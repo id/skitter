@@ -207,7 +207,7 @@ Schema: `app` → `app_version` → `session` → `task`. Plain SQL, no ORM.
 
 `skitter/graph_gen.py` generates orchestration graphs from natural language:
 
-This path is only used for composed apps. It requires coordinator LLM configuration plus `SKITTER_LLM_API_KEY`.
+This path is only used for composed apps. It requires coordinator LLM configuration (model, API, and key in `~/.skitter/config.yaml` or via env vars).
 
 1. Build prompt from agent capabilities (discovery cards) + user instructions
 2. Call LLM via `skitter/llm.py` (direct Anthropic/OpenAI SDK wrapper)

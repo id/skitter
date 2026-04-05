@@ -82,7 +82,11 @@ def _collect_llm(
         print("Standalone mode: skipping coordinator LLM configuration.")
         return None
 
-    default_models = {"anthropic": "claude-sonnet-4-6", "openai": "gpt-5.4-mini"}
+    default_models = {
+        "anthropic": "claude-sonnet-4-6",
+        "openai": "gpt-5.4-mini",
+        "openai-completions": "gpt-5.4-mini",
+    }
 
     if non_interactive:
         api = os.environ.get("SKITTER_LLM_API", "anthropic")
@@ -101,27 +105,28 @@ def _collect_llm(
         return None
 
     print("\nWhich LLM API?")
+    print("  (openai-completions: for 3rd-party OpenAI-compatible providers)")
     api = _prompt_choice(
         "API",
-        ["anthropic", "openai"],
+        ["anthropic", "openai", "openai-completions"],
         default=existing.get("api", "anthropic"),
     )
 
     model = _prompt("Model", existing.get("model", default_models.get(api, "")))
 
-    if not os.environ.get("SKITTER_LLM_API_KEY"):
-        print("\nThe env var SKITTER_LLM_API_KEY is not set.")
-        key_value = _prompt(
-            "Paste your API key (set SKITTER_LLM_API_KEY in your shell profile to persist)"
-        )
-        if key_value:
-            os.environ["SKITTER_LLM_API_KEY"] = key_value
+    api_key = os.environ.get("SKITTER_LLM_API_KEY", "") or existing.get("api_key", "")
+    if not api_key:
+        api_key = _prompt("API key")
+    if api_key:
+        os.environ["SKITTER_LLM_API_KEY"] = api_key
 
     base_url = _prompt(
         "Base URL (optional, for custom endpoints)", existing.get("base_url", "")
     )
 
     result: dict = {"model": model, "api": api}
+    if api_key:
+        result["api_key"] = api_key
     if base_url:
         result["base_url"] = base_url
     return result
@@ -243,6 +248,7 @@ def _verify(
             model=llm_cfg.get("model", ""),
             api=llm_cfg.get("api", "anthropic"),
             base_url=llm_cfg.get("base_url", ""),
+            api_key=llm_cfg.get("api_key", ""),
         )
         print(f"Validating LLM connectivity (model={cfg.model})...")
         try:

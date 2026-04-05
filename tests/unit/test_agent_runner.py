@@ -161,9 +161,8 @@ class TestAgentRunnerCli:
         assert "--agent" not in cmd
         assert "--model" in cmd
         assert "sonnet" in cmd
-        assert cmd[cmd.index("--permission-mode") + 1] == "auto"
-        assert "--settings" in cmd
-        assert "--dangerously-skip-permissions" not in cmd
+        assert "--dangerously-skip-permissions" in cmd
+        assert "--permission-mode" not in cmd
 
     def test_build_codex_cmd(self):
         from skitter.agent_runner import _build_cli_cmd
@@ -181,7 +180,7 @@ class TestAgentRunnerCli:
         assert "gpt-5-nano" in cmd
         assert "--ephemeral" not in cmd
         assert cmd[cmd.index("--color") + 1] == "never"
-        assert "--full-auto" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
 
     def test_build_codex_cmd_with_instructions(self):
         from skitter.agent_runner import _build_cli_cmd
@@ -289,7 +288,7 @@ class TestLoadAgent:
         )
         from skitter.agent_runner import load_agent
 
-        agent = load_agent(str(tmp_path / "researcher.md"))
+        agent, _ = load_agent(str(tmp_path / "researcher.md"))
         assert agent.id == "researcher"
         assert agent.name == "researcher"
         assert agent.description == "Deep research"
@@ -301,7 +300,7 @@ class TestLoadAgent:
         (tmp_path / "simple.md").write_text("---\nname: simple\n---\nBe brief.\n")
         from skitter.agent_runner import load_agent
 
-        agent = load_agent(str(tmp_path / "simple.md"))
+        agent, _ = load_agent(str(tmp_path / "simple.md"))
         assert agent.id == "simple"
         assert agent.description == ""
         assert agent.model == ""
@@ -315,7 +314,7 @@ class TestLoadAgent:
         )
         from skitter.agent_runner import load_agent
 
-        agent = load_agent(str(tmp_path / "my-copy.md"))
+        agent, _ = load_agent(str(tmp_path / "my-copy.md"))
         assert agent.id == "researcher"
         assert agent.instructions == "Do research."
 
@@ -326,7 +325,7 @@ class TestLoadAgent:
         )
         from skitter.agent_runner import load_agent
 
-        agent = load_agent(str(tmp_path / "coder.toml"))
+        agent, _ = load_agent(str(tmp_path / "coder.toml"))
         assert agent.id == "coder"
         assert agent.runtime == "codex"
         assert agent.model == "gpt-5.1-codex-mini"

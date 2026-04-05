@@ -4,7 +4,7 @@
 
 ```
 skitter/
-  coordinator.py   A2A orchestrator: session management, DAG dispatch, runtime API
+  coordinator/     A2A orchestrator: session management, DAG dispatch, runtime API
   agent_runner.py  CLI-to-A2A convenience wrapper (claude/codex)
   runtime_api.py   Runtime state queries + app creation
   graph_gen.py     LLM-based graph generation + validation
@@ -170,7 +170,7 @@ Four test tiers, from fast/free to slow/real:
 
 ```bash
 # Unit tests (no broker needed)
-uv run pytest tests/test_unit.py -q
+uv run pytest tests/unit/ -q
 
 # E2E tests (needs EMQX on localhost)
 docker compose up -d --wait

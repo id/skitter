@@ -6,7 +6,7 @@ MQTT-based personal AI assistant. Coordinator + A2A-over-MQTT agents + MQTT brok
 
 | What | Where |
 |---|---|
-| Coordinator (A2A orchestrator, session management, DAG dispatch) | `skitter/coordinator.py` |
+| Coordinator (A2A orchestrator, session management, DAG dispatch) | `skitter/coordinator/` |
 | Agent runner (CLI-to-A2A convenience wrapper) | `skitter/agent_runner.py` |
 | Discovery (build + parse A2A agent/workflow cards) | `skitter/discovery.py` |
 | LLM client (Anthropic + OpenAI SDKs) | `skitter/llm.py` |
@@ -83,7 +83,7 @@ For non-trivial requests (new features, architectural changes, multi-file refact
 1. **`/simplify`**: run the simplify skill. Fix all findings.
 2. **Staff-engineer review**: run the `staff-engineer` agent. Fix all findings.
 3. **Lint and format**: `uvx ruff format` and `uvx ruff check` on changed files.
-4. **Unit tests**: `uv run pytest tests/test_unit.py -q`.
+4. **Unit tests**: `uv run pytest tests/unit/ -q`.
 5. **E2E tests**: `docker compose up -d --wait && uv run pytest tests/test_e2e.py -v -s`. Always run E2E tests together with unit tests; do not skip them.
 5b. **Docker E2E tests** (optional; needs real auth in `.env.test`): `docker compose --env-file .env.test -f docker-compose.test.yml up -d --wait --build && uv run pytest tests/test_docker_e2e.py -v -s`. Exercises real Claude/Codex CLIs in Docker. Tests skip gracefully when auth tokens are absent.
 6. **A2A compliance**: if protocol-facing code changed, run `/a2a-compliance`.

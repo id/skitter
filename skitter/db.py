@@ -5,9 +5,10 @@ All repository methods are synchronous. The coordinator must use AsyncDB
 """
 
 import asyncio
+import json
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -48,7 +49,7 @@ class DBSession:
     request_task_id: str = ""
     context_id: str = ""
     request_json: str = ""
-    variables: str = ""
+    variables: dict = field(default_factory=dict)
     caller_reply_topic: str = ""
     caller_correlation: str = ""
     state: str = "running"
@@ -64,7 +65,7 @@ class DBTask:
     node_id: str
     agent: str
     description: str = ""
-    needs: str = ""
+    needs: list = field(default_factory=list)
     terminal: str = ""
     target_json: str = ""
     dispatch_task_id: str = ""
@@ -317,13 +318,14 @@ def _row_to_app_version(row) -> AppVersion:
 
 
 def _row_to_session(row) -> DBSession:
+    raw_vars = row["variables"] or ""
     return DBSession(
         id=row["id"],
         app_version_id=row["app_version_id"],
         request_task_id=row["request_task_id"] or "",
         context_id=row["context_id"] or "",
         request_json=row["request_json"] or "",
-        variables=row["variables"] or "",
+        variables=json.loads(raw_vars) if raw_vars else {},
         caller_reply_topic=row["caller_reply_topic"] or "",
         caller_correlation=row["caller_correlation"] or "",
         state=row["state"] or "running",
@@ -334,13 +336,14 @@ def _row_to_session(row) -> DBSession:
 
 
 def _row_to_task(row) -> DBTask:
+    raw_needs = row["needs"] or ""
     return DBTask(
         id=row["id"],
         session_id=row["session_id"],
         node_id=row["node_id"],
         agent=row["agent"],
         description=row["description"] or "",
-        needs=row["needs"] or "",
+        needs=json.loads(raw_needs) if raw_needs else [],
         terminal=row["terminal"] or "",
         target_json=row["target_json"] or "",
         dispatch_task_id=row["dispatch_task_id"] or "",
@@ -460,7 +463,7 @@ class _BaseDB:
                 session.request_task_id,
                 session.context_id,
                 session.request_json,
-                session.variables,
+                json.dumps(session.variables),
                 session.caller_reply_topic,
                 session.caller_correlation,
                 session.state,
@@ -536,7 +539,7 @@ class _BaseDB:
                 task.node_id,
                 task.agent,
                 task.description,
-                task.needs,
+                json.dumps(task.needs),
                 task.terminal,
                 task.target_json,
                 task.state,

@@ -1108,7 +1108,7 @@ class TestSessionRecovery:
                 request_task_id="rtid-1",
                 context_id="ctx-recovery",
                 request_json="{}",
-                variables='{"user_request":"test"}',
+                variables={"user_request": "test"},
                 caller_reply_topic="reply/caller",
                 caller_correlation="corr-caller",
                 state="running",
@@ -1121,7 +1121,7 @@ class TestSessionRecovery:
                 node_id="step-a",
                 agent="agent-a",
                 description="Do A",
-                needs="[]",
+                needs=[],
             )
         )
         self.db.update_task(
@@ -1137,7 +1137,7 @@ class TestSessionRecovery:
                 node_id="step-b",
                 agent="agent-b",
                 description="Do B",
-                needs='["step-a"]',
+                needs=["step-a"],
                 terminal="1",
             )
         )
@@ -1257,7 +1257,7 @@ class TestSessionRecovery:
                 session_id="sess-2",
                 node_id="a",
                 agent="x",
-                needs="[]",
+                needs=[],
             )
         )
         self.db.update_task("sess-2/a", state="completed", result="A result")
@@ -1267,7 +1267,7 @@ class TestSessionRecovery:
                 session_id="sess-2",
                 node_id="b",
                 agent="y",
-                needs='["a"]',
+                needs=["a"],
                 terminal="1",
             )
         )

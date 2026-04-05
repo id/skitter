@@ -18,9 +18,7 @@ from skitter.coordinator.models import (
     SessionTask,
     build_context,
     compute_ready,
-    find_terminal_tasks,
     is_graph_task_terminal,
-    propagate_failure,
 )
 from skitter.coordinator.registry import DiscoveryRegistry
 from skitter.db import (
@@ -46,16 +44,8 @@ from skitter.a2a import (
     A2ARequest,
     A2AResponse,
     A2A_RESPONDER_UNAVAILABLE,
-    REPLY_ARTIFACT,
-    REPLY_ERROR,
-    REPLY_FAILED,
-    REPLY_INPUT_REQUIRED,
-    REPLY_TERMINAL,
-    REPLY_TEXT,
-    REPLY_TOOL,
     TaskState,
     TaskTarget,
-    classify_reply,
     make_a2a_error,
     make_artifact_event,
     make_status_event,
@@ -202,7 +192,7 @@ class Coordinator:
             request_task_id=request_task_id,
             context_id=request.context_id or "",
             request_json=request.to_json(),
-            variables=json.dumps(variables),
+            variables=variables,
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
         )
@@ -244,9 +234,8 @@ class Coordinator:
                 node_id=tid,
                 agent=agent,
                 description=description,
-                needs=json.dumps(needs),
+                needs=needs,
                 terminal="1" if terminal else "",
-                target_json=json.dumps({"agent": target.agent}),
             )
             await self._adb.create_task(db_task)
 
@@ -335,202 +324,38 @@ class Coordinator:
     async def handle_reply(
         self, topic: str, payload: str, correlation: str = ""
     ) -> None:
-        """Process an A2A reply from an agent."""
-        # Parse topic: $a2a/v1/reply/{org}/{unit}/skitter/{session_id}/{node_id}
-        parts = topic.split("/")
-        if len(parts) < 7:
-            return
-        session_id = parts[-2]
-        node_id = parts[-1]
+        from skitter.coordinator.reply_handler import handle_reply
 
-        state = self._sessions.get(session_id)
-        if not state:
-            return
-
-        # Validate MQTT Correlation Data if we have an expected value
-        task = state.graph.get(node_id)
-        expected = task.dispatch_correlation if task else ""
-        if expected and correlation != expected:
-            log.warning(
-                "Dropping reply for %s/%s: correlation mismatch", session_id, node_id
-            )
-            return
-
-        try:
-            data = json.loads(payload)
-        except Exception:
-            return
-
-        kind, content = classify_reply(data)
-        log.debug(
-            "Reply %s/%s: kind=%s content=%.120s", session_id, node_id, kind, content
-        )
-
-        if kind == REPLY_ARTIFACT:
-            # Accumulate artifact content; terminal status follows separately
-            state.results[node_id] = content
-        elif kind == REPLY_TERMINAL:
-            # Prefer artifact content (preceding REPLY_ARTIFACT) over status message
-            result = state.results.get(node_id, "") or content
-            await self._complete_task(state, node_id, result)
-        elif kind == REPLY_INPUT_REQUIRED:
-            # Interrupted state: multi-turn not yet supported for sub-agents
-            await self._fail_task(state, node_id, f"Agent requires input: {content}")
-        elif kind in (REPLY_FAILED, REPLY_ERROR):
-            await self._fail_task(state, node_id, content)
-        elif kind in (REPLY_TEXT, REPLY_TOOL):
-            # Forward streaming updates to caller
-            await self._forward_stream(state, node_id, kind, content)
+        await handle_reply(self, topic, payload, correlation)
 
     async def _forward_stream(
         self, state: SessionState, node_id: str, msg_type: str, content: str
     ) -> None:
-        """Forward streaming updates from agents to the session's caller."""
-        if not state.caller_reply_topic or not self._client:
-            return
-        event = make_status_event(
-            request_id=state.caller_correlation,
-            task_id=state.request_task_id,
-            state=TaskState.WORKING,
-            message=content,
-            context_id=state.context_id,
-            metadata={"type": msg_type, "task_name": node_id},
-        )
-        props = make_properties(correlation_data=state.caller_correlation)
-        log.debug("MQTT → %s (stream forward)", state.caller_reply_topic)
-        await self._client.publish(
-            state.caller_reply_topic, event, qos=1, properties=props
-        )
+        from skitter.coordinator.reply_handler import _forward_stream
+
+        await _forward_stream(self, state, node_id, msg_type, content)
 
     async def _complete_task(
         self, state: SessionState, node_id: str, result: str
     ) -> None:
-        """Handle successful task completion."""
-        state.results[node_id] = result
-        state.inflight.discard(node_id)
+        from skitter.coordinator.reply_handler import complete_task
 
-        # Update DB
-        db_task_row_id = f"{state.session_id}/{node_id}"
-        await self._adb.update_task(
-            db_task_row_id,
-            state=TaskState.COMPLETED,
-            result=result,
-            completed_at=datetime.now(timezone.utc).isoformat(),
-        )
-
-        log.info("Task %s/%s completed", state.session_id, node_id)
-        await self._publish_event("task_completed", state.session_id, task_id=node_id)
-
-        # Check if session is complete
-        if not state.inflight and not state.pending:
-            await self._complete_session(state)
-        else:
-            # Dispatch newly ready tasks
-            await self.dispatch_ready(state)
+        await complete_task(self, state, node_id, result)
 
     async def _fail_task(self, state: SessionState, node_id: str, error: str) -> None:
-        """Handle task failure and propagate."""
-        state.inflight.discard(node_id)
-        state.failed.add(node_id)
+        from skitter.coordinator.reply_handler import fail_task
 
-        # Update DB
-        db_task_row_id = f"{state.session_id}/{node_id}"
-        await self._adb.update_task(
-            db_task_row_id,
-            state=TaskState.FAILED,
-            error=error,
-            completed_at=datetime.now(timezone.utc).isoformat(),
-        )
-
-        # Propagate failure to downstream tasks
-        newly_failed = propagate_failure(state, node_id)
-        for ftid in newly_failed:
-            cascade_error = f"Skipped: upstream task '{node_id}' failed"
-            await self._adb.update_task(
-                f"{state.session_id}/{ftid}",
-                state=TaskState.FAILED,
-                error=cascade_error,
-                completed_at=datetime.now(timezone.utc).isoformat(),
-            )
-
-        log.error(
-            "Task %s/%s failed: %s (cascaded to %d tasks)",
-            state.session_id,
-            node_id,
-            error[:100],
-            len(newly_failed),
-        )
-        await self._publish_event(
-            "task_failed",
-            state.session_id,
-            task_id=node_id,
-            data={"error": error[:200]},
-        )
-
-        # Check if session is done (all inflight finished)
-        if not state.inflight:
-            await self._fail_session(state, error)
+        await fail_task(self, state, node_id, error)
 
     async def _complete_session(self, state: SessionState) -> None:
-        """Finalize a completed session; send result to caller."""
-        if state.session_id not in self._sessions:
-            return  # already finalized (race with timeout/failure)
+        from skitter.coordinator.reply_handler import complete_session
 
-        # Find terminal task results
-        terminal_tids = find_terminal_tasks(state)
-        result_parts = []
-        for tid in terminal_tids:
-            if tid in state.results:
-                result_parts.append(state.results[tid])
-
-        result_text = "\n\n".join(result_parts) if result_parts else "(no result)"
-
-        # Persist result on session for conversation continuity
-        await self._adb.update_session_state(
-            state.session_id, TaskState.COMPLETED, result=result_text
-        )
-
-        await self._publish_completed(
-            state.caller_reply_topic,
-            state.caller_correlation,
-            state.request_task_id,
-            state.context_id,
-            artifact_text=result_text,
-        )
-
-        await self._publish_event("session_completed", state.session_id)
-        self._sessions.pop(state.session_id, None)
-        self._request_task_index.pop(state.request_task_id, None)
-        self._clear_context_active(state)
-        log.info("Session %s completed", state.session_id)
+        await complete_session(self, state)
 
     async def _fail_session(self, state: SessionState, error: str) -> None:
-        """Finalize a failed session."""
-        if state.session_id not in self._sessions:
-            return  # already finalized (race with timeout/failure)
-        await self._adb.update_session_state(state.session_id, TaskState.FAILED)
+        from skitter.coordinator.reply_handler import fail_session
 
-        if state.caller_reply_topic and self._client:
-            event = make_status_event(
-                request_id=state.caller_correlation,
-                task_id=state.request_task_id,
-                state=TaskState.FAILED,
-                message=error,
-                context_id=state.context_id,
-            )
-            props = make_properties(correlation_data=state.caller_correlation)
-            await self._client.publish(
-                state.caller_reply_topic, event, qos=1, properties=props
-            )
-
-        await self._publish_event(
-            "session_failed",
-            state.session_id,
-            data={"error": error[:200]},
-        )
-        self._sessions.pop(state.session_id, None)
-        self._request_task_index.pop(state.request_task_id, None)
-        self._clear_context_active(state)
+        await fail_session(self, state, error)
         log.info("Session %s failed", state.session_id)
 
     # --- Runtime API ---
@@ -993,110 +818,16 @@ class Coordinator:
     # --- Startup recovery ---
 
     async def recover(self) -> None:
-        """Recover state from DB on startup."""
-        # 1. Start dedicated connections for composed apps (card + request topic)
-        for app in await self._adb.list_apps():
-            if app.card_json:
-                await self._start_app_connection(app.id, app.card_json)
+        from skitter.coordinator.recovery import recover
 
-        # 2. Rehydrate inflight sessions
-        for db_session in await self._adb.list_sessions():
-            if db_session.state != "running":
-                continue
-
-            tasks = await self._adb.list_tasks(db_session.id)
-            if not tasks:
-                continue
-
-            app_version = await self._adb.get_app_version(db_session.app_version_id)
-            app_id = app_version.app_id if app_version else ""
-
-            state = SessionState(
-                session_id=db_session.id,
-                request_task_id=db_session.request_task_id,
-                app_version_id=db_session.app_version_id,
-                app_id=app_id,
-                context_id=db_session.context_id,
-                caller_reply_topic=db_session.caller_reply_topic,
-                caller_correlation=db_session.caller_correlation,
-                variables=json.loads(db_session.variables)
-                if db_session.variables
-                else {},
-            )
-
-            for t in tasks:
-                needs = json.loads(t.needs) if t.needs else []
-                # dispatch_correlation is not persisted; recovered tasks
-                # skip correlation validation (bounded by 120s timeout)
-                state.graph[t.node_id] = SessionTask(
-                    agent=t.agent,
-                    description=t.description,
-                    needs=needs,
-                    terminal=bool(t.terminal),
-                    target=TaskTarget(agent=t.agent),
-                    dispatch_task_id=t.dispatch_task_id,
-                )
-
-                if t.state == "completed":
-                    state.results[t.node_id] = t.result
-                elif t.state == "failed":
-                    state.failed.add(t.node_id)
-                elif t.state == "running" and t.dispatched_at:
-                    state.inflight.add(t.node_id)
-                    # Resubscribe to reply topic
-                    if t.reply_topic and self._client:
-                        if t.reply_topic not in self._reply_subscriptions:
-                            await self._client.subscribe(t.reply_topic, qos=1)
-                            self._reply_subscriptions.add(t.reply_topic)
-                else:
-                    state.pending.add(t.node_id)
-
-            self._sessions[state.session_id] = state
-            self._request_task_index[state.request_task_id] = state.session_id
-
-            # Restore cancel-and-replace tracking so a new request with the
-            # same (app_id, context_id) supersedes this recovered session.
-            if state.context_id and state.app_id:
-                self._context_active[(state.app_id, state.context_id)] = (
-                    state.session_id
-                )
-
-            # Dispatch any newly ready tasks
-            await self.dispatch_ready(state)
-
-            # Schedule timeout for recovered inflight tasks; if no reply
-            # arrives within the timeout, the task is assumed lost.
-            if state.inflight:
-                for tid in list(state.inflight):
-                    asyncio.create_task(
-                        self._timeout_inflight(state, tid, timeout=120.0)
-                    )
-
-            log.info(
-                "Recovered session %s (%d tasks, %d inflight, %d pending)",
-                state.session_id,
-                len(state.graph),
-                len(state.inflight),
-                len(state.pending),
-            )
+        await recover(self)
 
     async def _timeout_inflight(
         self, state: SessionState, node_id: str, timeout: float
     ) -> None:
-        """Fail a recovered inflight task if no reply arrives within timeout."""
-        await asyncio.sleep(timeout)
-        if state.session_id in self._sessions and node_id in state.inflight:
-            log.warning(
-                "Recovered task %s/%s timed out after %.0fs; failing",
-                state.session_id,
-                node_id,
-                timeout,
-            )
-            await self._fail_task(
-                state,
-                node_id,
-                f"Task timed out during recovery (no reply within {timeout:.0f}s)",
-            )
+        from skitter.coordinator.recovery import timeout_inflight
+
+        await timeout_inflight(self, state, node_id, timeout)
 
     # --- Coordinator lock ---
 

@@ -15,6 +15,7 @@ import aiomqtt
 
 from skitter.config import safe_format
 from skitter.db import (
+    AsyncDB,
     DB,
     DBSession,
     DBTask,
@@ -199,7 +200,8 @@ class Coordinator:
     _MAX_RESULT_CHARS = 2000  # truncate per-turn result in history
 
     def __init__(self, db: DB) -> None:
-        self._db = db
+        self._db = db  # sync: used by runtime_api (to be migrated)
+        self._adb = AsyncDB(db)
         self._sessions: dict[str, SessionState] = {}  # session_id → state
         self._request_task_index: dict[str, str] = {}  # request_task_id → session_id
         self._registry = DiscoveryRegistry()
@@ -260,11 +262,11 @@ class Coordinator:
 
     # --- Conversation continuity ---
 
-    def _build_conversation_history(self, app_id: str, context_id: str) -> str:
+    async def _build_conversation_history(self, app_id: str, context_id: str) -> str:
         """Build a conversation history block from prior completed sessions."""
         if not context_id:
             return ""
-        sessions = self._db.list_context_sessions(
+        sessions = await self._adb.list_context_sessions(
             app_id, context_id, limit=self._MAX_HISTORY_TURNS
         )
         if not sessions:
@@ -289,7 +291,7 @@ class Coordinator:
 
     # --- Session creation ---
 
-    def create_session_from_graph(
+    async def create_session_from_graph(
         self,
         graph_json: str,
         app_version_id: str,
@@ -319,7 +321,7 @@ class Coordinator:
             caller_reply_topic=caller_reply_topic,
             caller_correlation=caller_correlation,
         )
-        self._db.create_session(db_session)
+        await self._adb.create_session(db_session)
 
         # Build in-memory state
         state = SessionState(
@@ -363,7 +365,7 @@ class Coordinator:
                     {"agent": target.agent, "mqtt_host": target.mqtt_host}
                 ),
             )
-            self._db.create_task(db_task)
+            await self._adb.create_task(db_task)
 
         self._sessions[session_id] = state
         self._request_task_index[request_task_id] = session_id
@@ -404,7 +406,7 @@ class Coordinator:
 
         # Write-ahead: persist dispatch info before sending
         db_task_row_id = f"{state.session_id}/{node_id}"
-        self._db.update_task(
+        await self._adb.update_task(
             db_task_row_id,
             dispatch_task_id=dispatch_task_id,
             reply_topic=reply_t,
@@ -526,7 +528,7 @@ class Coordinator:
 
         # Update DB
         db_task_row_id = f"{state.session_id}/{node_id}"
-        self._db.update_task(
+        await self._adb.update_task(
             db_task_row_id,
             state=TaskState.COMPLETED,
             result=result,
@@ -550,7 +552,7 @@ class Coordinator:
 
         # Update DB
         db_task_row_id = f"{state.session_id}/{node_id}"
-        self._db.update_task(
+        await self._adb.update_task(
             db_task_row_id,
             state=TaskState.FAILED,
             error=error,
@@ -561,7 +563,7 @@ class Coordinator:
         newly_failed = _propagate_failure(state, node_id)
         for ftid in newly_failed:
             cascade_error = f"Skipped: upstream task '{node_id}' failed"
-            self._db.update_task(
+            await self._adb.update_task(
                 f"{state.session_id}/{ftid}",
                 state=TaskState.FAILED,
                 error=cascade_error,
@@ -601,7 +603,7 @@ class Coordinator:
         result_text = "\n\n".join(result_parts) if result_parts else "(no result)"
 
         # Persist result on session for conversation continuity
-        self._db.update_session_state(
+        await self._adb.update_session_state(
             state.session_id, TaskState.COMPLETED, result=result_text
         )
 
@@ -623,7 +625,7 @@ class Coordinator:
         """Finalize a failed session."""
         if state.session_id not in self._sessions:
             return  # already finalized (race with timeout/failure)
-        self._db.update_session_state(state.session_id, TaskState.FAILED)
+        await self._adb.update_session_state(state.session_id, TaskState.FAILED)
 
         if state.caller_reply_topic and self._client:
             event = make_status_event(
@@ -728,7 +730,7 @@ class Coordinator:
                     log.warning("Failed to send CancelTask for %s/%s", session_id, tid)
 
         for tid in state.pending | state.inflight:
-            self._db.update_task(
+            await self._adb.update_task(
                 f"{session_id}/{tid}", state=TaskState.CANCELED, completed_at=now
             )
         if state.caller_reply_topic and self._client:
@@ -876,7 +878,7 @@ class Coordinator:
                 existing, caller_reply_topic, caller_correlation
             )
             return
-        db_session = self._db.get_session_by_request_task_id(req.task_id)
+        db_session = await self._adb.get_session_by_request_task_id(req.task_id)
         if db_session:
             if await self._reject_context_mismatch(
                 db_session.context_id,
@@ -895,7 +897,7 @@ class Coordinator:
             )
             return
 
-        app = self._db.get_app(agent_id)
+        app = await self._adb.get_app(agent_id)
         if not app or not app.card_json:
             await self._send_error(
                 caller_reply_topic,
@@ -905,7 +907,7 @@ class Coordinator:
             )
             return
 
-        version = self._db.get_current_version(agent_id)
+        version = await self._adb.get_current_version(agent_id)
         if not version:
             await self._send_error(
                 caller_reply_topic,
@@ -927,11 +929,11 @@ class Coordinator:
                     agent_id,
                     incoming_ctx,
                 )
-                self._db.update_session_state(prev_sid, TaskState.CANCELED)
+                await self._adb.update_session_state(prev_sid, TaskState.CANCELED)
                 await self._cancel_session_cleanup(prev_sid)
 
-        history = self._build_conversation_history(agent_id, incoming_ctx)
-        state = self.create_session_from_graph(
+        history = await self._build_conversation_history(agent_id, incoming_ctx)
+        state = await self.create_session_from_graph(
             graph_json=version.graph_json,
             app_version_id=version.id,
             request=req,
@@ -1019,7 +1021,9 @@ class Coordinator:
         # Replay artifact/error content for terminal sessions
         error_msg = ""
         if db_session.state == "completed":
-            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.node_id)
+            tasks = sorted(
+                await self._adb.list_tasks(db_session.id), key=lambda t: t.node_id
+            )
             results = [t.result for t in tasks if t.terminal and t.result]
             artifact_text = "\n\n".join(results) if results else ""
             if artifact_text:
@@ -1033,7 +1037,9 @@ class Coordinator:
                     reply_topic, artifact, qos=1, properties=props
                 )
         elif db_session.state in ("failed", "canceled"):
-            tasks = sorted(self._db.list_tasks(db_session.id), key=lambda t: t.node_id)
+            tasks = sorted(
+                await self._adb.list_tasks(db_session.id), key=lambda t: t.node_id
+            )
             errors = [t.error for t in tasks if t.error]
             error_msg = "; ".join(errors) if errors else ""
 
@@ -1106,20 +1112,20 @@ class Coordinator:
     async def recover(self) -> None:
         """Recover state from DB on startup."""
         # 1. Start dedicated connections for composed apps (card + request topic)
-        for app in self._db.list_apps():
+        for app in await self._adb.list_apps():
             if app.card_json:
                 await self._start_app_connection(app.id, app.card_json)
 
         # 2. Rehydrate inflight sessions
-        for db_session in self._db.list_sessions():
+        for db_session in await self._adb.list_sessions():
             if db_session.state != "running":
                 continue
 
-            tasks = self._db.list_tasks(db_session.id)
+            tasks = await self._adb.list_tasks(db_session.id)
             if not tasks:
                 continue
 
-            app_version = self._db.get_app_version(db_session.app_version_id)
+            app_version = await self._adb.get_app_version(db_session.app_version_id)
             app_id = app_version.app_id if app_version else ""
 
             state = SessionState(

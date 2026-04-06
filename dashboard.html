@@ -1,783 +1,1466 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Skitter</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
-  <style>
-    :root {
-      --bg: #fafaf9;
-      --bg-card: #ffffff;
-      --bg-sidebar: #f5f5f4;
-      --bg-hover: #edeceb;
-      --border: #d6d3d1;
-      --border-light: #e7e5e4;
-      --text: #1c1917;
-      --text-sec: #57534e;
-      --text-dim: #a8a29e;
-      --blue: #2563eb;
-      --green: #15803d;
-      --amber: #b45309;
-      --red: #b91c1c;
-      --blue-bg: #eff6ff;
-      --green-bg: #f0fdf4;
-      --amber-bg: #fffbeb;
-      --red-bg: #fef2f2;
-      --sans: 'Outfit', system-ui, sans-serif;
-      --mono: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
-    }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skitter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+<style>
+/* ===== Custom Properties ===== */
+:root {
+  --bg-base: #f5f4fa;
+  --bg-surface: #ffffff;
+  --bg-elevated: #edecf4;
+  --bg-hover: #e4e3ee;
+  --bg-active: #d9d8e6;
 
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
-    body { font-family: var(--sans); font-size: 13px; color: var(--text); background: var(--bg); }
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  --text-primary: #16152a;
+  --text-secondary: #65627c;
+  --text-muted: #9f9cb4;
+  --text-inverse: #f5f4fa;
 
-    /* Layout */
-    #app { display: flex; flex-direction: column; height: 100vh; }
-    #header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-card); flex-shrink: 0; }
-    #body { display: flex; flex: 1; overflow: hidden; }
-    #sidebar { width: 240px; min-width: 240px; border-right: 1px solid var(--border); background: var(--bg-sidebar); display: flex; flex-direction: column; overflow: hidden; }
-    #main { flex: 1; overflow-y: auto; padding: 16px; }
+  --accent: #0284c7;
+  --accent-hover: #0369a1;
+  --accent-muted: rgba(2,132,199,0.1);
+  --accent-glow: rgba(2,132,199,0.18);
 
-    /* Header */
-    .hdr-title { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
-    .hdr-org { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
-    .hdr-spacer { flex: 1; }
-    .hdr-status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-sec); }
-    .hdr-status + .hdr-status { margin-left: 12px; }
-    .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-    .dot-off { background: var(--red); }
-    .dot-on { background: var(--green); }
-    .dot-pulse { background: var(--blue); animation: pulse 2s ease-in-out infinite; }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
-    .hdr-btn { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; font-size: 11px; font-family: var(--sans); color: var(--text-sec); cursor: pointer; }
-    .hdr-btn:hover { background: var(--bg-hover); color: var(--text); }
+  --success: #10b981;
+  --success-muted: rgba(16,185,129,0.15);
+  --warning: #f59e0b;
+  --warning-muted: rgba(245,158,11,0.15);
+  --error: #f43f5e;
+  --error-muted: rgba(244,63,94,0.15);
 
-    /* Sidebar */
-    .side-section { border-bottom: 1px solid var(--border-light); }
-    .side-section:last-child { border-bottom: none; flex: 1; overflow-y: auto; }
-    .side-hdr { padding: 10px 14px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
-    .side-empty { padding: 12px 14px; font-size: 11px; color: var(--text-dim); }
+  --border: #dddce8;
+  --border-hover: #cccbda;
+  --border-accent: rgba(2,132,199,0.3);
 
-    /* Agent/App items */
-    .side-item { padding: 7px 14px; cursor: default; transition: background .1s; }
-    .side-item:hover { background: var(--bg-hover); }
-    .side-item-name { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
-    .side-item-name .dot { width: 6px; height: 6px; }
-    .side-item-desc { font-size: 11px; color: var(--text-dim); margin-top: 1px; padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .side-item-detail { display: none; padding: 6px 14px 8px 26px; font-size: 10px; color: var(--text-sec); line-height: 1.6; }
-    .side-item-detail .detail-row { display: flex; gap: 6px; }
-    .side-item-detail .detail-label { color: var(--text-dim); min-width: 60px; font-family: var(--mono); }
-    .side-item.expanded .side-item-detail { display: block; }
-    .side-item-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; padding-left: 12px; }
-    .tag { font-size: 10px; font-family: var(--mono); padding: 1px 5px; border-radius: 3px; background: var(--bg-hover); color: var(--text-sec); }
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.07);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.1);
+  --shadow-glow: 0 0 24px var(--accent-glow);
 
-    /* Sessions */
-    .sessions-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); gap: 4px; text-align: center; padding: 40px; }
-    .sessions-empty-title { font-size: 14px; font-weight: 500; }
-    .sessions-empty-hint { font-size: 12px; }
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
 
-    .session-card { background: var(--bg-card); border: 1px solid var(--border-light); border-radius: 6px; padding: 14px 16px; margin-bottom: 10px; transition: opacity .2s; }
-    .session-card.terminal { opacity: 0.65; }
-    .session-card.terminal:hover { opacity: 1; }
-    .session-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-    .session-app { font-size: 13px; font-weight: 600; }
-    .session-id { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
-    .session-badge { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 3px; }
-    .session-badge.running { background: var(--blue-bg); color: var(--blue); }
-    .session-badge.completed { background: var(--green-bg); color: var(--green); }
-    .session-badge.failed { background: var(--red-bg); color: var(--red); }
-    .session-time { font-family: var(--mono); font-size: 10px; color: var(--text-dim); margin-left: auto; }
-    .session-error { font-size: 11px; color: var(--red); margin-top: 6px; padding: 6px 8px; background: var(--red-bg); border-radius: 3px; }
+  --font-display: 'Syne', 'Arial Black', sans-serif;
+  --font-body: 'Outfit', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', monospace;
 
-    /* DAG */
-    .dag { display: flex; align-items: stretch; gap: 0; padding: 4px 0; overflow-x: auto; }
-    .dag-level { display: flex; flex-direction: column; gap: 6px; }
-    .dag-arrow { display: flex; align-items: center; padding: 0 8px; color: var(--border); font-size: 16px; flex-shrink: 0; user-select: none; }
-    .dag-task { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border-light); border-radius: 4px; font-size: 11px; white-space: nowrap; background: var(--bg); transition: border-color .15s; position: relative; }
-    .dag-task:hover { border-color: var(--border); }
-    .dag-task .dot { width: 6px; height: 6px; }
-    .dag-task-id { font-weight: 500; }
-    .dag-task-agent { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
-    .dag-task.failed { border-color: var(--red); background: var(--red-bg); }
-    .dag-task-error { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; font-size: 10px; color: var(--red); padding: 2px 6px; background: var(--red-bg); border-radius: 2px; white-space: normal; max-width: 200px; z-index: 1; display: none; }
-    .dag-task.failed:hover .dag-task-error { display: block; }
-    .dag-task-tooltip { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 4px; font-size: 10px; color: var(--text-sec); background: var(--bg-card); border: 1px solid var(--border); border-radius: 3px; padding: 4px 8px; white-space: normal; max-width: 250px; z-index: 2; box-shadow: 0 2px 6px rgba(0,0,0,.08); }
-    .dag-task:hover .dag-task-tooltip { display: block; }
+  --sidebar-w: 300px;
+  --header-h: 56px;
 
-    /* No-graph fallback */
-    .session-minimal { font-size: 12px; color: var(--text-sec); padding: 4px 0; }
-    .session-tasks-inline { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-    .task-chip { font-size: 10px; font-family: var(--mono); padding: 2px 7px; border-radius: 3px; display: flex; align-items: center; gap: 4px; }
-    .task-chip .dot { width: 5px; height: 5px; }
-    .task-chip.pending { background: var(--bg-hover); color: var(--text-sec); }
-    .task-chip.running { background: var(--blue-bg); color: var(--blue); }
-    .task-chip.completed { background: var(--green-bg); color: var(--green); }
-    .task-chip.failed { background: var(--red-bg); color: var(--red); }
+  --ease: cubic-bezier(0.16,1,0.3,1);
+  --t-fast: 120ms var(--ease);
+  --t-normal: 200ms var(--ease);
+  --t-slow: 400ms var(--ease);
+}
 
-    /* Event log */
-    #event-log { border-top: 1px solid var(--border); background: var(--bg-card); flex-shrink: 0; overflow: hidden; transition: height .2s ease; height: 28px; }
-    #event-log.open { height: 220px; }
-    .log-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 16px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 500; color: var(--text-sec); border-bottom: 1px solid var(--border-light); }
-    .log-toggle:hover { background: var(--bg-hover); }
-    .log-toggle-arrow { font-size: 9px; transition: transform .2s; }
-    #event-log.open .log-toggle-arrow { transform: rotate(180deg); }
-    .log-count { font-family: var(--mono); font-size: 10px; color: var(--text-dim); background: var(--bg-hover); padding: 0 5px; border-radius: 3px; }
-    .log-body { overflow-y: auto; height: calc(100% - 29px); }
-    .log-row { display: flex; gap: 10px; padding: 2px 16px; font-size: 11px; font-family: var(--mono); border-bottom: 1px solid var(--bg); line-height: 1.7; }
-    .log-row:hover { background: var(--bg); }
-    .log-time { color: var(--text-dim); flex-shrink: 0; width: 65px; }
-    .log-type { flex-shrink: 0; width: 130px; font-weight: 500; }
-    .log-type.session_created { color: var(--blue); }
-    .log-type.task_started { color: var(--amber); }
-    .log-type.task_completed { color: var(--green); }
-    .log-type.task_failed { color: var(--red); }
-    .log-type.session_completed { color: var(--green); }
-    .log-type.session_failed { color: var(--red); }
-    .log-type.agent_dead { color: var(--red); }
-    .log-detail { color: var(--text-sec); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+[data-theme="dark"] {
+  --bg-base: #0a0a0f;
+  --bg-surface: #111118;
+  --bg-elevated: #1a1a24;
+  --bg-hover: #22222e;
+  --bg-active: #2a2a38;
+  --text-primary: #eeedf2;
+  --text-secondary: #908da0;
+  --text-muted: #5c596b;
+  --text-inverse: #0a0a0f;
+  --accent: #0ea5e9;
+  --accent-hover: #38bdf8;
+  --accent-muted: rgba(14,165,233,0.12);
+  --accent-glow: rgba(14,165,233,0.25);
+  --border: #1c1c28;
+  --border-hover: #2c2c3c;
+  --border-accent: rgba(14,165,233,0.3);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.4);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.5);
+  --shadow-glow: 0 0 24px var(--accent-glow);
+}
 
-    /* Settings dialog */
-    dialog { border: 1px solid var(--border); border-radius: 6px; padding: 20px; max-width: 380px; width: 90%; font-family: var(--sans); font-size: 13px; }
-    dialog::backdrop { background: rgba(0,0,0,.15); }
-    .dlg-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
-    .dlg-field { margin-bottom: 10px; }
-    .dlg-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-sec); margin-bottom: 3px; }
-    .dlg-input { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--bg); }
-    .dlg-input:focus { outline: none; border-color: var(--blue); }
-    .dlg-row { display: flex; gap: 10px; }
-    .dlg-row > .dlg-field { flex: 1; }
-    .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-    .dlg-btn { padding: 6px 14px; border-radius: 4px; font-size: 12px; font-family: var(--sans); cursor: pointer; }
-    .dlg-btn-cancel { background: var(--bg); border: 1px solid var(--border); color: var(--text-sec); }
-    .dlg-btn-cancel:hover { background: var(--bg-hover); }
-    .dlg-btn-primary { background: var(--text); border: none; color: var(--bg-card); }
-    .dlg-btn-primary:hover { opacity: .85; }
+/* ===== Reset ===== */
+*,*::before,*::after { margin:0; padding:0; box-sizing:border-box; }
 
-    @media (max-width: 640px) {
-      #sidebar { display: none; }
-    }
-  </style>
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+input, textarea { font-family: inherit; color: inherit; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-hover); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ===== App Shell ===== */
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+.header {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  z-index: 50;
+  backdrop-filter: blur(12px);
+}
+
+.header-left, .header-right { display: flex; align-items: center; gap: 8px; }
+
+.brand { display: flex; align-items: center; gap: 8px; user-select: none; }
+.brand-mark { color: var(--accent); font-size: 20px; line-height: 1; }
+.brand-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.5px;
+}
+
+.header-btn {
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  transition: all var(--t-fast);
+}
+.header-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.connection-status {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500;
+  color: var(--text-muted);
+  padding: 0 8px;
+}
+.connection-status.connected { color: var(--success); }
+.connection-status.connected .status-dot { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.connection-status.disconnected { color: var(--text-muted); }
+.connection-status.error { color: var(--error); }
+.connection-status.error .status-dot { background: var(--error); }
+
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ===== Layout ===== */
+.layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* ===== Sidebar ===== */
+.sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  transition: transform var(--t-slow);
+}
+
+.sidebar-top { padding: 12px; }
+
+.new-chat-btn {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all var(--t-fast);
+}
+.new-chat-btn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-hover); }
+.new-chat-btn svg { flex-shrink: 0; }
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 12px;
+}
+
+.session-empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.session-item {
+  position: relative;
+  padding: 10px 12px 10px 18px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--t-fast);
+  margin-bottom: 2px;
+}
+.session-item::before {
+  content: '';
+  position: absolute;
+  left: 5px; top: 10px; bottom: 10px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--agent-color, var(--text-muted));
+  opacity: 0.35;
+  transition: opacity var(--t-fast);
+}
+.session-item:hover { background: var(--bg-hover); }
+.session-item:hover::before { opacity: 0.7; }
+.session-item.active { background: var(--bg-active); }
+.session-item.active::before { opacity: 1; }
+
+.session-item-header { display: flex; align-items: center; gap: 10px; }
+
+.session-item-avatar {
+  width: 28px; height: 28px;
+  border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 13px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.session-item-info { flex: 1; min-width: 0; }
+.session-item-name {
+  font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-item-time { font-size: 11px; color: var(--text-muted); }
+
+.session-delete {
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: all var(--t-fast);
+  flex-shrink: 0;
+}
+.session-item:hover .session-delete { opacity: 1; }
+.session-delete:hover { background: var(--error-muted); color: var(--error); }
+
+.session-item-preview {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+  padding-left: 38px;
+}
+
+.session-item-streaming {
+  font-size: 11px;
+  color: var(--accent);
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 3px;
+  padding-left: 38px;
+}
+
+.pulse-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* ===== Sidebar overlay (mobile) ===== */
+.sidebar-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 30;
+  opacity: 0;
+  transition: opacity var(--t-normal);
+}
+
+/* ===== Main ===== */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-base);
+}
+
+/* ===== Welcome View ===== */
+.welcome {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 32px 48px;
+}
+
+.welcome-header { text-align: center; margin-bottom: 48px; }
+
+.welcome-logo {
+  font-size: 52px;
+  color: var(--accent);
+  line-height: 1;
+  margin-bottom: 16px;
+  text-shadow: 0 0 30px var(--accent-glow);
+  animation: logo-breathe 4s ease-in-out infinite alternate;
+}
+
+.welcome h1 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 32px;
+  letter-spacing: -1px;
+  margin-bottom: 8px;
+}
+
+.welcome p {
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.welcome-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+}
+.welcome-empty .text-muted { color: var(--text-muted); font-size: 13px; margin-top: 6px; }
+
+.agent-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  width: 100%;
+  max-width: 920px;
+}
+
+/* ===== Agent Cards ===== */
+.agent-card {
+  position: relative;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  cursor: pointer;
+  transition: all var(--t-normal);
+  overflow: hidden;
+  animation: card-enter 0.45s var(--ease) backwards;
+}
+.agent-card:nth-child(1) { animation-delay: 0ms; }
+.agent-card:nth-child(2) { animation-delay: 50ms; }
+.agent-card:nth-child(3) { animation-delay: 100ms; }
+.agent-card:nth-child(4) { animation-delay: 150ms; }
+.agent-card:nth-child(5) { animation-delay: 200ms; }
+.agent-card:nth-child(6) { animation-delay: 250ms; }
+.agent-card:nth-child(7) { animation-delay: 300ms; }
+.agent-card:nth-child(8) { animation-delay: 350ms; }
+.agent-card:nth-child(9) { animation-delay: 400ms; }
+
+.agent-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--agent-gradient);
+  opacity: 0;
+  transition: opacity var(--t-normal);
+}
+.agent-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+.agent-card:hover::after { opacity: 1; }
+.agent-card:active { transform: translateY(-1px); }
+
+.agent-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+
+.agent-card-avatar {
+  width: 40px; height: 40px;
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 18px;
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.agent-card-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+}
+.badge-agent { background: var(--accent-muted); color: var(--accent); }
+.badge-app { background: var(--success-muted); color: var(--success); }
+
+.agent-card-name { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.agent-card-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.agent-card-skills { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.skill-tag {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+/* ===== Chat View ===== */
+.chat { display: flex; flex-direction: column; height: 100%; }
+
+.chat-header {
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+}
+
+.chat-agent { display: flex; align-items: center; gap: 12px; }
+
+.chat-avatar {
+  width: 36px; height: 36px;
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.chat-agent-name { font-weight: 600; font-size: 14px; }
+.chat-agent-desc { font-size: 12px; color: var(--text-muted); }
+
+/* ===== Chat Messages ===== */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  scroll-behavior: smooth;
+}
+
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  padding: 48px 24px;
+}
+.chat-empty-avatar {
+  width: 56px; height: 56px;
+  border-radius: var(--radius-lg);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 24px;
+  color: #fff;
+  box-shadow: var(--shadow-md);
+}
+.chat-empty h3 { font-size: 18px; font-weight: 600; color: var(--text-primary); }
+.chat-empty p { font-size: 14px; max-width: 360px; }
+
+.message {
+  max-width: 720px;
+  animation: msg-enter 0.3s var(--ease);
+}
+
+.message-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
+  max-width: min(720px, 75%);
+}
+.message-user .message-content { font-size: 14px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.message-user .message-meta { font-size: 11px; opacity: 0.7; margin-top: 6px; text-align: right; }
+
+.message-agent {
+  align-self: flex-start;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 16px 20px;
+  border-radius: var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg);
+  max-width: min(720px, 85%);
+  transition: border-color var(--t-normal), box-shadow var(--t-normal);
+}
+.message-agent.streaming {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-glow);
+}
+.message-agent.error {
+  border-color: var(--error);
+  background: var(--error-muted);
+}
+.message-agent .message-meta { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+
+.message-task-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ===== Typing Indicator ===== */
+.typing-indicator { display: flex; gap: 5px; padding: 4px 0; }
+.typing-indicator span {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: typing-bounce 1.4s infinite ease-in-out;
+}
+.typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
+
+/* ===== Streaming Cursor ===== */
+.cursor {
+  display: inline-block;
+  width: 2px; height: 1.1em;
+  background: var(--accent);
+  animation: cursor-blink 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+}
+
+/* ===== Chat Input ===== */
+.chat-input-area {
+  padding: 12px 24px 20px;
+  flex-shrink: 0;
+}
+
+.input-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.input-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.input-box textarea {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  max-height: 180px;
+  min-height: 21px;
+}
+.input-box textarea::placeholder { color: var(--text-muted); }
+
+.send-btn {
+  width: 34px; height: 34px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  transition: all var(--t-fast);
+  flex-shrink: 0;
+}
+.send-btn:hover { background: var(--accent-hover); }
+.send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ===== Markdown Body ===== */
+.markdown-body { font-size: 14px; line-height: 1.65; word-break: break-word; }
+.markdown-body > *:first-child { margin-top: 0; }
+.markdown-body > *:last-child { margin-bottom: 0; }
+.markdown-body p { margin-bottom: 8px; }
+.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4 { font-weight: 600; margin: 16px 0 6px; }
+.markdown-body h1 { font-size: 18px; }
+.markdown-body h2 { font-size: 16px; }
+.markdown-body h3 { font-size: 15px; }
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-elevated);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.markdown-body pre {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.markdown-body pre code { background: none; padding: 0; font-size: 13px; }
+.markdown-body ul, .markdown-body ol { padding-left: 20px; margin-bottom: 8px; }
+.markdown-body li { margin-bottom: 3px; }
+.markdown-body blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 14px;
+  color: var(--text-secondary);
+  margin: 10px 0;
+}
+.markdown-body table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 7px 12px; text-align: left; }
+.markdown-body th { background: var(--bg-elevated); font-weight: 600; }
+.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.markdown-body img { max-width: 100%; border-radius: var(--radius-md); }
+.markdown-body a { color: var(--accent); }
+
+/* ===== Modal ===== */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-normal);
+}
+.modal-overlay.open { opacity: 1; pointer-events: all; }
+
+.modal {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  width: 90%; max-width: 460px;
+  box-shadow: var(--shadow-lg);
+  transform: scale(0.95) translateY(8px);
+  transition: transform var(--t-normal);
+}
+.modal-overlay.open .modal { transform: scale(1) translateY(0); }
+
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px 0;
+}
+.modal-header h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.modal-body { padding: 20px 24px; }
+
+.form-group { margin-bottom: 16px; }
+.form-group label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 6px;
+}
+.form-group input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--t-fast);
+}
+.form-group input:focus { border-color: var(--accent); }
+.form-group input::placeholder { color: var(--text-muted); }
+
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 0 24px 20px;
+}
+
+.btn {
+  padding: 10px 20px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  transition: all var(--t-fast);
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { border-color: var(--border); color: var(--text-secondary); }
+.btn-secondary:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* ===== Animations ===== */
+@keyframes logo-breathe {
+  from { text-shadow: 0 0 20px var(--accent-glow); }
+  to { text-shadow: 0 0 40px var(--accent-glow), 0 0 70px rgba(14,165,233,0.08); }
+}
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(14px); }
+}
+@keyframes msg-enter {
+  from { opacity: 0; transform: translateY(8px); }
+}
+@keyframes typing-bounce {
+  0%,60%,100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+@keyframes cursor-blink {
+  0%,100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  .sidebar {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    z-index: 40;
+    transform: translateX(-100%);
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  .sidebar-overlay { display: block; }
+  .sidebar-overlay.open { opacity: 1; }
+
+  .welcome { padding: 48px 20px 32px; }
+  .welcome h1 { font-size: 26px; }
+  .agent-grid { grid-template-columns: 1fr; max-width: 400px; }
+  .chat-header { padding: 12px 16px; }
+  .chat-messages { padding: 16px; }
+  .chat-input-area { padding: 10px 16px 16px; }
+  .message-user, .message-agent { max-width: 90%; }
+}
+
+@media (min-width: 769px) {
+  .sidebar-toggle { display: none; }
+  .sidebar-overlay { display: none !important; }
+}
+</style>
 </head>
 <body>
-  <div id="app">
-    <div id="header">
-      <span class="hdr-title">Skitter</span>
-      <span class="hdr-org" id="hdr-org">skitter/default</span>
-      <span class="hdr-spacer"></span>
-      <span class="hdr-status" id="hdr-mqtt">
-        <span class="dot dot-off" id="dot-mqtt"></span>
-        <span id="lbl-mqtt">Disconnected</span>
-      </span>
-      <span class="hdr-status" id="hdr-coord">
-        <span class="dot dot-off" id="dot-coord"></span>
-        <span id="lbl-coord">Coordinator</span>
-      </span>
-      <button class="hdr-btn" onclick="showSettings()">Settings</button>
-    </div>
-    <div id="body">
-      <aside id="sidebar">
-        <div class="side-section" id="sec-agents">
-          <div class="side-hdr">Agents</div>
-          <div id="agent-list"></div>
-        </div>
-        <div class="side-section" id="sec-apps">
-          <div class="side-hdr">Apps</div>
-          <div id="app-list"></div>
-        </div>
-      </aside>
-      <div id="main">
-        <div id="sessions"></div>
+
+<div class="app">
+  <header class="header">
+    <div class="header-left">
+      <button class="header-btn sidebar-toggle" onclick="toggleSidebar()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="brand" onclick="newChat()" style="cursor:pointer">
+        <span class="brand-mark">&#9670;</span>
+        <span class="brand-name">skitter</span>
       </div>
     </div>
-    <div id="event-log">
-      <div class="log-toggle" onclick="toggleLog()">
-        <span class="log-toggle-arrow">&#9660;</span>
-        Event Log
-        <span class="log-count" id="log-count">0</span>
+    <div class="header-right">
+      <div class="connection-status" id="connection-status">
+        <span class="status-dot"></span> Connecting&hellip;
       </div>
-      <div class="log-body" id="log-body"></div>
+      <button class="header-btn" onclick="openSettings()" title="Settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button class="header-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle theme">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+    <aside class="sidebar open" id="sidebar">
+      <div class="session-list" id="session-list"></div>
+    </aside>
+    <main class="main" id="main"></main>
+  </div>
+</div>
+
+<!-- Settings -->
+<div class="modal-overlay" id="settings-overlay" onclick="closeSettings()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Settings</h2>
+      <button class="header-btn" onclick="closeSettings()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="setting-url">Broker URL</label>
+        <input id="setting-url" type="text" placeholder="ws://localhost:8083/mqtt">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="setting-org">Organization</label>
+          <input id="setting-org" type="text" placeholder="skitter">
+        </div>
+        <div class="form-group">
+          <label for="setting-unit">Unit</label>
+          <input id="setting-unit" type="text" placeholder="default">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="setting-username">Username</label>
+          <input id="setting-username" type="text" placeholder="Optional">
+        </div>
+        <div class="form-group">
+          <label for="setting-password">Password</label>
+          <input id="setting-password" type="password" placeholder="Optional">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="applySettings()">Connect</button>
     </div>
   </div>
-
-  <dialog id="settings-dlg">
-    <div class="dlg-title">Broker Settings</div>
-    <div class="dlg-field">
-      <label class="dlg-label">WebSocket URL</label>
-      <input class="dlg-input" id="cfg-url" type="text" placeholder="ws://localhost:8083/mqtt">
-    </div>
-    <div class="dlg-row">
-      <div class="dlg-field">
-        <label class="dlg-label">Username</label>
-        <input class="dlg-input" id="cfg-user" type="text">
-      </div>
-      <div class="dlg-field">
-        <label class="dlg-label">Password</label>
-        <input class="dlg-input" id="cfg-pass" type="password">
-      </div>
-    </div>
-    <div class="dlg-row">
-      <div class="dlg-field">
-        <label class="dlg-label">Org</label>
-        <input class="dlg-input" id="cfg-org" type="text" placeholder="skitter">
-      </div>
-      <div class="dlg-field">
-        <label class="dlg-label">Unit</label>
-        <input class="dlg-input" id="cfg-unit" type="text" placeholder="default">
-      </div>
-    </div>
-    <div class="dlg-actions">
-      <button class="dlg-btn dlg-btn-cancel" onclick="document.getElementById('settings-dlg').close()">Cancel</button>
-      <button class="dlg-btn dlg-btn-primary" onclick="saveSettings()">Save &amp; Reconnect</button>
-    </div>
-  </dialog>
-
-  <script>
-    // ── State ──────────────────────────────────────────────
-
-    const S = {
-      connected: false,
-      coordinatorAlive: false,
-      org: 'skitter',
-      unit: 'default',
-      agents: new Map(),   // id -> { card, alive }
-      apps: new Map(),     // id -> card
-      sessions: new Map(), // session_id -> session object
-      events: [],          // event log entries
-      logOpen: false,
-    };
-
-    const MAX_SESSIONS = 50;
-    const MAX_EVENTS = 200;
-    let mqttClient = null;
-
-    // ── Config (localStorage) ──────────────────────────────
-
-    const DEFAULTS = { url: 'ws://localhost:8083/mqtt', username: '', password: '', org: 'skitter', unit: 'default' };
-
-    function loadConfig() {
-      return {
-        url: localStorage.getItem('sk_url') || DEFAULTS.url,
-        username: localStorage.getItem('sk_user') || DEFAULTS.username,
-        password: localStorage.getItem('sk_pass') || DEFAULTS.password,
-        org: localStorage.getItem('sk_org') || DEFAULTS.org,
-        unit: localStorage.getItem('sk_unit') || DEFAULTS.unit,
-      };
-    }
-
-    function showSettings() {
-      const c = loadConfig();
-      document.getElementById('cfg-url').value = c.url;
-      document.getElementById('cfg-user').value = c.username;
-      document.getElementById('cfg-pass').value = c.password;
-      document.getElementById('cfg-org').value = c.org;
-      document.getElementById('cfg-unit').value = c.unit;
-      document.getElementById('settings-dlg').showModal();
-    }
-
-    function saveSettings() {
-      localStorage.setItem('sk_url', document.getElementById('cfg-url').value.trim() || DEFAULTS.url);
-      localStorage.setItem('sk_user', document.getElementById('cfg-user').value.trim());
-      localStorage.setItem('sk_pass', document.getElementById('cfg-pass').value);
-      localStorage.setItem('sk_org', document.getElementById('cfg-org').value.trim() || DEFAULTS.org);
-      localStorage.setItem('sk_unit', document.getElementById('cfg-unit').value.trim() || DEFAULTS.unit);
-      document.getElementById('settings-dlg').close();
-      if (mqttClient) mqttClient.end(true);
-      initConnection();
-    }
-
-    // ── Utilities ──────────────────────────────────────────
-
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '...' : s; }
-    function shortId(id) { return id ? id.slice(0, 8) : ''; }
-
-    function fmtTime(iso) {
-      if (!iso) return '';
-      const d = new Date(iso);
-      if (isNaN(d)) return '';
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    }
-
-    function fmtAgo(iso) {
-      if (!iso) return '';
-      const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-      if (sec < 0 || isNaN(sec)) return '';
-      if (sec < 10) return 'just now';
-      if (sec < 60) return sec + 's ago';
-      if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
-      if (sec < 86400) return Math.floor(sec / 3600) + 'h ago';
-      return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
-    }
-
-    // ── MQTT ───────────────────────────────────────────────
-
-    function initConnection() {
-      const cfg = loadConfig();
-      S.org = cfg.org;
-      S.unit = cfg.unit;
-      S.connected = false;
-      S.coordinatorAlive = false;
-      S.agents.clear();
-      S.apps.clear();
-      S.sessions.clear();
-      S.events = [];
-
-      document.getElementById('hdr-org').textContent = `${S.org}/${S.unit}`;
-      renderAll();
-
-      const clientId = 'skitter-dash-' + Math.random().toString(16).slice(2, 10);
-      const opts = { protocolVersion: 5, reconnectPeriod: 3000, connectTimeout: 10000, clean: true, clientId };
-      if (cfg.username) { opts.username = cfg.username; opts.password = cfg.password; }
-
-      mqttClient = mqtt.connect(cfg.url, opts);
-
-      mqttClient.on('connect', () => {
-        S.connected = true;
-        renderHeader();
-        const pfx = '$a2a/v1';
-        mqttClient.subscribe(`${pfx}/discovery/${S.org}/${S.unit}/+`, { qos: 1 });
-        mqttClient.subscribe(`${pfx}/event/${S.org}/${S.unit}/+`, { qos: 1 });
-        mqttClient.subscribe(`${pfx}/lock/${S.org}/${S.unit}/coordinator`, { qos: 1 });
-      });
-
-      mqttClient.on('close', () => {
-        S.connected = false;
-        S.coordinatorAlive = false;
-        renderHeader();
-      });
-
-      mqttClient.on('error', e => console.error('MQTT:', e));
-      mqttClient.on('message', onMessage);
-    }
-
-    function onMessage(topic, payload) {
-      const raw = payload.toString();
-      const parts = topic.split('/');
-      // $a2a/v1/<type>/<org>/<unit>/<id>
-      if (parts.length < 6) return;
-      const type = parts[2];
-      const id = parts[5];
-
-      if (type === 'discovery') handleDiscovery(id, raw);
-      else if (type === 'event') handleEvent(id, raw);
-      else if (type === 'lock') handleLock(raw);
-    }
-
-    // ── Discovery ──────────────────────────────────────────
-
-    function getWorkflowTasks(card) {
-      for (const ext of (card.capabilities || {}).extensions || []) {
-        if (ext.uri === 'urn:skitter:workflow' && ext.params && ext.params.tasks && ext.params.tasks.length) {
-          return ext.params.tasks;
-        }
-      }
-      return null;
-    }
-
-    function handleDiscovery(agentId, raw) {
-      if (agentId === 'skitter') return; // skip coordinator card
-      if (!raw) {
-        S.agents.delete(agentId);
-        S.apps.delete(agentId);
-        renderSidebar();
-        return;
-      }
-      try {
-        const card = JSON.parse(raw);
-        if (getWorkflowTasks(card)) {
-          S.apps.set(agentId, card);
-        } else {
-          const existing = S.agents.get(agentId);
-          S.agents.set(agentId, { card, alive: existing ? existing.alive : true });
-        }
-        renderSidebar();
-      } catch (e) { /* ignore malformed cards */ }
-    }
-
-    // ── Events ─────────────────────────────────────────────
-
-    function handleEvent(agentId, raw) {
-      if (!raw) return;
-      try {
-        const data = JSON.parse(raw);
-        const ev = data.event;
-
-        // Agent LWT: dead event
-        if (ev === 'dead' && data.agent) {
-          const agent = S.agents.get(data.agent);
-          if (agent) { agent.alive = false; renderSidebar(); }
-          addLogEntry({ type: 'agent_dead', detail: data.agent, time: data.timestamp });
-          return;
-        }
-
-        // Agent alive (reconnect publishes alive event or fresh card)
-        if (ev === 'alive' && data.agent) {
-          const agent = S.agents.get(data.agent);
-          if (agent) { agent.alive = true; renderSidebar(); }
-          return;
-        }
-
-        // Coordinator lifecycle events (published on skitter's event topic)
-        if (agentId === 'skitter') handleCoordinatorEvent(data);
-      } catch (e) { /* ignore */ }
-    }
-
-    function handleCoordinatorEvent(data) {
-      const ev = data.event;
-      const sid = data.session_id;
-      const d = data.data || {};
-
-      switch (ev) {
-        case 'session_created': {
-          const session = {
-            app_id: d.app_id || '',
-            app_name: d.app_name || d.app_id || '',
-            state: 'running',
-            graph: d.graph || [],
-            tasks: new Map(),
-            created: data.timestamp,
-            error: '',
-          };
-          for (const t of session.graph) {
-            session.tasks.set(t.id, { agent: t.agent, state: 'pending', error: '', description: t.description || '' });
-          }
-          S.sessions.set(sid, session);
-          pruneOldSessions();
-          break;
-        }
-        case 'task_started': {
-          const sess = S.sessions.get(sid);
-          if (sess) {
-            const tid = data.task_id;
-            let task = sess.tasks.get(tid);
-            if (!task) {
-              task = { agent: d.agent || '', state: 'pending', error: '', description: '' };
-              sess.tasks.set(tid, task);
-            }
-            task.state = 'running';
-            if (d.agent) task.agent = d.agent;
-          }
-          break;
-        }
-        case 'task_completed': {
-          const sess = S.sessions.get(sid);
-          if (sess) {
-            const task = sess.tasks.get(data.task_id);
-            if (task) task.state = 'completed';
-          }
-          break;
-        }
-        case 'task_failed': {
-          const sess = S.sessions.get(sid);
-          if (sess) {
-            const task = sess.tasks.get(data.task_id);
-            if (task) { task.state = 'failed'; task.error = d.error || ''; }
-          }
-          break;
-        }
-        case 'session_completed': {
-          const sess = S.sessions.get(sid);
-          if (sess) sess.state = 'completed';
-          break;
-        }
-        case 'session_failed': {
-          const sess = S.sessions.get(sid);
-          if (sess) { sess.state = 'failed'; sess.error = d.error || ''; }
-          break;
-        }
-      }
-
-      addLogEntry({
-        type: ev,
-        session_id: sid || '',
-        task_id: data.task_id || '',
-        agent: d.agent || '',
-        error: d.error || '',
-        app_id: d.app_id || '',
-        time: data.timestamp,
-      });
-
-      renderSessions();
-    }
-
-    function handleLock(raw) {
-      S.coordinatorAlive = !!raw;
-      renderHeader();
-    }
-
-    // ── Log ────────────────────────────────────────────────
-
-    function addLogEntry(entry) {
-      S.events.push(entry);
-      if (S.events.length > MAX_EVENTS) S.events.splice(0, S.events.length - MAX_EVENTS);
-      renderLog();
-    }
-
-    function pruneOldSessions() {
-      if (S.sessions.size <= MAX_SESSIONS) return;
-      // Remove oldest terminal sessions first
-      const sorted = [...S.sessions.entries()].sort((a, b) => {
-        const aT = a[1].state !== 'running' ? 0 : 1;
-        const bT = b[1].state !== 'running' ? 0 : 1;
-        if (aT !== bT) return aT - bT;
-        return (new Date(a[1].created || 0)) - (new Date(b[1].created || 0));
-      });
-      while (S.sessions.size > MAX_SESSIONS) {
-        S.sessions.delete(sorted.shift()[0]);
-      }
-    }
-
-    // ── DAG computation ────────────────────────────────────
-
-    function computeLevels(graph) {
-      const levels = {};
-      const taskMap = {};
-      for (const t of graph) taskMap[t.id] = t;
-
-      function visit(id) {
-        if (id in levels) return levels[id];
-        const t = taskMap[id];
-        if (!t || !t.needs || t.needs.length === 0) { levels[id] = 0; return 0; }
-        let max = 0;
-        for (const n of t.needs) max = Math.max(max, visit(n) + 1);
-        levels[id] = max;
-        return max;
-      }
-
-      for (const t of graph) visit(t.id);
-      return levels;
-    }
-
-    function groupByLevel(graph, levels) {
-      const groups = [];
-      for (const t of graph) {
-        const lv = levels[t.id] || 0;
-        while (groups.length <= lv) groups.push([]);
-        groups[lv].push(t);
-      }
-      return groups;
-    }
-
-    // ── Render: Header ─────────────────────────────────────
-
-    function renderHeader() {
-      const dotMqtt = document.getElementById('dot-mqtt');
-      const lblMqtt = document.getElementById('lbl-mqtt');
-      const dotCoord = document.getElementById('dot-coord');
-      const lblCoord = document.getElementById('lbl-coord');
-
-      dotMqtt.className = 'dot ' + (S.connected ? 'dot-on' : 'dot-off');
-      lblMqtt.textContent = S.connected ? 'Connected' : 'Disconnected';
-      dotCoord.className = 'dot ' + (S.coordinatorAlive ? 'dot-on' : 'dot-off');
-      lblCoord.textContent = S.coordinatorAlive ? 'Coordinator up' : 'Coordinator down';
-    }
-
-    // ── Render: Sidebar ────────────────────────────────────
-
-    function renderSidebar() {
-      renderAgentList();
-      renderAppList();
-    }
-
-    function renderAgentList() {
-      const el = document.getElementById('agent-list');
-      if (S.agents.size === 0) {
-        el.innerHTML = '<div class="side-empty">No agents discovered</div>';
-        return;
-      }
-      let h = '';
-      for (const [id, { card, alive }] of S.agents) {
-        const dotClass = alive ? 'dot-on' : 'dot-off';
-        const desc = card.description || '';
-        const skills = (card.skills || []).map(s => s.tags || []).flat();
-        h += `<div class="side-item" onclick="this.classList.toggle('expanded')">
-          <div class="side-item-name"><span class="dot ${dotClass}"></span>${esc(card.name || id)}</div>
-          ${desc ? `<div class="side-item-desc">${esc(trunc(desc, 60))}</div>` : ''}
-          <div class="side-item-detail">
-            <div class="detail-row"><span class="detail-label">id</span>${esc(id)}</div>
-            ${card.version ? `<div class="detail-row"><span class="detail-label">version</span>${esc(card.version)}</div>` : ''}
-            ${desc ? `<div class="detail-row"><span class="detail-label">desc</span>${esc(desc)}</div>` : ''}
-            ${card.capabilities ? `<div class="detail-row"><span class="detail-label">caps</span>${esc(Object.entries(card.capabilities).filter(([,v])=>v).map(([k])=>k).join(', ') || 'none')}</div>` : ''}
-          </div>
-          ${skills.length ? `<div class="side-item-tags">${skills.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
-        </div>`;
-      }
-      el.innerHTML = h;
-    }
-
-    function renderAppList() {
-      const el = document.getElementById('app-list');
-      if (S.apps.size === 0) {
-        el.innerHTML = '<div class="side-empty">No apps registered</div>';
-        return;
-      }
-      let h = '';
-      for (const [id, card] of S.apps) {
-        const tasks = getWorkflowTasks(card) || [];
-        const desc = card.description || '';
-        h += `<div class="side-item" onclick="this.classList.toggle('expanded')">
-          <div class="side-item-name">${esc(card.name || id)}</div>
-          <div class="side-item-desc">${tasks.length} task${tasks.length !== 1 ? 's' : ''}${desc ? ' \u00b7 ' + esc(trunc(desc, 40)) : ''}</div>
-          <div class="side-item-detail">
-            <div class="detail-row"><span class="detail-label">id</span>${esc(id)}</div>
-            ${card.version ? `<div class="detail-row"><span class="detail-label">version</span>${esc(card.version)}</div>` : ''}
-            ${desc ? `<div class="detail-row"><span class="detail-label">desc</span>${esc(desc)}</div>` : ''}
-            ${tasks.map(t => `<div class="detail-row"><span class="detail-label">${esc(t.id)}</span>${esc(t.agent)}${t.description ? ': ' + esc(trunc(t.description, 50)) : ''}</div>`).join('')}
-          </div>
-        </div>`;
-      }
-      el.innerHTML = h;
-    }
-
-    // ── Render: Sessions ───────────────────────────────────
-
-    function renderSessions() {
-      const el = document.getElementById('sessions');
-
-      if (S.sessions.size === 0) {
-        el.innerHTML = `<div class="sessions-empty">
-          <div class="sessions-empty-title">No active sessions</div>
-          <div class="sessions-empty-hint">Run a composed app to see activity here</div>
-        </div>`;
-        return;
-      }
-
-      // Sort: running first, then by creation time (newest first)
-      const sorted = [...S.sessions.entries()].sort((a, b) => {
-        const aR = a[1].state === 'running' ? 0 : 1;
-        const bR = b[1].state === 'running' ? 0 : 1;
-        if (aR !== bR) return aR - bR;
-        return (new Date(b[1].created || 0)) - (new Date(a[1].created || 0));
-      });
-
-      let h = '';
-      for (const [sid, sess] of sorted) {
-        const terminal = sess.state !== 'running';
-        const appLabel = sess.app_name || sess.app_id || '';
-
-        h += `<div class="session-card${terminal ? ' terminal' : ''}">
-          <div class="session-hdr">
-            ${appLabel ? `<span class="session-app">${esc(appLabel)}</span>` : ''}
-            <span class="session-id">${esc(shortId(sid))}</span>
-            <span class="session-badge ${sess.state}">${esc(sess.state)}</span>
-            <span class="session-time">${esc(fmtAgo(sess.created))}</span>
-          </div>
-          ${renderDag(sess)}
-          ${sess.error ? `<div class="session-error">${esc(trunc(sess.error, 200))}</div>` : ''}
-        </div>`;
-      }
-      el.innerHTML = h;
-    }
-
-    function renderDag(sess) {
-      // If we have graph data, render as a proper DAG
-      if (sess.graph.length > 0) {
-        const levels = computeLevels(sess.graph);
-        const groups = groupByLevel(sess.graph, levels);
-
-        let h = '<div class="dag">';
-        for (let i = 0; i < groups.length; i++) {
-          if (i > 0) h += '<div class="dag-arrow">\u2192</div>';
-          h += '<div class="dag-level">';
-          for (const t of groups[i]) {
-            const taskState = sess.tasks.get(t.id);
-            const st = taskState ? taskState.state : 'pending';
-            const agent = taskState ? taskState.agent : t.agent;
-            const error = taskState ? taskState.error : '';
-            const desc = t.description || '';
-            const dotClass = st === 'running' ? 'dot-pulse' : st === 'completed' ? 'dot-on' : st === 'failed' ? 'dot-off' : '';
-
-            h += `<div class="dag-task ${st}">
-              <span class="dot ${dotClass}"></span>
-              <span class="dag-task-id">${esc(t.id)}</span>
-              ${agent ? `<span class="dag-task-agent">${esc(agent)}</span>` : ''}
-              ${desc ? `<div class="dag-task-tooltip">${esc(desc)}</div>` : ''}
-              ${error ? `<div class="dag-task-error">${esc(trunc(error, 120))}</div>` : ''}
-            </div>`;
-          }
-          h += '</div>';
-        }
-        h += '</div>';
-        return h;
-      }
-
-      // Fallback: no graph data, just show task chips from events
-      if (sess.tasks.size > 0) {
-        let h = '<div class="session-tasks-inline">';
-        for (const [tid, task] of sess.tasks) {
-          const dotClass = task.state === 'running' ? 'dot-pulse' : task.state === 'completed' ? 'dot-on' : task.state === 'failed' ? 'dot-off' : '';
-          h += `<span class="task-chip ${task.state}"><span class="dot ${dotClass}"></span>${esc(tid)}${task.agent ? ' \u00b7 ' + esc(task.agent) : ''}</span>`;
-        }
-        h += '</div>';
-        return h;
-      }
-
-      return '<div class="session-minimal">Waiting for tasks...</div>';
-    }
-
-    // ── Render: Event Log ──────────────────────────────────
-
-    function renderLog() {
-      document.getElementById('log-count').textContent = S.events.length;
-
-      if (!S.logOpen) return;
-
-      const el = document.getElementById('log-body');
-      let h = '';
-      // Render newest first
-      for (let i = S.events.length - 1; i >= 0; i--) {
-        const e = S.events[i];
-        const time = fmtTime(e.time);
-        const type = e.type || '';
-
-        let detail = '';
-        if (e.session_id) detail += shortId(e.session_id);
-        if (e.task_id) detail += ' / ' + e.task_id;
-        if (e.agent) detail += ' \u2192 ' + e.agent;
-        if (e.app_id) detail += ' (' + e.app_id + ')';
-        if (e.error) detail += ' : ' + trunc(e.error, 80);
-        if (e.detail) detail = e.detail;
-
-        h += `<div class="log-row">
-          <span class="log-time">${esc(time)}</span>
-          <span class="log-type ${esc(type)}">${esc(type)}</span>
-          <span class="log-detail">${esc(detail)}</span>
-        </div>`;
-      }
-      el.innerHTML = h || '<div style="padding:12px 16px;color:var(--text-dim);font-size:11px;">No events yet</div>';
-    }
-
-    function toggleLog() {
-      S.logOpen = !S.logOpen;
-      document.getElementById('event-log').classList.toggle('open', S.logOpen);
-      if (S.logOpen) renderLog();
-    }
-
-    // ── Render all ─────────────────────────────────────────
-
-    function renderAll() {
-      renderHeader();
+</div>
+
+<script>
+/* ===== Icons ===== */
+const ICO = {
+  close: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  send: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9z"/></svg>',
+  sun: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
+  moon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+};
+
+/* ===== State ===== */
+const S = {
+  connected: false,
+  client: null,
+  clientId: 'dash-' + crypto.randomUUID().slice(0, 8),
+  agents: new Map(),
+  sessions: new Map(),
+  activeId: null,
+  pending: new Map(),
+  config: {
+    brokerUrl: 'ws://localhost:8083/mqtt',
+    org: 'skitter',
+    unit: 'default',
+    username: '',
+    password: '',
+  },
+  theme: 'dark',
+  sidebarOpen: window.innerWidth > 768,
+};
+
+/* ===== Helpers ===== */
+const uuid = () => crypto.randomUUID();
+const uuidHex = () => crypto.randomUUID().replaceAll('-', '');
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function timeAgo(iso) {
+  const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60) return 'just now';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+function fmtTime(iso) {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function hash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function agentColor(name) {
+  const h = hash(name), h1 = h % 360, h2 = (h1 + 35 + h % 55) % 360;
+  return {
+    gradient: 'linear-gradient(135deg, hsl(' + h1 + ',78%,62%), hsl(' + h2 + ',72%,52%))',
+    primary: 'hsl(' + h1 + ',78%,62%)',
+  };
+}
+
+function md(text) {
+  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+    var html = DOMPurify.sanitize(marked.parse(text));
+    return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
+  }
+  return esc(text).replace(/\n/g, '<br>');
+}
+
+function isAppCard(card) {
+  return card.capabilities && card.capabilities.extensions &&
+    card.capabilities.extensions.some(function(e) { return e.uri === 'urn:skitter:app'; });
+}
+
+/* ===== MQTT ===== */
+function topicPrefix() { return '$a2a/v1'; }
+
+function replyTopic() {
+  return topicPrefix() + '/reply/' + S.config.org + '/' + S.config.unit + '/dashboard/' + S.clientId;
+}
+
+function mqttConnect() {
+  if (S.client) { try { S.client.end(true); } catch(e) {} }
+
+  if (typeof mqtt === 'undefined') {
+    S.connected = false;
+    var el = document.getElementById('connection-status');
+    if (el) { el.className = 'connection-status error'; el.innerHTML = '<span class="status-dot"></span> MQTT library not loaded'; }
+    return;
+  }
+
+  var opts = {
+    clientId: S.clientId,
+    protocolVersion: 5,
+    clean: true,
+    reconnectPeriod: 3000,
+    connectTimeout: 5000,
+  };
+  if (S.config.username) opts.username = S.config.username;
+  if (S.config.password) opts.password = S.config.password;
+
+  S.client = mqtt.connect(S.config.brokerUrl, opts);
+
+  S.client.on('connect', function() {
+    S.connected = true;
+    renderStatus();
+    var p = topicPrefix(), org = S.config.org, unit = S.config.unit;
+    S.client.subscribe(p + '/discovery/' + org + '/' + unit + '/+', { qos: 1 });
+    S.client.subscribe(p + '/event/' + org + '/' + unit + '/skitter', { qos: 1 });
+    S.client.subscribe(replyTopic(), { qos: 1 });
+    S.client.subscribe(replyTopic() + '/#', { qos: 1 });
+  });
+
+  S.client.on('close', function() { S.connected = false; renderStatus(); });
+  S.client.on('error', function() { S.connected = false; renderStatus(); });
+  S.client.on('message', onMsg);
+}
+
+function onMsg(topic, payload, packet) {
+  var t = topic.toString();
+  var org = S.config.org, unit = S.config.unit, p = topicPrefix();
+
+  if (payload.length === 0) {
+    var discPfx = p + '/discovery/' + org + '/' + unit + '/';
+    if (t.startsWith(discPfx)) {
+      S.agents.delete(t.split('/').pop());
+      if (!S.activeId) renderMain();
       renderSidebar();
-      renderSessions();
-      renderLog();
     }
+    return;
+  }
 
-    // ── Periodic refresh for relative times ────────────────
+  var msg;
+  try { msg = JSON.parse(payload.toString()); } catch(e) { return; }
 
-    setInterval(() => {
-      if (S.sessions.size > 0) renderSessions();
-    }, 30000);
+  var discPfx2 = p + '/discovery/' + org + '/' + unit + '/';
+  if (t.startsWith(discPfx2)) {
+    var id = t.split('/').pop();
+    S.agents.set(id, { id: id, card: msg, isApp: isAppCard(msg), color: agentColor(msg.name || id) });
+    if (!S.activeId) renderMain();
+    renderSidebar();
+  } else if (t.startsWith(p + '/event/')) {
+    /* coordinator lifecycle events: available for future use */
+  } else if (t.startsWith(p + '/reply/')) {
+    onReply(msg, packet);
+  }
+}
 
-    // ── Init ───────────────────────────────────────────────
+/* ===== Reply Handling ===== */
+function onReply(msg, packet) {
+  var cd = packet.properties && packet.properties.correlationData;
+  var reqId = cd ? (typeof cd === 'string' ? cd : new TextDecoder().decode(cd)) : null;
+  if (!reqId) return;
 
-    initConnection();
-  </script>
+  var pend = S.pending.get(reqId);
+  if (!pend) return;
+  var sess = S.sessions.get(pend.sessionId);
+  if (!sess) return;
+
+  if (msg.error) {
+    streamAppend(sess, msg.error.message || 'Error', true);
+    streamDone(sess, true);
+    S.pending.delete(reqId);
+    return;
+  }
+
+  var r = msg.result;
+  if (!r) return;
+
+  if (r.statusUpdate) {
+    var st = r.statusUpdate;
+    var parts = st.status && st.status.message && st.status.message.parts;
+    var text = parts ? parts.map(function(p) { return p.text; }).filter(Boolean).join('') : '';
+    var tn = st.metadata && st.metadata.task_name;
+    if (text) streamAppend(sess, text, false, tn);
+    var terminal = ['TASK_STATE_COMPLETED','TASK_STATE_FAILED','TASK_STATE_CANCELED','TASK_STATE_REJECTED'];
+    if (st.status && terminal.indexOf(st.status.state) !== -1) {
+      streamDone(sess, st.status.state === 'TASK_STATE_FAILED');
+      S.pending.delete(reqId);
+    }
+  } else if (r.artifactUpdate) {
+    var au = r.artifactUpdate;
+    var aparts = au.artifact && au.artifact.parts;
+    var atext = aparts ? aparts.map(function(p) { return p.text; }).filter(Boolean).join('') : '';
+    if (atext) {
+      if (au.append) streamAppend(sess, atext);
+      else streamReplace(sess, atext);
+    }
+  }
+}
+
+function streamAppend(sess, text, isErr, taskName) {
+  var msgs = sess.messages;
+  var last = msgs[msgs.length - 1];
+  if (last && last.role === 'agent' && last.streaming) {
+    if (last.typing) { last.typing = false; last.text = ''; }
+    last.text += text;
+    if (taskName && !last.taskName) last.taskName = taskName;
+    if (isErr) last.isError = true;
+  } else {
+    msgs.push({ id: uuid(), role: 'agent', text: text, timestamp: new Date().toISOString(), streaming: true, isError: isErr, taskName: taskName });
+  }
+  sess.streaming = true;
+  sess.lastMessageAt = new Date().toISOString();
+  renderChat();
+  renderSidebar();
+  persist();
+}
+
+function streamReplace(sess, text) {
+  var msgs = sess.messages;
+  var last = msgs[msgs.length - 1];
+  if (last && last.role === 'agent' && last.streaming) {
+    last.typing = false;
+    last.text = text;
+  } else {
+    msgs.push({ id: uuid(), role: 'agent', text: text, timestamp: new Date().toISOString(), streaming: true });
+  }
+  sess.streaming = true;
+  renderChat();
+  persist();
+}
+
+function streamDone(sess, isErr) {
+  var msgs = sess.messages;
+  var last = msgs[msgs.length - 1];
+  if (last && last.role === 'agent' && last.streaming) {
+    last.streaming = false;
+    last.typing = false;
+    if (isErr) last.isError = true;
+    if (!last.text) last.text = isErr ? 'The agent encountered an error.' : 'Done.';
+  }
+  sess.streaming = false;
+  sess.pendingReqId = null;
+  renderChat();
+  renderSidebar();
+  persist();
+}
+
+/* ===== Chat Actions ===== */
+function startChat(agentId) {
+  var ag = S.agents.get(agentId);
+  if (!ag) return;
+  var id = uuid();
+  S.sessions.set(id, {
+    id: id, agentId: agentId,
+    agentName: ag.card.name || agentId,
+    isApp: ag.isApp,
+    contextId: uuid(),
+    messages: [],
+    streaming: false,
+    pendingReqId: null,
+    createdAt: new Date().toISOString(),
+    lastMessageAt: new Date().toISOString(),
+  });
+  S.activeId = id;
+  renderSidebar();
+  renderMain();
+  persist();
+  if (window.innerWidth <= 768) { S.sidebarOpen = false; renderSidebarVis(); }
+  setTimeout(function() { var el = document.getElementById('chat-input'); if (el) el.focus(); }, 80);
+}
+
+function selectSession(id) {
+  S.activeId = id;
+  renderSidebar();
+  renderMain();
+  if (window.innerWidth <= 768) { S.sidebarOpen = false; renderSidebarVis(); }
+  setTimeout(function() {
+    var m = document.getElementById('chat-messages');
+    if (m) m.scrollTop = m.scrollHeight;
+    var el = document.getElementById('chat-input');
+    if (el) el.focus();
+  }, 80);
+}
+
+function deleteSession(id, ev) {
+  if (ev) ev.stopPropagation();
+  S.sessions.delete(id);
+  if (S.activeId === id) { S.activeId = null; renderMain(); }
+  renderSidebar();
+  persist();
+}
+
+function newChat() {
+  S.activeId = null;
+  renderSidebar();
+  renderMain();
+}
+
+function sendMessage() {
+  var inp = document.getElementById('chat-input');
+  var text = inp ? inp.value.trim() : '';
+  if (!text) return;
+  var sess = S.sessions.get(S.activeId);
+  if (!sess || !S.connected || sess.streaming) return;
+
+  sess.messages.push({ id: uuid(), role: 'user', text: text, timestamp: new Date().toISOString() });
+  sess.lastMessageAt = new Date().toISOString();
+  inp.value = '';
+  inp.style.height = 'auto';
+
+  var reqId = uuid(), taskId = uuid();
+  var request = {
+    jsonrpc: '2.0', id: reqId, method: 'SendMessage',
+    params: {
+      message: { messageId: uuidHex(), role: 'ROLE_USER', parts: [{ text: text }], taskId: taskId, contextId: sess.contextId },
+      metadata: { sender: 'dashboard' },
+    },
+  };
+
+  S.pending.set(reqId, { sessionId: sess.id, taskId: taskId });
+  sess.pendingReqId = reqId;
+  sess.messages.push({ id: uuid(), role: 'agent', text: '', timestamp: new Date().toISOString(), streaming: true, typing: true });
+  sess.streaming = true;
+
+  var org = S.config.org, unit = S.config.unit;
+  S.client.publish(topicPrefix() + '/request/' + org + '/' + unit + '/' + sess.agentId, JSON.stringify(request), {
+    qos: 1,
+    properties: { responseTopic: replyTopic(), correlationData: new TextEncoder().encode(reqId) },
+  });
+
+  renderChat();
+  renderSidebar();
+  persist();
+}
+
+/* ===== Persistence ===== */
+function persist() {
+  try {
+    var d = Array.from(S.sessions.values()).map(function(s) {
+      return {
+        id: s.id, agentId: s.agentId, agentName: s.agentName, isApp: s.isApp,
+        contextId: s.contextId, messages: s.messages.filter(function(m) { return !m.typing; }),
+        createdAt: s.createdAt, lastMessageAt: s.lastMessageAt,
+      };
+    });
+    localStorage.setItem('skitter-sessions', JSON.stringify(d));
+  } catch(e) {}
+}
+
+function loadSessions() {
+  try {
+    var d = JSON.parse(localStorage.getItem('skitter-sessions') || '[]');
+    d.forEach(function(s) { s.streaming = false; s.pendingReqId = null; S.sessions.set(s.id, s); });
+  } catch(e) {}
+}
+
+function loadConfig() {
+  try { Object.assign(S.config, JSON.parse(localStorage.getItem('skitter-config') || '{}')); } catch(e) {}
+  try {
+    var saved = localStorage.getItem('skitter-theme');
+    S.theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  } catch(e) {}
+}
+
+function saveConfig() {
+  try { localStorage.setItem('skitter-config', JSON.stringify(S.config)); } catch(e) {}
+}
+
+/* ===== Settings ===== */
+function openSettings() {
+  document.getElementById('settings-overlay').classList.add('open');
+  document.getElementById('setting-url').value = S.config.brokerUrl;
+  document.getElementById('setting-org').value = S.config.org;
+  document.getElementById('setting-unit').value = S.config.unit;
+  document.getElementById('setting-username').value = S.config.username;
+  document.getElementById('setting-password').value = S.config.password;
+}
+
+function closeSettings() { document.getElementById('settings-overlay').classList.remove('open'); }
+
+function applySettings() {
+  S.config.brokerUrl = document.getElementById('setting-url').value.trim() || 'ws://localhost:8083/mqtt';
+  S.config.org = document.getElementById('setting-org').value.trim() || 'skitter';
+  S.config.unit = document.getElementById('setting-unit').value.trim() || 'default';
+  S.config.username = document.getElementById('setting-username').value;
+  S.config.password = document.getElementById('setting-password').value;
+  saveConfig();
+  closeSettings();
+  S.agents.clear();
+  mqttConnect();
+}
+
+/* ===== Theme ===== */
+function toggleTheme() {
+  S.theme = S.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', S.theme);
+  try { localStorage.setItem('skitter-theme', S.theme); } catch(e) {}
+  renderThemeBtn();
+}
+
+function renderThemeBtn() {
+  var b = document.getElementById('theme-btn');
+  if (b) b.innerHTML = S.theme === 'dark' ? ICO.sun : ICO.moon;
+}
+
+/* ===== Rendering ===== */
+function renderStatus() {
+  var el = document.getElementById('connection-status');
+  if (!el) return;
+  if (S.connected) {
+    el.className = 'connection-status connected';
+    el.innerHTML = '<span class="status-dot"></span> Connected';
+  } else {
+    el.className = 'connection-status disconnected';
+    el.innerHTML = '<span class="status-dot"></span> Disconnected';
+  }
+}
+
+function renderSidebarVis() {
+  var sb = document.getElementById('sidebar');
+  var ov = document.getElementById('sidebar-overlay');
+  if (S.sidebarOpen) { sb.classList.add('open'); ov.classList.add('open'); }
+  else { sb.classList.remove('open'); ov.classList.remove('open'); }
+}
+
+function toggleSidebar() { S.sidebarOpen = !S.sidebarOpen; renderSidebarVis(); }
+
+function renderSidebar() {
+  var el = document.getElementById('session-list');
+  if (!el) return;
+  var list = Array.from(S.sessions.values()).sort(function(a, b) {
+    return new Date(b.lastMessageAt) - new Date(a.lastMessageAt);
+  });
+
+  if (!list.length) {
+    el.innerHTML = '<div class="session-empty">No conversations yet</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(function(s) {
+    var ag = S.agents.get(s.agentId);
+    var c = ag ? ag.color : agentColor(s.agentName);
+    var active = s.id === S.activeId;
+    var lastUser = null;
+    for (var i = s.messages.length - 1; i >= 0; i--) {
+      if (s.messages[i].role === 'user') { lastUser = s.messages[i]; break; }
+    }
+    var preview = lastUser ? lastUser.text.slice(0, 60) : 'New conversation';
+    return '<div class="session-item' + (active ? ' active' : '') + '" style="--agent-color:' + c.primary + '" onclick="selectSession(\'' + s.id + '\')">' +
+      '<div class="session-item-header">' +
+        '<div class="session-item-avatar" style="background:' + c.gradient + '">' + (s.agentName || '?')[0].toUpperCase() + '</div>' +
+        '<div class="session-item-info">' +
+          '<div class="session-item-name">' + esc(s.agentName) + '</div>' +
+          '<div class="session-item-time">' + timeAgo(s.lastMessageAt) + '</div>' +
+        '</div>' +
+        '<button class="session-delete" onclick="deleteSession(\'' + s.id + '\',event)" title="Delete">' + ICO.close + '</button>' +
+      '</div>' +
+      '<div class="session-item-preview">' + esc(preview) + (preview.length >= 60 ? '&hellip;' : '') + '</div>' +
+      (s.streaming ? '<div class="session-item-streaming"><span class="pulse-dot"></span> Responding&hellip;</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function renderMain() {
+  var el = document.getElementById('main');
+  if (!el) return;
+  if (S.activeId) renderChatFull(el);
+  else renderWelcome(el);
+}
+
+function renderWelcome(el) {
+  var agents = Array.from(S.agents.values());
+  var cards = agents.map(function(a) {
+    var id = a.id, card = a.card, app = a.isApp, c = a.color;
+    var name = card.name || id;
+    var skills = card.skills || [];
+    return '<div class="agent-card" style="--agent-gradient:' + c.gradient + ';--agent-color:' + c.primary + '" onclick="startChat(\'' + id + '\')">' +
+      '<div class="agent-card-header">' +
+        '<div class="agent-card-avatar" style="background:' + c.gradient + '">' + name[0].toUpperCase() + '</div>' +
+        '<span class="agent-card-badge ' + (app ? 'badge-app' : 'badge-agent') + '">' + (app ? 'App' : 'Agent') + '</span>' +
+      '</div>' +
+      '<div class="agent-card-name">' + esc(name) + '</div>' +
+      '<div class="agent-card-desc">' + esc(card.description || '') + '</div>' +
+      (skills.length ? '<div class="agent-card-skills">' + skills.slice(0, 4).map(function(s) {
+        return '<span class="skill-tag">' + esc(s.name || s.id) + '</span>';
+      }).join('') + '</div>' : '') +
+    '</div>';
+  }).join('');
+
+  el.innerHTML = '<div class="welcome">' +
+    (agents.length
+      ? '<div class="agent-grid">' + cards + '</div>'
+      : '<div class="welcome-empty"><p>No agents discovered yet</p><p class="text-muted">Make sure your agents are running and connected to the broker.</p></div>'
+    ) +
+  '</div>';
+}
+
+function renderChatFull(container) {
+  var s = S.sessions.get(S.activeId);
+  if (!s) return;
+  var ag = S.agents.get(s.agentId);
+  var c = ag ? ag.color : agentColor(s.agentName);
+
+  container.innerHTML = '<div class="chat">' +
+    '<div class="chat-header">' +
+      '<div class="chat-agent">' +
+        '<div class="chat-avatar" style="background:' + c.gradient + '">' + (s.agentName || '?')[0].toUpperCase() + '</div>' +
+        '<div>' +
+          '<div class="chat-agent-name">' + esc(s.agentName) + '</div>' +
+          '<div class="chat-agent-desc">' + esc(ag && ag.card ? ag.card.description : '') + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="chat-messages" id="chat-messages">' + buildMessages(s, c) + '</div>' +
+    '<div class="chat-input-area">' +
+      '<div class="input-box">' +
+        '<textarea id="chat-input" placeholder="Message ' + esc(s.agentName) + '&hellip;" rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>' +
+        '<button class="send-btn" onclick="sendMessage()"' + (s.streaming ? ' disabled' : '') + '>' + ICO.send + '</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+  setTimeout(function() { var m = document.getElementById('chat-messages'); if (m) m.scrollTop = m.scrollHeight; }, 40);
+}
+
+function buildMessages(s, c) {
+  if (!s.messages.length) {
+    return '<div class="chat-empty">' +
+      '<div class="chat-empty-avatar" style="background:' + c.gradient + '">' + (s.agentName || '?')[0].toUpperCase() + '</div>' +
+      '<h3>' + esc(s.agentName) + '</h3>' +
+      '<p>' + esc(S.agents.get(s.agentId) && S.agents.get(s.agentId).card ? S.agents.get(s.agentId).card.description : 'Start a conversation') + '</p>' +
+    '</div>';
+  }
+  return s.messages.map(function(m) {
+    if (m.role === 'user') {
+      return '<div class="message message-user">' +
+        '<div class="message-content">' + esc(m.text) + '</div>' +
+        '<div class="message-meta">' + fmtTime(m.timestamp) + '</div>' +
+      '</div>';
+    }
+    var body;
+    if (m.typing && !m.text) {
+      body = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+    } else {
+      body = '<div class="markdown-body">' + md(m.text) + '</div>' + (m.streaming ? '<span class="cursor"></span>' : '');
+    }
+    return '<div class="message message-agent' + (m.streaming ? ' streaming' : '') + (m.isError ? ' error' : '') + '">' +
+      (m.taskName ? '<div class="message-task-name">' + esc(m.taskName) + '</div>' : '') +
+      '<div class="message-content">' + body + '</div>' +
+      (!m.streaming ? '<div class="message-meta">' + fmtTime(m.timestamp) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function renderChat() {
+  var s = S.sessions.get(S.activeId);
+  if (!s) return;
+  var msgs = document.getElementById('chat-messages');
+  if (!msgs) return;
+  var atBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 120;
+  var c = S.agents.get(s.agentId) ? S.agents.get(s.agentId).color : agentColor(s.agentName);
+  msgs.innerHTML = buildMessages(s, c);
+  var btn = document.querySelector('.send-btn');
+  if (btn) btn.disabled = s.streaming;
+  if (atBottom) msgs.scrollTop = msgs.scrollHeight;
+}
+
+/* ===== Input ===== */
+function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
+function autoGrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
+
+/* ===== Init ===== */
+(function init() {
+  loadConfig();
+  loadSessions();
+  document.documentElement.setAttribute('data-theme', S.theme);
+  renderThemeBtn();
+  renderSidebar();
+  renderMain();
+  renderStatus();
+  renderSidebarVis();
+  if (typeof marked !== 'undefined') marked.setOptions({ breaks: true, gfm: true });
+  mqttConnect();
+  setInterval(renderSidebar, 60000);
+  window.addEventListener('resize', function() {
+    if (window.innerWidth > 768 && !S.sidebarOpen) { S.sidebarOpen = true; renderSidebarVis(); }
+  });
+})();
+</script>
 </body>
 </html>

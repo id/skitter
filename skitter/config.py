@@ -45,8 +45,19 @@ def skills_dir() -> Path:
 
 
 def write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
-    """Write a .env file (KEY=value per line)."""
-    lines = [f"{k}={v}" for k, v in env_vars.items() if v]
+    """Write a .env file (KEY=value per line).
+
+    Values containing ``$`` are single-quoted so docker compose does not
+    try to interpolate them as variable references.
+    """
+    lines: list[str] = []
+    for k, v in env_vars.items():
+        if not v:
+            continue
+        if "$" in v:
+            # Single quotes prevent variable interpolation in docker compose
+            v = f"'{v}'"
+        lines.append(f"{k}={v}")
     env_path.write_text("\n".join(lines) + "\n" if lines else "")
 
 

@@ -1100,7 +1100,11 @@ class TestA2ALazyNamespace:
 
         with patch.dict(
             "os.environ",
-            {"SKITTER_HOME": str(tmp_path)},
+            {
+                "SKITTER_HOME": str(tmp_path),
+                "SKITTER_A2A_ORG": "",
+                "SKITTER_A2A_UNIT": "",
+            },
             clear=False,
         ):
             org = a2a_mod.a2a_org()
@@ -1120,7 +1124,11 @@ class TestA2ALazyNamespace:
 
         with patch.dict(
             "os.environ",
-            {"SKITTER_HOME": str(tmp_path)},
+            {
+                "SKITTER_HOME": str(tmp_path),
+                "SKITTER_A2A_ORG": "",
+                "SKITTER_A2A_UNIT": "",
+            },
             clear=False,
         ):
             topic = a2a_mod.topic_request("test-agent")

@@ -130,7 +130,13 @@ class TestSkitterHomeResolution:
         cfg_file.write_text("broker:\n  tier: public\n  url: mqtt://example.com:1883\n")
         with patch.dict(
             "os.environ",
-            {"SKITTER_HOME": str(tmp_path), "SKITTER_LLM_MODEL": ""},
+            {
+                "SKITTER_HOME": str(tmp_path),
+                "SKITTER_LLM_MODEL": "",
+                "MQTT_BROKER_URL": "",
+                "MQTT_USERNAME": "",
+                "MQTT_PASSWORD": "",
+            },
             clear=False,
         ):
             cfg = load_config()

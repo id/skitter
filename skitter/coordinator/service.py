@@ -96,6 +96,16 @@ class Coordinator:
         if key[1] and self._context_active.get(key) == state.session_id:
             del self._context_active[key]
 
+    async def _unsubscribe_reply(self, reply_topic: str) -> None:
+        """Unsubscribe from a task reply topic to free broker subscription slots."""
+        if reply_topic and reply_topic in self._reply_subscriptions:
+            self._reply_subscriptions.discard(reply_topic)
+            if self._client:
+                try:
+                    await self._client.unsubscribe(reply_topic)
+                except Exception:
+                    pass
+
     # --- Session events ---
 
     async def _publish_event(
@@ -292,6 +302,7 @@ class Coordinator:
         if self._client and reply_t not in self._reply_subscriptions:
             await self._client.subscribe(reply_t, qos=1)
             self._reply_subscriptions.add(reply_t)
+        task.reply_topic = reply_t
         a2a_req = A2ARequest(
             text=prompt,
             request_id=correlation,
@@ -437,6 +448,9 @@ class Coordinator:
                     log.warning("Failed to send CancelTask for %s/%s", session_id, tid)
 
         for tid in state.pending | state.inflight:
+            task_def = state.graph.get(tid)
+            if task_def and task_def.reply_topic:
+                await self._unsubscribe_reply(task_def.reply_topic)
             await self._adb.update_task(
                 f"{session_id}/{tid}", state=TaskState.CANCELED, completed_at=now
             )
@@ -966,6 +980,9 @@ def _parse_agent_id_from_topic(topic: str) -> str:
 
 
 def main() -> None:
+    from skitter.config import configure_logging
+
+    configure_logging()
     db = open_db()
     coord = Coordinator(db)
     try:

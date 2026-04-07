@@ -16,6 +16,7 @@ class SessionTask:
     target: TaskTarget | None = None
     dispatch_correlation: str = ""  # MQTT Correlation Data sent with dispatch
     dispatch_task_id: str = ""  # A2A Task.id sent to agent; used for CancelTask
+    reply_topic: str = ""  # MQTT reply topic for unsubscribe after completion
 
 
 @dataclass

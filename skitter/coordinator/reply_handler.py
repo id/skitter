@@ -118,6 +118,11 @@ async def complete_task(
     state.results[node_id] = result
     state.inflight.discard(node_id)
 
+    # Free broker subscription slot
+    task = state.graph.get(node_id)
+    if task and task.reply_topic:
+        await coord._unsubscribe_reply(task.reply_topic)
+
     # Update DB
     db_task_row_id = f"{state.session_id}/{node_id}"
     await coord._adb.update_task(
@@ -144,6 +149,11 @@ async def fail_task(
     """Handle task failure and propagate."""
     state.inflight.discard(node_id)
     state.failed.add(node_id)
+
+    # Free broker subscription slot
+    task = state.graph.get(node_id)
+    if task and task.reply_topic:
+        await coord._unsubscribe_reply(task.reply_topic)
 
     # Update DB
     db_task_row_id = f"{state.session_id}/{node_id}"

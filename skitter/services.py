@@ -521,7 +521,9 @@ def status(argv: list[str] | None = None) -> None:
 
     # Agent summary
     if agents:
-        running_names = {n for n, s, _ in containers if "running" in s.lower() or "Up" in s}
+        running_names = {
+            n for n, s, _ in containers if "running" in s.lower() or "Up" in s
+        }
         running_agents = {
             aid for aid, _, _ in agents if _agent_container_name(aid) in running_names
         }

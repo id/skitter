@@ -19,15 +19,15 @@ log = logging.getLogger("skitter.setup")
 
 
 def _prompt(msg: str, default: str = "", *, secret: bool = False) -> str:
-    suffix = f" [{default}]" if default and not secret else ""
-    if secret and default:
-        suffix = f" [{default[:4]}{'*' * max(0, len(default) - 4)}]"
-    hint = " (- to clear)" if default else ""
+    if secret:
+        hint = " [****]" if default else ""
+    else:
+        hint = f" [{default}]" if default else ""
     try:
         if secret:
-            value = getpass.getpass(f"{msg}{hint}{suffix}: ").strip()
+            value = getpass.getpass(f"{msg}{hint}: ").strip()
         else:
-            value = input(f"{msg}{hint}{suffix}: ").strip()
+            value = input(f"{msg}{hint}: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nAborted.", file=sys.stderr)
         sys.exit(1)

@@ -123,7 +123,9 @@ def _collect_llm(
 
     model = _prompt("Model", existing.get("model", default_models.get(api, "")))
 
-    default_key = os.environ.get("SKITTER_LLM_API_KEY", "") or existing.get("api_key", "")
+    default_key = os.environ.get("SKITTER_LLM_API_KEY", "") or existing.get(
+        "api_key", ""
+    )
     api_key = _prompt("API key", default_key, secret=True)
     if api_key:
         os.environ["SKITTER_LLM_API_KEY"] = api_key

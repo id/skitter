@@ -129,7 +129,9 @@ def _build_cli_cmd(
         if resume_id:
             cmd.extend(["--resume", resume_id])
         elif _PERMISSION_MODE == "bypassPermissions":
-            cmd.extend(["--dangerously-skip-permissions", "--settings", _SANDBOX_SETTINGS])
+            cmd.extend(
+                ["--dangerously-skip-permissions", "--settings", _SANDBOX_SETTINGS]
+            )
         else:
             cmd.extend(
                 ["--permission-mode", _PERMISSION_MODE, "--settings", _SANDBOX_SETTINGS]

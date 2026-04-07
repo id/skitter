@@ -8,6 +8,7 @@ short prompt into a complete definition using the selected runtime
 """
 
 import argparse
+import getpass
 import logging
 import os
 import re
@@ -105,8 +106,8 @@ def _prompt_auth(runtime: str) -> dict[str, str]:
         label = f"{var}"
         if hint:
             label += f" ({hint})"
-        prompt_str = f"{label} [{default[:8]}...]" if default else label
-        value = input(f"{prompt_str}: ").strip() or default
+        prompt_str = f"{label} [{default[:4]}{'*' * 4}...]" if default else label
+        value = getpass.getpass(f"{prompt_str}: ").strip() or default
         if value:
             result[var] = value
             break  # use the first available credential

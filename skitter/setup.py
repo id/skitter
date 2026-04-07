@@ -5,6 +5,7 @@ and writes ~/.skitter/config.yaml.
 """
 
 import asyncio
+import getpass
 import logging
 import os
 import sys
@@ -17,13 +18,21 @@ from skitter.config import config_file, detect_runtimes, skitter_home
 log = logging.getLogger("skitter.setup")
 
 
-def _prompt(msg: str, default: str = "") -> str:
-    suffix = f" [{default}]" if default else ""
+def _prompt(msg: str, default: str = "", *, secret: bool = False) -> str:
+    suffix = f" [{default}]" if default and not secret else ""
+    if secret and default:
+        suffix = f" [{default[:4]}{'*' * max(0, len(default) - 4)}]"
+    hint = " (- to clear)" if default else ""
     try:
-        value = input(f"{msg}{suffix}: ").strip()
+        if secret:
+            value = getpass.getpass(f"{msg}{hint}{suffix}: ").strip()
+        else:
+            value = input(f"{msg}{hint}{suffix}: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nAborted.", file=sys.stderr)
         sys.exit(1)
+    if value == "-":
+        return ""
     return value or default
 
 
@@ -116,7 +125,7 @@ def _collect_llm(
 
     api_key = os.environ.get("SKITTER_LLM_API_KEY", "") or existing.get("api_key", "")
     if not api_key:
-        api_key = _prompt("API key")
+        api_key = _prompt("API key", secret=True)
     if api_key:
         os.environ["SKITTER_LLM_API_KEY"] = api_key
 
@@ -173,7 +182,7 @@ def _collect_broker(non_interactive: bool, existing: dict) -> dict:
             existing.get("url", ""),
         )
         username = _prompt("Username", existing.get("username", ""))
-        password = _prompt("Password", existing.get("password", ""))
+        password = _prompt("Password", existing.get("password", ""), secret=True)
         ca_cert = _prompt("CA cert path (optional)", existing.get("ca_cert", ""))
         return {
             "tier": "serverless",
@@ -194,7 +203,7 @@ def _collect_broker(non_interactive: bool, existing: dict) -> dict:
             "Consider the 'docker' tier or use an externally routable address."
         )
     username = _prompt("Username (optional)", existing.get("username", ""))
-    password = _prompt("Password (optional)", existing.get("password", ""))
+    password = _prompt("Password (optional)", existing.get("password", ""), secret=True)
     return {
         "tier": "custom",
         "url": url,

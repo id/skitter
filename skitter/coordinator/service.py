@@ -966,6 +966,9 @@ def _parse_agent_id_from_topic(topic: str) -> str:
 
 
 def main() -> None:
+    from skitter.config import configure_logging
+
+    configure_logging()
     db = open_db()
     coord = Coordinator(db)
     try:

@@ -8,11 +8,31 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
+
+# Isolate tests from the developer's ~/.skitter/ config and from MQTT_*/SKITTER_*
+# values uv and skitter.mqtt pull out of the project .env. Point SKITTER_HOME at
+# a throwaway dir and blank the relevant env vars so load_config() falls back to
+# built-in defaults (localhost:1883, no auth, org=skitter unit=default), matching
+# what CI sees on a fresh runner. Set to empty string rather than popping so
+# skitter.mqtt's load_dotenv() call at import time leaves them alone (dotenv
+# respects already-set vars). Must happen before importing anything from skitter.*.
+os.environ["SKITTER_HOME"] = tempfile.mkdtemp(prefix="skitter-test-")
+for _var in (
+    "MQTT_BROKER_URL",
+    "MQTT_USERNAME",
+    "MQTT_PASSWORD",
+    "MQTT_CA_CERT",
+    "SKITTER_A2A_ORG",
+    "SKITTER_A2A_UNIT",
+):
+    os.environ[_var] = ""
 
 import aiomqtt
 import pytest

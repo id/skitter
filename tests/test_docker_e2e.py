@@ -97,6 +97,9 @@ pytestmark = pytest.mark.skipif(
 def host_env(tmp_path):
     """Fresh isolated environment for each test that runs skitter CLI commands."""
     env = os.environ.copy()
+    # conftest pins SKITTER_HOME for in-process test code; subprocess tests here
+    # want skitter to derive its home from HOME, so drop the inherited override.
+    env.pop("SKITTER_HOME", None)
     env["HOME"] = str(tmp_path)
     env["MQTT_BROKER_URL"] = "mqtt://localhost:1883"
     env["NO_COLOR"] = "1"

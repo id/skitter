@@ -114,34 +114,34 @@ def _build_cli_cmd(
             if agent.instructions:
                 cmd.extend(["-c", f"developer_instructions={agent.instructions}"])
             cmd.append(prompt)
+        return cmd
+
+    full_prompt = prompt
+    if agent.instructions:
+        full_prompt = f"{agent.instructions}\n\n{prompt}"
+    cmd = [
+        "claude",
+        "-p",
+        full_prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+    if resume_id:
+        cmd.extend(["--resume", resume_id])
     else:
-        full_prompt = prompt
-        if agent.instructions:
-            full_prompt = f"{agent.instructions}\n\n{prompt}"
-        cmd = [
-            "claude",
-            "-p",
-            full_prompt,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-        ]
-        if resume_id:
-            cmd.extend(["--resume", resume_id])
-        elif _PERMISSION_MODE == "bypassPermissions":
-            cmd.extend(
-                ["--dangerously-skip-permissions", "--settings", _SANDBOX_SETTINGS]
-            )
-        else:
-            cmd.extend(
-                ["--permission-mode", _PERMISSION_MODE, "--settings", _SANDBOX_SETTINGS]
-            )
-        if agent.model:
-            cmd.extend(["--model", agent.model])
-        if agent.max_turns:
-            cmd.extend(["--max-turns", str(agent.max_turns)])
-        if agent.tools:
-            cmd.extend(["--allowedTools", ",".join(agent.tools)])
+        # Use --permission-mode rather than --dangerously-skip-permissions even for
+        # bypassPermissions: the latter triggers a Claude CLI hang on large inputs
+        # combined with --output-format stream-json.
+        cmd.extend(
+            ["--permission-mode", _PERMISSION_MODE, "--settings", _SANDBOX_SETTINGS]
+        )
+    if agent.model:
+        cmd.extend(["--model", agent.model])
+    if agent.max_turns:
+        cmd.extend(["--max-turns", str(agent.max_turns)])
+    if agent.tools:
+        cmd.extend(["--allowedTools", ",".join(agent.tools)])
     return cmd
 
 

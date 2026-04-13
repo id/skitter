@@ -163,6 +163,9 @@ def mock_codex_bin(tmp_home):
 def skitter_env(tmp_home, mock_claude_bin, mock_codex_bin):
     """Subprocess environment with isolated HOME and mock CLIs on PATH."""
     env = os.environ.copy()
+    # conftest pins SKITTER_HOME for in-process test code; subprocess tests here
+    # want skitter to derive its home from HOME, so drop the inherited override.
+    env.pop("SKITTER_HOME", None)
     env["HOME"] = str(tmp_home)
     env["PATH"] = f"{mock_claude_bin}:{mock_codex_bin}:{env.get('PATH', '')}"
     env["NO_COLOR"] = "1"

@@ -9,6 +9,10 @@ env:
   CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   SKITTER_LLM_API_KEY: ${{ secrets.SKITTER_LLM_API_KEY }}
   SKITTER_LLM_MODEL: ${{ vars.SKITTER_LLM_MODEL || 'claude-haiku-4-5' }}
+  # CI runners are slower than dev machines; large prompts to the Claude CLI can
+  # take well over the 30s default before the agent emits its first artifact.
+  # Keep below the 120s outer timeout in send_and_collect to avoid racing it.
+  SKITTER_STREAM_IDLE_TIMEOUT: "90"
 
 jobs:
   docker-e2e:

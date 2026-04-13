@@ -34,10 +34,10 @@ for _var in (
 ):
     os.environ[_var] = ""
 
-import aiomqtt
-import pytest
+import aiomqtt  # noqa: E402 — after env scrubbing above
+import pytest  # noqa: E402
 
-from skitter.a2a import (
+from skitter.a2a import (  # noqa: E402
     a2a_org,
     a2a_unit,
     A2ARequest,
@@ -49,8 +49,8 @@ from skitter.a2a import (
     topic_discovery,
     topic_reply,
 )
-from skitter.config import load_config as _load_config
-from skitter.mqtt import mqtt_client_kwargs
+from skitter.config import load_config as _load_config  # noqa: E402
+from skitter.mqtt import mqtt_client_kwargs  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).parent.parent
 

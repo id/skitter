@@ -161,8 +161,10 @@ class TestAgentRunnerCli:
         assert "--agent" not in cmd
         assert "--model" in cmd
         assert "sonnet" in cmd
-        assert "--dangerously-skip-permissions" in cmd
-        assert "--permission-mode" not in cmd
+        # Use --permission-mode bypassPermissions: --dangerously-skip-permissions
+        # triggers a Claude CLI hang on large + stream-json inputs.
+        assert "--dangerously-skip-permissions" not in cmd
+        assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
 
     def test_build_codex_cmd(self):
         from skitter.agent_runner import _build_cli_cmd

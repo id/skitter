@@ -68,6 +68,18 @@ This quick start uses a single standalone agent, so no orchestrator API key is r
 - Skitter can run a single agent directly, or bundle multiple agents into an app with the coordinator.
 - The built-in harness reads Claude Code `.md` agents and Codex `.toml` agents from `~/.skitter/agents/`.
 
+## Web Dashboard
+
+`web/` contains an optional React dashboard that connects straight to the broker over MQTT (WebSocket): browse discovered agents, send requests, drive composed apps through chat, and follow workflow runs live. It is a static single-page app with no backend of its own.
+
+```bash
+cd web
+pnpm install
+pnpm dev
+```
+
+The dev server runs at http://localhost:18084/skitter/. Set the broker URL, organization, and unit from the in-app settings (persisted in `localStorage`). See [web/README.md](web/README.md) for details.
+
 ## Next Steps
 
 - [Usage Guide](docs/usage.md): service management, multi-agent apps, chat, Docker, storage, and limitations

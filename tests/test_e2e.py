@@ -135,7 +135,7 @@ def mock_graph():
     """Fixture to set the graph that generate_graph will return."""
     container: dict = {}
 
-    async def _mock(instructions, agent_cards, *, model="", required_agent_ids=None):
+    async def _mock(instructions, agent_cards, *, model=""):
         return dict(container["graph"])
 
     with patch("skitter.runtime_api.generate_graph", new=_mock):

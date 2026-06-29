@@ -26,8 +26,7 @@ Output format (no markdown, no explanation — just the JSON object):
 
 Rules:
 - Every agent reference must match an agent ID from the provided list.
-- Use every provided agent exactly once unless the instructions explicitly say
-  not to use a provided agent.
+- Use the agents relevant to the instructions; you need not use every provided agent.
 - The graph must be a DAG (no cycles).
 - Task IDs must be unique.
 - "needs" lists upstream dependencies (tasks whose results this task requires).
@@ -58,8 +57,6 @@ class GraphValidationError(Exception):
 def validate_graph(
     graph: dict,
     valid_agent_ids: set[str],
-    *,
-    required_agent_ids: set[str] | None = None,
 ) -> None:
     """Validate an orchestration graph. Raises GraphValidationError on failure."""
     tasks = graph.get("tasks")
@@ -91,15 +88,6 @@ def validate_graph(
         for need in needs:
             if need not in all_ids:
                 raise GraphValidationError(f"Task '{tid}' needs unknown task '{need}'")
-
-    if required_agent_ids:
-        used_agent_ids = {str(t.get("agent", "")) for t in tasks}
-        missing_agent_ids = required_agent_ids - used_agent_ids
-        if missing_agent_ids:
-            raise GraphValidationError(
-                "Graph must use every selected agent; missing: "
-                f"{', '.join(sorted(missing_agent_ids))}"
-            )
 
     # Check for cycles using DFS on dependency edges
     adj: dict[str, list[str]] = {t.get("id"): t.get("needs", []) for t in tasks}
@@ -147,7 +135,6 @@ async def generate_graph(
     agent_cards: dict[str, dict],
     *,
     model: str = "",
-    required_agent_ids: set[str] | None = None,
 ) -> dict:
     """Use LLM to generate an orchestration graph from instructions + agent cards.
 
@@ -173,7 +160,7 @@ async def generate_graph(
             raise GraphValidationError(f"LLM returned invalid JSON: {e}") from e
 
         try:
-            validate_graph(graph, valid_ids, required_agent_ids=required_agent_ids)
+            validate_graph(graph, valid_ids)
             return graph
         except GraphValidationError as e:
             if attempt == 0:

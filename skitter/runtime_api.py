@@ -618,7 +618,7 @@ async def _handle_create_app(
 
     # Generate orchestration graph via LLM
     try:
-        graph = await generate_graph(instructions, cards, required_agent_ids=set(cards))
+        graph = await generate_graph(instructions, cards)
     except GraphValidationError as e:
         return ErrorResult(f"Graph generation failed: {e}")
     except Exception as e:

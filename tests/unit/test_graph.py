@@ -119,21 +119,6 @@ class TestGraphValidation:
         with pytest.raises(GraphValidationError, match="must not have dependents"):
             validate_graph(graph, {"a", "b"})
 
-    def test_required_agent_ids_must_be_used(self):
-        from skitter.graph_gen import GraphValidationError, validate_graph
-
-        graph = {
-            "tasks": [
-                {"id": "read", "agent": "reader", "needs": [], "terminal": True},
-            ]
-        }
-        with pytest.raises(GraphValidationError, match="missing: analyzer"):
-            validate_graph(
-                graph,
-                {"reader", "analyzer"},
-                required_agent_ids={"reader", "analyzer"},
-            )
-
 
 class TestGraphGeneration:
     def _make_cards(self):
@@ -236,58 +221,6 @@ class TestGraphGeneration:
 
         assert mock_llm.call_count == 2
         assert graph["tasks"][0]["agent"] == "agent-reader-001"
-
-    @pytest.mark.asyncio
-    async def test_generate_retries_when_required_agent_missing(self):
-        from skitter.graph_gen import generate_graph
-
-        missing_analyzer = json.dumps(
-            {
-                "tasks": [
-                    {
-                        "id": "read",
-                        "agent": "agent-reader-001",
-                        "description": "Read",
-                        "needs": [],
-                        "terminal": True,
-                    }
-                ]
-            }
-        )
-        complete_graph = json.dumps(
-            {
-                "tasks": [
-                    {
-                        "id": "read",
-                        "agent": "agent-reader-001",
-                        "description": "Read",
-                        "needs": [],
-                    },
-                    {
-                        "id": "analyze",
-                        "agent": "agent-analyzer-002",
-                        "description": "Analyze",
-                        "needs": ["read"],
-                        "terminal": True,
-                    },
-                ]
-            }
-        )
-
-        with patch("skitter.graph_gen.complete", new_callable=AsyncMock) as mock_llm:
-            mock_llm.side_effect = [missing_analyzer, complete_graph]
-            graph = await generate_graph(
-                "Read and analyze",
-                self._make_cards(),
-                model="test",
-                required_agent_ids={"agent-reader-001", "agent-analyzer-002"},
-            )
-
-        assert mock_llm.call_count == 2
-        assert {task["agent"] for task in graph["tasks"]} == {
-            "agent-reader-001",
-            "agent-analyzer-002",
-        }
 
     @pytest.mark.asyncio
     async def test_generate_fails_after_retries(self):

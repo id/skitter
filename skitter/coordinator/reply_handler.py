@@ -133,7 +133,12 @@ async def complete_task(
     )
 
     log.info("Task %s/%s completed", state.session_id, node_id)
-    await coord._publish_event("task_completed", state.session_id, task_id=node_id)
+    await coord._publish_event(
+        "task_completed",
+        state.session_id,
+        task_id=node_id,
+        data=coord._task_event_data(state, node_id, result=result),
+    )
 
     # Check if session is complete
     if not state.inflight and not state.pending:
@@ -186,7 +191,7 @@ async def fail_task(
         "task_failed",
         state.session_id,
         task_id=node_id,
-        data={"error": error[:200]},
+        data=coord._task_event_data(state, node_id, error=error),
     )
 
     # Check if session is done (all inflight finished)
@@ -221,7 +226,11 @@ async def complete_session(coord: Coordinator, state: SessionState) -> None:
         artifact_text=result_text,
     )
 
-    await coord._publish_event("session_completed", state.session_id)
+    await coord._publish_event(
+        "session_completed",
+        state.session_id,
+        data=coord._session_event_data(state),
+    )
     coord._sessions.pop(state.session_id, None)
     coord._request_task_index.pop(state.request_task_id, None)
     coord._clear_context_active(state)
@@ -250,7 +259,7 @@ async def fail_session(coord: Coordinator, state: SessionState, error: str) -> N
     await coord._publish_event(
         "session_failed",
         state.session_id,
-        data={"error": error[:200]},
+        data={**coord._session_event_data(state), "error": error[:1000]},
     )
     coord._sessions.pop(state.session_id, None)
     coord._request_task_index.pop(state.request_task_id, None)

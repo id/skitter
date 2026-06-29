@@ -10,8 +10,21 @@ from skitter.config import LLMConfig, load_config
 
 log = logging.getLogger("skitter.llm")
 
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
 # env var name → cached SDK client
 _client_cache: dict[str, object] = {}
+
+
+def strip_code_fence(text: str) -> str:
+    """Strip a leading/trailing markdown code fence from LLM output."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return text
 
 
 def _resolve_model(cfg: LLMConfig) -> str:
@@ -50,12 +63,13 @@ def _anthropic_client(cfg: LLMConfig):
 def _openai_client(cfg: LLMConfig):
     from openai import AsyncOpenAI
 
-    cache_key = f"openai:{cfg.base_url}"
+    base_url = cfg.base_url or (DEEPSEEK_BASE_URL if cfg.api == "deepseek" else "")
+    cache_key = f"{cfg.api}:{base_url}"
     if cache_key in _client_cache:
         return _client_cache[cache_key]
     kwargs: dict = {"api_key": _api_key(cfg)}
-    if cfg.base_url:
-        kwargs["base_url"] = cfg.base_url
+    if base_url:
+        kwargs["base_url"] = base_url
     client = AsyncOpenAI(**kwargs)
     _client_cache[cache_key] = client
     return client
@@ -94,7 +108,7 @@ async def complete(
     try:
         if cfg.api == "openai":
             return await _complete_openai(prompt, system=system, model=model, cfg=cfg)
-        if cfg.api == "openai-completions":
+        if cfg.api in ("openai-completions", "deepseek"):
             return await _complete_openai_chat(
                 prompt, system=system, model=model, cfg=cfg
             )

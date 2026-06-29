@@ -43,6 +43,19 @@ class TestSetupNonInteractive:
         assert result is not None
         assert result["api"] == "openai"
 
+    def test_deepseek_defaults_to_deepseek_chat(self):
+        from skitter.setup import _collect_llm
+
+        env = {
+            "SKITTER_LLM_API": "deepseek",
+            "SKITTER_LLM_API_KEY": "sk-deepseek",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            result = _collect_llm(non_interactive=True, standalone=False, existing={})
+        assert result is not None
+        assert result["api"] == "deepseek"
+        assert result["model"] == "deepseek-chat"
+
 
 class TestSetupVerifyPassesLLMConfig:
     """_verify must pass LLM config to check() without mutating os.environ."""

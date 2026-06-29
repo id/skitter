@@ -196,6 +196,23 @@ class TestLLMComplete:
         assert messages[1] == {"role": "user", "content": "hello"}
 
     @pytest.mark.asyncio
+    async def test_complete_deepseek_uses_chat_api_and_default_base_url(self):
+        from skitter.config import LLMConfig
+        from skitter.llm import DEEPSEEK_BASE_URL, complete
+
+        mock_client, mock_create = self._mock_openai_chat("deepseek response")
+        cfg = LLMConfig(model="deepseek-chat", api="deepseek", api_key="test-key")
+        with (
+            patch("openai.AsyncOpenAI", return_value=mock_client) as mock_cls,
+            patch("skitter.llm.load_config", return_value=MagicMock(llm=cfg)),
+        ):
+            result = await complete("hello", model="deepseek-chat")
+
+        assert result == "deepseek response"
+        assert mock_cls.call_args.kwargs["base_url"] == DEEPSEEK_BASE_URL
+        mock_create.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_complete_none_content_raises(self):
         from skitter.config import LLMConfig
         from skitter.llm import complete

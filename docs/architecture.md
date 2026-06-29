@@ -190,6 +190,10 @@ The `skitter` agent handles structured queries:
 | `create app {json}` | Create composed app from agent IDs + instructions |
 | `delete app {id}` | Delete an app and all its versions, sessions, and tasks |
 
+The same `skitter` agent also accepts natural language requests. It can plan a
+new composed app from the current discovery registry, or route a request to an
+existing app so the normal coordinator session path handles execution.
+
 Session lifecycle events are published on `$a2a/v1/event/{org}/{unit}/skitter` for external consumers (e.g., dashboards).
 
 ## Database

@@ -140,7 +140,7 @@ llm:
 | `SKITTER_A2A_UNIT` | `default` | A2A topic unit segment |
 | `SKITTER_LLM_MODEL` | (empty) | Coordinator LLM model (overrides `llm.model` in config) |
 | `SKITTER_LLM_API_KEY` | (empty) | Coordinator LLM API key (overrides `llm.api_key` in config) |
-| `SKITTER_LLM_API` | `anthropic` | Coordinator LLM provider: `anthropic`, `openai`, or `openai-completions` (overrides `llm.api` in config) |
+| `SKITTER_LLM_API` | `anthropic` | Coordinator LLM provider: `anthropic`, `openai`, `openai-completions`, or `deepseek` (overrides `llm.api` in config) |
 | `SKITTER_LLM_BASE_URL` | (empty) | Custom endpoint URL for coordinator LLM (overrides `llm.base_url` in config) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | (empty) | OAuth token for Claude Code agents (preferred; generate via `claude setup-token`). Stored per-agent in `~/.skitter/agents/<name>.env` |
 | `ANTHROPIC_API_KEY` | (empty) | Anthropic API key for Claude Code agents (fallback). Stored per-agent in `~/.skitter/agents/<name>.env` |

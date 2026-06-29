@@ -104,7 +104,7 @@ class DBConfig:
 @dataclass
 class LLMConfig:
     model: str = ""
-    api: str = "anthropic"  # anthropic, openai, or openai-completions
+    api: str = "anthropic"  # anthropic, openai, openai-completions, or deepseek
     base_url: str = ""
     api_key: str = ""
 

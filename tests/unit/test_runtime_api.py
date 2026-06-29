@@ -52,6 +52,8 @@ class TestAppCreation:
             if e["uri"] == "urn:skitter:app"
         )
         assert len(wf["params"]["tasks"]) == 1
+        assert wf["params"]["tasks"][0]["needs"] == []
+        assert wf["params"]["tasks"][0]["terminal"] is True
 
     @pytest.mark.asyncio
     async def test_provided_app_id(self):
@@ -359,6 +361,28 @@ class TestRuntimeApi:
         assert isinstance(result, CreateAppResult)
         assert result.version == 1
         assert result.card_json
+        card = json.loads(result.card_json)
+        wf = next(
+            e
+            for e in card["capabilities"]["extensions"]
+            if e["uri"] == "urn:skitter:app"
+        )
+        assert wf["params"]["tasks"] == [
+            {
+                "id": "read",
+                "agent": "reader",
+                "description": "Read",
+                "needs": [],
+                "terminal": False,
+            },
+            {
+                "id": "analyze",
+                "agent": "analyzer",
+                "description": "Analyze",
+                "needs": ["read"],
+                "terminal": True,
+            },
+        ]
 
         # Verify DB state
         app = self.db.get_app(result.app_id)
@@ -396,6 +420,221 @@ class TestRuntimeApi:
         assert isinstance(result, ErrorResult)
         assert "registry" in result.message.lower()
 
+    @pytest.mark.asyncio
+    async def test_natural_language_creates_app(self):
+        from skitter.coordinator import DiscoveryRegistry
+        from skitter.runtime_api import CreateAppResult, handle_query
+
+        registry = DiscoveryRegistry()
+        registry.update(
+            "lock",
+            {"name": "Lock", "description": "Controls a door lock"},
+        )
+        registry.update(
+            "fan",
+            {"name": "Fan", "description": "Controls a smart fan"},
+        )
+
+        graph = {
+            "tasks": [
+                {
+                    "id": "lock",
+                    "agent": "lock",
+                    "description": "Lock the door",
+                    "needs": [],
+                },
+                {
+                    "id": "fan",
+                    "agent": "fan",
+                    "description": "Turn off the fan",
+                    "needs": ["lock"],
+                    "terminal": True,
+                },
+            ]
+        }
+
+        decision = {
+            "action": "create_app",
+            "name": "Leave home mode",
+            "description": "Coordinate devices when leaving home",
+            "instructions": "Lock the door, then turn off the fan.",
+            "agents": ["lock", "fan"],
+        }
+        with (
+            patch(
+                "skitter.runtime_api.complete", new_callable=AsyncMock
+            ) as mock_complete,
+            patch(
+                "skitter.runtime_api.generate_graph", new_callable=AsyncMock
+            ) as mock_gen,
+        ):
+            mock_complete.return_value = json.dumps(decision)
+            mock_gen.return_value = graph
+            result = await handle_query(self.adb, "Create leave home mode", registry)
+
+        assert isinstance(result, CreateAppResult)
+        assert result.message.startswith("Created workflow")
+        app = self.db.get_app(result.app_id)
+        assert app is not None
+        assert app.name == "Leave home mode"
+
+    @pytest.mark.asyncio
+    async def test_natural_language_create_excludes_task_agents(self):
+        from skitter.coordinator import DiscoveryRegistry
+        from skitter.runtime_api import CreateAppResult, handle_query
+
+        registry = DiscoveryRegistry()
+        registry.update("lock", {"name": "Lock", "description": "Controls a door lock"})
+        registry.update("fan", {"name": "Fan", "description": "Controls a smart fan"})
+        registry.update(
+            "smart-home-task",
+            {
+                "name": "Smart Home Task Agent",
+                "description": "Coordinates smart home scenes",
+                "capabilities": {
+                    "extensions": [
+                        {
+                            "uri": "urn:skitter:task-agent",
+                            "params": {"kind": "mock-task-agent"},
+                        }
+                    ]
+                },
+            },
+        )
+
+        decision = {
+            "action": "create_app",
+            "name": "Home mode",
+            "description": "Coordinate home devices",
+            "instructions": "Unlock the door, then turn on the fan.",
+            "agents": ["lock", "fan"],
+        }
+        graph = {
+            "tasks": [
+                {
+                    "id": "unlock",
+                    "agent": "lock",
+                    "description": "Unlock the door",
+                    "needs": [],
+                },
+                {
+                    "id": "fan",
+                    "agent": "fan",
+                    "description": "Turn on the fan",
+                    "needs": ["unlock"],
+                    "terminal": True,
+                },
+            ]
+        }
+
+        with (
+            patch(
+                "skitter.runtime_api.complete", new_callable=AsyncMock
+            ) as mock_complete,
+            patch(
+                "skitter.runtime_api.generate_graph", new_callable=AsyncMock
+            ) as mock_gen,
+        ):
+            mock_complete.return_value = json.dumps(decision)
+            mock_gen.return_value = graph
+            result = await handle_query(self.adb, "Create home mode", registry)
+
+        assert isinstance(result, CreateAppResult)
+        planner_payload = json.loads(mock_complete.call_args.args[0])
+        assert {agent["id"] for agent in planner_payload["available_agents"]} == {
+            "lock",
+            "fan",
+        }
+        assert "smart-home-task" not in mock_gen.call_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_natural_language_runs_existing_app(self):
+        from skitter.coordinator import DiscoveryRegistry
+        from skitter.runtime_api import RunAppResult, create_app, handle_query
+
+        await create_app(
+            self.adb,
+            app_id="leave-home-mode",
+            name="Leave home mode",
+            description="Coordinate devices when leaving home",
+            graph={
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": "lock",
+                        "description": "Do it",
+                        "needs": [],
+                        "terminal": True,
+                    }
+                ]
+            },
+        )
+        registry = DiscoveryRegistry()
+        decision = {
+            "action": "run_app",
+            "app_id": "leave-home-mode",
+            "prompt": "Turn on leave home mode now.",
+            "reason": "The user asked to start the workflow.",
+        }
+        with patch(
+            "skitter.runtime_api.complete", new_callable=AsyncMock
+        ) as mock_complete:
+            mock_complete.return_value = json.dumps(decision)
+            result = await handle_query(self.adb, "开启离家模式", registry)
+
+        assert isinstance(result, RunAppResult)
+        assert result.app_id == "leave-home-mode"
+        assert result.prompt == "Turn on leave home mode now."
+
+    @pytest.mark.asyncio
+    async def test_natural_language_run_preserves_concrete_runtime_details(self):
+        from skitter.coordinator import DiscoveryRegistry
+        from skitter.runtime_api import RunAppResult, create_app, handle_query
+
+        await create_app(
+            self.adb,
+            app_id="leave-home-mode",
+            name="Leave home mode",
+            description="Coordinate devices when leaving home",
+            graph={
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": "lock",
+                        "description": "Do it",
+                        "needs": [],
+                        "terminal": True,
+                    }
+                ]
+            },
+        )
+        registry = DiscoveryRegistry()
+        prompt = """开启离家模式
+
+Confirmed device bindings for workflow "Leave home mode":
+- Lock the door via Lock: device_id=lock-device-1, device_name=Front Door
+
+Use exactly these device_id values for the matching workflow steps. Do not choose other devices."""
+        decision = {
+            "action": "run_app",
+            "app_id": "leave-home-mode",
+            "prompt": prompt,
+            "reason": "The user confirmed concrete runtime details.",
+        }
+        with patch(
+            "skitter.runtime_api.complete", new_callable=AsyncMock
+        ) as mock_complete:
+            mock_complete.return_value = json.dumps(decision)
+            result = await handle_query(self.adb, prompt, registry)
+
+        assert isinstance(result, RunAppResult)
+        assert result.app_id == "leave-home-mode"
+        assert result.prompt == prompt
+        assert (
+            "concrete runtime details"
+            in mock_complete.call_args.kwargs["system"].lower()
+        )
+
 
 class TestCoordinatorRuntimeRouting:
     """Test that the coordinator routes runtime queries correctly."""
@@ -420,6 +659,20 @@ class TestCoordinatorRuntimeRouting:
         )
         assert sup.registry.get(AGENT_ID) is None
 
+    def test_handle_discovery_excludes_offline_agent(self):
+        from skitter.coordinator import Coordinator
+
+        sup = Coordinator(self.db)
+        topic = "$a2a/v1/discovery/skitter/default/lock-agent"
+        card = b'{"name":"Lock"}'
+        sup.handle_discovery(topic, card, "online")
+        assert "lock-agent" in sup.registry.list_agents()
+        # Agent republishes its (non-empty) card with offline status via LWT or
+        # graceful shutdown; it must drop out of the planner's selectable set.
+        sup.handle_discovery(topic, card, "offline")
+        assert "lock-agent" not in sup.registry.list_agents()
+        assert sup.registry.status("lock-agent") == "offline"
+
     @pytest.mark.asyncio
     async def test_publish_event_structure(self):
         """Verify _publish_event builds correct payload."""
@@ -441,6 +694,58 @@ class TestCoordinatorRuntimeRouting:
         assert payload["session_id"] == "sess1"
         assert payload["task_id"] == "research"
         assert "timestamp" in payload
+
+    @pytest.mark.asyncio
+    async def test_runtime_run_app_result_routes_to_app(self):
+        """A natural-language run decision should enter the app execution path."""
+        from skitter.coordinator import Coordinator
+        from skitter.runtime_api import RunAppResult, create_app
+        from skitter.db import AsyncDB
+
+        sup = Coordinator(self.db)
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        mock_client.subscribe = AsyncMock()
+        sup._client = mock_client
+
+        await create_app(
+            AsyncDB(self.db),
+            app_id="test-app",
+            name="Test App",
+            graph={
+                "tasks": [
+                    {
+                        "id": "step",
+                        "agent": "researcher",
+                        "description": "Do it",
+                        "needs": [],
+                        "terminal": True,
+                    }
+                ]
+            },
+        )
+
+        req = A2ARequest(
+            text="run the app",
+            request_id="q1",
+            task_id="request-task-1",
+            context_id="ctx-1",
+        )
+        with patch(
+            "skitter.coordinator.service.runtime_query", new_callable=AsyncMock
+        ) as mock_runtime_query:
+            mock_runtime_query.return_value = RunAppResult(
+                app_id="test-app", prompt="run the app"
+            )
+            await sup._handle_runtime_query(req, "reply/q", "corr-q")
+
+        assert self.db.get_session_by_request_task_id("request-task-1") is not None
+        dispatch_calls = [
+            call
+            for call in mock_client.publish.call_args_list
+            if "/request/" in str(call.args[0]) and "researcher" in str(call.args[0])
+        ]
+        assert len(dispatch_calls) == 1
 
     @pytest.mark.asyncio
     async def test_publish_event_no_client(self):
@@ -535,6 +840,9 @@ class TestRuntimeApiIntegration:
         assert "task_started" in event_types
         # session_created must come before task_started
         assert event_types.index("session_created") < event_types.index("task_started")
+        started_event = next(e for e in event_calls if e["event"] == "task_started")
+        assert started_event["data"]["request_task_id"] == req.task_id
+        assert started_event["data"]["agent"] == "researcher"
 
         # Simulate research task completion
         mock_client.publish.reset_mock()
@@ -902,3 +1210,53 @@ class TestRuntimeApiIntegration:
         artifact = au["artifact"]["parts"][0]["text"]
         result = json.loads(artifact)
         assert "not found" in result["error"].lower()
+
+
+class TestResolveAppRef:
+    def _apps(self):
+        return [
+            {
+                "id": "leave-home",
+                "name": "Leave home mode",
+                "description": "lock doors",
+            },
+            {"id": "mtg-notes", "name": "Meeting notes", "description": "summarize"},
+        ]
+
+    def test_exact_id_match(self):
+        from skitter.runtime_api import _resolve_app_ref
+
+        app = _resolve_app_ref("mtg-notes", self._apps())
+        assert app and app["id"] == "mtg-notes"
+
+    def test_exact_name_match_is_case_insensitive(self):
+        from skitter.runtime_api import _resolve_app_ref
+
+        app = _resolve_app_ref("leave home mode", self._apps())
+        assert app and app["id"] == "leave-home"
+
+    def test_unique_name_substring_matches(self):
+        from skitter.runtime_api import _resolve_app_ref
+
+        app = _resolve_app_ref("meeting", self._apps())
+        assert app and app["id"] == "mtg-notes"
+
+    def test_ambiguous_substring_returns_none(self):
+        from skitter.runtime_api import _resolve_app_ref
+
+        apps = [
+            {"id": "a1", "name": "Morning notes", "description": ""},
+            {"id": "a2", "name": "Evening notes", "description": ""},
+        ]
+        assert _resolve_app_ref("notes", apps) is None
+
+    def test_description_only_match_is_rejected(self):
+        from skitter.runtime_api import _resolve_app_ref
+
+        # "summarize" appears only in a description, never in a name.
+        assert _resolve_app_ref("summarize", self._apps()) is None
+
+    def test_blank_ref_returns_none(self):
+        from skitter.runtime_api import _resolve_app_ref
+
+        assert _resolve_app_ref("   ", self._apps()) is None

@@ -21,6 +21,12 @@ data/
 tests/workspace/
 tests/claude-state/
 
+# Frontend
+node_modules/
+apps/*/node_modules/
+apps/*/dist/
+apps/*/.vite/
+
 # IDE
 .idea/
 .vscode/

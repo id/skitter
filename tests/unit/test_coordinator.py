@@ -698,8 +698,8 @@ class TestCoordinatorDispatchCompliance:
         )
 
     @pytest.mark.asyncio
-    async def test_dispatch_includes_user_request_in_prompt(self):
-        """Dispatched A2A request must append user request to prompt text."""
+    async def test_dispatch_keeps_task_instruction_last(self):
+        """User request is context; the task instruction remains authoritative."""
         sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="find latest news", request_id="r1")
@@ -720,11 +720,13 @@ class TestCoordinatorDispatchCompliance:
         ]
         assert len(dispatched_payloads) == 1
         prompt_text = dispatched_payloads[0]["params"]["message"]["parts"][0]["text"]
-        assert "User request: find latest news" in prompt_text
+        assert "Workflow request for context only" in prompt_text
+        assert "find latest news" in prompt_text
+        assert prompt_text.endswith("Execute only this task:\nDo it")
 
     @pytest.mark.asyncio
     async def test_dispatch_omits_user_request_when_empty(self):
-        """Dispatched prompt must not contain 'User request:' when request text is empty."""
+        """Dispatched prompt must omit workflow context when request text is empty."""
         sup, mock_client = await self._make_coordinator_with_app()
 
         req = A2ARequest(text="", request_id="r1")
@@ -745,7 +747,8 @@ class TestCoordinatorDispatchCompliance:
         ]
         assert len(dispatched_payloads) == 1
         prompt_text = dispatched_payloads[0]["params"]["message"]["parts"][0]["text"]
-        assert "User request:" not in prompt_text
+        assert "Workflow request for context only" not in prompt_text
+        assert prompt_text.endswith("Execute only this task:\nDo it")
 
     @pytest.mark.asyncio
     async def test_dispatched_request_has_context_id(self):
@@ -943,6 +946,20 @@ class TestDiscoveryRegistry:
         assert "app1" not in reg.list_agents()
         assert "app1" in reg.list_apps()
         assert "agent1" not in reg.list_apps()
+
+    def test_offline_agents_excluded_from_list_agents(self):
+        from skitter.coordinator import DiscoveryRegistry
+
+        reg = DiscoveryRegistry()
+        reg.update("online-agent", {"name": "Online"}, "online")
+        reg.update("quiet-agent", {"name": "Quiet"})  # defaults to "unknown"
+        reg.update("offline-agent", {"name": "Offline"}, "offline")
+
+        agents = reg.list_agents()
+        assert "online-agent" in agents
+        assert "quiet-agent" in agents  # unknown is still selectable
+        assert "offline-agent" not in agents
+        assert reg.status("offline-agent") == "offline"
 
 
 # --- Helpers for write-ahead, recovery, and dedup edge case tests ---

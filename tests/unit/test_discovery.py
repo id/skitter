@@ -130,6 +130,24 @@ class TestParseCard:
             }
         )
 
+    def test_is_task_agent_card(self):
+        from skitter.discovery import is_task_agent_card
+
+        assert not is_task_agent_card({"name": "Agent"})
+        assert not is_task_agent_card({"capabilities": {}})
+        assert is_task_agent_card(
+            {
+                "capabilities": {
+                    "extensions": [
+                        {
+                            "uri": "urn:skitter:task-agent",
+                            "params": {"kind": "mock-task-agent"},
+                        }
+                    ]
+                }
+            }
+        )
+
 
 class TestDiscoveryWildcard:
     def test_default_org_unit(self):

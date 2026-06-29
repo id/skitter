@@ -5,6 +5,7 @@ import json
 from skitter.config import AgentDef, load_config as _load_config
 
 APP_EXTENSION_URI = "urn:skitter:app"
+TASK_AGENT_EXTENSION_URI = "urn:skitter:task-agent"
 
 
 def build_card(
@@ -90,4 +91,41 @@ def is_app_card(card: dict) -> bool:
     for ext in card.get("capabilities", {}).get("extensions", []):
         if ext.get("uri") == APP_EXTENSION_URI:
             return bool(ext.get("params", {}).get("tasks"))
+    return False
+
+
+def extract_app_tasks(card: dict) -> list[dict]:
+    """Return the normalized task list from an app card's app extension."""
+    for ext in card.get("capabilities", {}).get("extensions", []):
+        if ext.get("uri") != APP_EXTENSION_URI:
+            continue
+        tasks = ext.get("params", {}).get("tasks", [])
+        if isinstance(tasks, list):
+            return [
+                {
+                    "id": str(task.get("id", "")),
+                    "agent": str(task.get("agent", "")),
+                    "description": str(task.get("description", "")),
+                    "needs": task_needs(task),
+                    "terminal": bool(task.get("terminal", False)),
+                }
+                for task in tasks
+                if isinstance(task, dict)
+            ]
+    return []
+
+
+def task_needs(task: dict) -> list[str]:
+    """Normalize a task's ``needs`` list to clean, non-empty string ids."""
+    needs = task.get("needs", [])
+    if not isinstance(needs, list):
+        return []
+    return [str(need).strip() for need in needs if str(need).strip()]
+
+
+def is_task_agent_card(card: dict) -> bool:
+    """Detect task agents by presence of the Skitter task-agent extension."""
+    for ext in card.get("capabilities", {}).get("extensions", []):
+        if ext.get("uri") == TASK_AGENT_EXTENSION_URI:
+            return True
     return False

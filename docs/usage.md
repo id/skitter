@@ -79,7 +79,7 @@ Coordinator notes:
 - Standalone agents do not need coordinator LLM configuration
 - Composed apps need coordinator LLM configuration (model, API, key) for graph generation
 - The API key can be stored in `~/.skitter/config.yaml` (via `skitter setup`) or set as `SKITTER_LLM_API_KEY` env var
-- Supported LLM APIs: `anthropic`, `openai` (Responses API), `openai-completions` (Chat Completions API, for 3rd-party OpenAI-compatible providers)
+- Supported LLM APIs: `anthropic`, `openai` (Responses API), `openai-completions` (Chat Completions API, for 3rd-party OpenAI-compatible providers), `deepseek` (Chat Completions API, default model `deepseek-chat`)
 - Runtime auth for Claude Code or Codex is separate from coordinator LLM config
 
 ## Multi-turn Conversations
@@ -108,7 +108,7 @@ Useful environment variables:
 - `SKITTER_HOME`: move config, agents, and the local database
 - `SKITTER_LLM_API_KEY`: coordinator LLM API key (overrides `llm.api_key` in config)
 - `SKITTER_LLM_MODEL`: coordinator model (overrides `llm.model` in config)
-- `SKITTER_LLM_API`: coordinator provider: `anthropic`, `openai`, or `openai-completions` (overrides `llm.api` in config)
+- `SKITTER_LLM_API`: coordinator provider: `anthropic`, `openai`, `openai-completions`, or `deepseek` (overrides `llm.api` in config)
 - `SKITTER_LLM_BASE_URL`: custom coordinator endpoint (overrides `llm.base_url` in config)
 - `MQTT_BROKER_URL`: override the broker URL
 

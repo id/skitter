@@ -14,18 +14,18 @@ React + TypeScript dashboard for a minimal Skitter A2A-over-MQTT linkage demo.
 
 ```bash
 pnpm install
-pnpm dev --host 127.0.0.1
+pnpm dev
 ```
 
-The Vite dev server listens on port `18084`.
+The Vite dev server runs at http://localhost:18084/skitter/. In local development it proxies `/mqtt` to `ws://localhost:8083` and `/api` to `http://localhost:3000`; override these with the `VITE_PROXY_MQTT` and `VITE_PROXY_API` environment variables.
 
-Default broker settings:
+Default connection settings:
 
-- Broker URL: `ws://162.14.117.182:8083/mqtt`
+- Broker URL: same origin (works behind the dev proxy or a reverse proxy)
 - Organization: `default`
 - Unit: `default`
 
-The settings page persists overrides in `localStorage`.
+The settings dialog persists broker URL / org / unit overrides in `localStorage`.
 
 ## Checks
 

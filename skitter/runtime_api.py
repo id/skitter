@@ -345,9 +345,11 @@ async def _handle_natural_language(
     try:
         raw = await complete(prompt, system=_NATURAL_LANGUAGE_SYSTEM)
         decision = _parse_llm_json(raw)
-    except Exception as exc:
+    except Exception:
         log.exception("Runtime planner failed")
-        return MessageResult(f"I could not plan that request yet: {exc}")
+        return MessageResult(
+            "I could not plan that request yet. Please rephrase and try again."
+        )
 
     action = str(decision.get("action", "")).strip().lower()
     if action == "answer":

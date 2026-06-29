@@ -10,8 +10,6 @@ from skitter.config import LLMConfig, load_config
 
 log = logging.getLogger("skitter.llm")
 
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-
 # env var name → cached SDK client
 _client_cache: dict[str, object] = {}
 
@@ -63,7 +61,7 @@ def _anthropic_client(cfg: LLMConfig):
 def _openai_client(cfg: LLMConfig):
     from openai import AsyncOpenAI
 
-    base_url = cfg.base_url or (DEEPSEEK_BASE_URL if cfg.api == "deepseek" else "")
+    base_url = cfg.base_url
     cache_key = f"{cfg.api}:{base_url}"
     if cache_key in _client_cache:
         return _client_cache[cache_key]
@@ -108,7 +106,7 @@ async def complete(
     try:
         if cfg.api == "openai":
             return await _complete_openai(prompt, system=system, model=model, cfg=cfg)
-        if cfg.api in ("openai-completions", "deepseek"):
+        if cfg.api == "openai-completions":
             return await _complete_openai_chat(
                 prompt, system=system, model=model, cfg=cfg
             )

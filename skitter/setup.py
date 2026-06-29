@@ -95,7 +95,6 @@ def _collect_llm(
         "anthropic": "claude-sonnet-4-6",
         "openai": "gpt-5.4-mini",
         "openai-completions": "gpt-5.4-mini",
-        "deepseek": "deepseek-chat",
     }
 
     if non_interactive:
@@ -116,10 +115,9 @@ def _collect_llm(
 
     print("\nWhich LLM API?")
     print("  (openai-completions: for 3rd-party OpenAI-compatible providers)")
-    print("  (deepseek: DeepSeek chat completions)")
     api = _prompt_choice(
         "API",
-        ["anthropic", "openai", "openai-completions", "deepseek"],
+        ["anthropic", "openai", "openai-completions"],
         default=existing.get("api", "anthropic"),
     )
 

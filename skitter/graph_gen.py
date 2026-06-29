@@ -85,7 +85,10 @@ def validate_graph(
                 f"Task '{tid}' references unknown agent '{agent}'"
             )
 
-        for need in t.get("needs", []):
+        needs = t.get("needs", [])
+        if not isinstance(needs, list):
+            raise GraphValidationError(f"Task '{tid}' has a non-list 'needs' field")
+        for need in needs:
             if need not in all_ids:
                 raise GraphValidationError(f"Task '{tid}' needs unknown task '{need}'")
 

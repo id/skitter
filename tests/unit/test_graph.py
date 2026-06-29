@@ -94,6 +94,19 @@ class TestGraphValidation:
         with pytest.raises(GraphValidationError, match="unknown task"):
             validate_graph(graph, {"a"})
 
+    def test_non_list_needs(self):
+        from skitter.graph_gen import GraphValidationError, validate_graph
+
+        # LLM sometimes emits a bare string instead of a list; iterating it would
+        # otherwise produce misleading per-character "unknown task" errors.
+        graph = {
+            "tasks": [
+                {"id": "t1", "agent": "a", "needs": "t0", "terminal": True},
+            ]
+        }
+        with pytest.raises(GraphValidationError, match="non-list"):
+            validate_graph(graph, {"a"})
+
     def test_terminal_has_dependents(self):
         from skitter.graph_gen import GraphValidationError, validate_graph
 

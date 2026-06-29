@@ -79,7 +79,7 @@ Coordinator notes:
 - Standalone agents do not need coordinator LLM configuration
 - Composed apps need coordinator LLM configuration (model, API, key) for graph generation
 - The API key can be stored in `~/.skitter/config.yaml` (via `skitter setup`) or set as `SKITTER_LLM_API_KEY` env var
-- Supported LLM APIs: `anthropic`, `openai` (Responses API), `openai-completions` (Chat Completions API, for 3rd-party OpenAI-compatible providers)
+- Supported LLM APIs: `anthropic`, `openai` (Responses API), `openai-completions` (Chat Completions API, for 3rd-party OpenAI-compatible providers such as DeepSeek: set `base_url`, e.g. `https://api.deepseek.com`)
 - Runtime auth for Claude Code or Codex is separate from coordinator LLM config
 
 ## Multi-turn Conversations

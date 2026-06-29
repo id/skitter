@@ -34,6 +34,8 @@ from skitter.runtime_api import (
     CancelSessionResult,
     CreateAppResult,
     DeleteAppResult,
+    MessageResult,
+    RunAppResult,
     handle_query as runtime_query,
     coordinator_card,
 )
@@ -58,6 +60,7 @@ from skitter.a2a import (
     validate_a2a_request,
 )
 from skitter.mqtt import (
+    get_user_property,
     make_properties,
     mqtt_client_kwargs,
 )
@@ -143,6 +146,39 @@ class Coordinator:
             log.warning(
                 "Failed to publish %s event for session %s", event_type, session_id
             )
+
+    def _session_event_data(self, state: SessionState) -> dict:
+        return {
+            "request_task_id": state.request_task_id,
+            "app_id": state.app_id,
+            "context_id": state.context_id,
+        }
+
+    def _task_event_data(
+        self,
+        state: SessionState,
+        node_id: str,
+        *,
+        result: str = "",
+        error: str = "",
+    ) -> dict:
+        task = state.graph.get(node_id)
+        data = {
+            **self._session_event_data(state),
+            "node_id": node_id,
+        }
+        if task:
+            data.update(
+                {
+                    "agent": task.target.agent if task.target else task.agent,
+                    "description": task.description,
+                }
+            )
+        if result:
+            data["result"] = result[: self._MAX_RESULT_CHARS]
+        if error:
+            data["error"] = error[: self._MAX_RESULT_CHARS]
+        return data
 
     # --- Conversation continuity ---
 
@@ -271,10 +307,10 @@ class Coordinator:
         context = build_context(state, task)
         if context:
             parts.append(context)
-        parts.append(task.description)
         user_request = state.variables.get("user_request", "")
         if user_request:
-            parts.append(f"User request: {user_request}")
+            parts.append(f"Workflow request for context only:\n{user_request}")
+        parts.append(f"Execute only this task:\n{task.description}")
         prompt = "\n\n".join(parts)
 
         correlation = uuid.uuid4().hex[:16]
@@ -327,7 +363,12 @@ class Coordinator:
             target.agent,
             correlation,
         )
-        await self._publish_event("task_started", state.session_id, task_id=node_id)
+        await self._publish_event(
+            "task_started",
+            state.session_id,
+            task_id=node_id,
+            data=self._task_event_data(state, node_id),
+        )
 
     # --- Reply handling ---
 
@@ -382,6 +423,18 @@ class Coordinator:
         """
         result = await runtime_query(self._adb, req.text, self._registry)
 
+        if isinstance(result, RunAppResult):
+            app_req = A2ARequest(
+                text=result.prompt,
+                request_id=req.request_id,
+                task_id=req.task_id,
+                context_id=req.context_id,
+                sender=req.sender or RUNTIME_AGENT_ID,
+                variables=req.variables,
+            )
+            await self.handle_request(app_req, reply_topic, correlation, result.app_id)
+            return
+
         try:
             if isinstance(result, CancelSessionResult):
                 await self._cancel_session_cleanup(result.session_id)
@@ -397,7 +450,7 @@ class Coordinator:
             correlation,
             req.task_id,
             req.context_id or "",
-            artifact_text=json.dumps(result.to_dict()),
+            artifact_text=_runtime_artifact_text(result),
         )
 
     async def _cancel_session_cleanup(self, session_id: str) -> None:
@@ -557,7 +610,11 @@ class Coordinator:
             await self._client.publish(
                 state.caller_reply_topic, ack, qos=1, properties=props
             )
-        await self._publish_event("session_created", state.session_id)
+        await self._publish_event(
+            "session_created",
+            state.session_id,
+            data=self._session_event_data(state),
+        )
         await self.dispatch_ready(state)
         log.info(
             "%s session %s started (%d tasks)",
@@ -814,8 +871,14 @@ class Coordinator:
 
     # --- Discovery subscription ---
 
-    def handle_discovery(self, topic: str, payload: bytes) -> None:
-        """Process a discovery card update from the broker."""
+    def handle_discovery(
+        self, topic: str, payload: bytes, status: str = "unknown"
+    ) -> None:
+        """Process a discovery card update from the broker.
+
+        ``status`` is the agent's ``a2a-status`` user property (online/offline);
+        offline agents are kept out of planning by the registry.
+        """
         agent_id = topic.split("/")[-1]
         if agent_id == RUNTIME_AGENT_ID:
             return
@@ -824,7 +887,7 @@ class Coordinator:
             return
         try:
             card = parse_card(payload)
-            self._registry.update(agent_id, card)
+            self._registry.update(agent_id, card, status)
         except Exception:
             log.warning("Failed to parse discovery card for %s", agent_id)
 
@@ -902,16 +965,6 @@ class Coordinator:
                     retain=True,
                 )
 
-                # Best-effort LLM connectivity check; warn but don't block
-                # (only create-app needs the LLM, not runtime queries or recovery)
-                try:
-                    from skitter.llm import check as llm_check
-
-                    async with asyncio.timeout(10):
-                        await llm_check()
-                except Exception as exc:
-                    log.warning("LLM check failed (create-app will not work): %s", exc)
-
                 # Recover apps (subscribe + republish cards) and inflight sessions
                 await self.recover()
                 log.info("Coordinator ready (lock=%s)", instance_id)
@@ -922,28 +975,37 @@ class Coordinator:
                     payload = payload_bytes.decode() if payload_bytes else ""
                     log.debug("MQTT ← %s (%d bytes)", topic, len(payload))
 
-                    if "/discovery/" in topic:
-                        self.handle_discovery(topic, payload_bytes or b"")
-
-                    elif "/request/" in topic and "/cancel" not in topic:
-                        # Main connection only handles runtime API requests;
-                        # app requests arrive on dedicated per-app connections.
-                        validated = await validate_a2a_request(
-                            mqtt_msg, client, log=log
-                        )
-                        if not validated:
-                            continue
-                        req, caller_reply, caller_corr = validated
-
-                        await self._handle_runtime_query(req, caller_reply, caller_corr)
-
-                    elif "/reply/" in topic and "/skitter/" in topic:
-                        if payload:
-                            corr_bytes = getattr(
-                                mqtt_msg.properties, "CorrelationData", None
+                    try:
+                        if "/discovery/" in topic:
+                            status = get_user_property(mqtt_msg, "a2a-status")
+                            self.handle_discovery(
+                                topic, payload_bytes or b"", status or "unknown"
                             )
-                            corr = corr_bytes.decode() if corr_bytes else ""
-                            await self.handle_reply(topic, payload, corr)
+
+                        elif "/request/" in topic and "/cancel" not in topic:
+                            # Main connection only handles runtime API requests;
+                            # app requests arrive on dedicated per-app connections.
+                            validated = await validate_a2a_request(
+                                mqtt_msg, client, log=log
+                            )
+                            if not validated:
+                                continue
+                            req, caller_reply, caller_corr = validated
+
+                            await self._handle_runtime_query(
+                                req, caller_reply, caller_corr
+                            )
+
+                        elif "/reply/" in topic and "/skitter/" in topic:
+                            if payload:
+                                corr_bytes = getattr(
+                                    mqtt_msg.properties, "CorrelationData", None
+                                )
+                                corr = corr_bytes.decode() if corr_bytes else ""
+                                await self.handle_reply(topic, payload, corr)
+                    except Exception:
+                        # One bad message must never tear down the coordinator loop.
+                        log.exception("Error handling MQTT message on %s", topic)
         finally:
             # Tear down per-app connections
             for app_id in list(self._app_tasks):
@@ -974,6 +1036,14 @@ def _parse_agent_id_from_topic(topic: str) -> str:
     """Extract agent_id from $a2a/v1/request/{org}/{unit}/{agent_id}."""
     parts = topic.split("/")
     return parts[5] if len(parts) >= 6 else ""
+
+
+def _runtime_artifact_text(result) -> str:
+    if isinstance(result, MessageResult):
+        return result.message
+    if isinstance(result, CreateAppResult) and result.message:
+        return result.message
+    return json.dumps(result.to_dict())
 
 
 # --- Entry point ---

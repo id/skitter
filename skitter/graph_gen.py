@@ -3,7 +3,7 @@
 import json
 import logging
 
-from skitter.llm import complete
+from skitter.llm import complete, strip_code_fence
 
 log = logging.getLogger("skitter.graph_gen")
 
@@ -26,6 +26,7 @@ Output format (no markdown, no explanation — just the JSON object):
 
 Rules:
 - Every agent reference must match an agent ID from the provided list.
+- Use the agents relevant to the instructions; you need not use every provided agent.
 - The graph must be a DAG (no cycles).
 - Task IDs must be unique.
 - "needs" lists upstream dependencies (tasks whose results this task requires).
@@ -34,7 +35,6 @@ Rules:
 - A terminal task must not be listed in any other task's "needs".
 - Every non-terminal task must be listed in at least one other task's "needs".
 - Omit "terminal" (or set it to false) for non-terminal tasks.
-- Use each agent at most once unless the instructions explicitly require multiple uses.
 """
 
 
@@ -54,7 +54,10 @@ class GraphValidationError(Exception):
     """Raised when a generated graph fails validation."""
 
 
-def validate_graph(graph: dict, valid_agent_ids: set[str]) -> None:
+def validate_graph(
+    graph: dict,
+    valid_agent_ids: set[str],
+) -> None:
     """Validate an orchestration graph. Raises GraphValidationError on failure."""
     tasks = graph.get("tasks")
     if not tasks or not isinstance(tasks, list):
@@ -79,7 +82,10 @@ def validate_graph(graph: dict, valid_agent_ids: set[str]) -> None:
                 f"Task '{tid}' references unknown agent '{agent}'"
             )
 
-        for need in t.get("needs", []):
+        needs = t.get("needs", [])
+        if not isinstance(needs, list):
+            raise GraphValidationError(f"Task '{tid}' has a non-list 'needs' field")
+        for need in needs:
             if need not in all_ids:
                 raise GraphValidationError(f"Task '{tid}' needs unknown task '{need}'")
 
@@ -135,19 +141,12 @@ async def generate_graph(
     Validates the result and retries once on validation failure.
     """
     valid_ids = set(agent_cards.keys())
-
     prompt = _build_prompt(instructions, agent_cards)
 
     for attempt in range(2):
         raw = await complete(prompt, system=_SYSTEM, model=model)
 
-        # Strip markdown fences if present
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
+        text = strip_code_fence(raw)
 
         try:
             graph = json.loads(text)

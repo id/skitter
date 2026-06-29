@@ -1,0 +1,250 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/geist-sans/700.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #5e4eff;
+  --primary-foreground: #ffffff;
+  --secondary: #f8fafc;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #f8fafc;
+  --accent-foreground: #0f172a;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #5e4eff;
+  --radius: 0.75rem;
+  --brand-500: #5e4eff;
+  --online-bg: #dcfce7;
+  --online-border: rgba(22, 163, 74, 0.3);
+  --online-text: #166534;
+  --online-solid: #16a34a;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #09090b;
+  --foreground: #ededed;
+  --card: #141416;
+  --card-foreground: #ededed;
+  --popover: #141416;
+  --popover-foreground: #ededed;
+  --primary: #5e4eff;
+  --primary-foreground: #ffffff;
+  --secondary: #1e1e22;
+  --secondary-foreground: #ededed;
+  --muted: #1e1e22;
+  --muted-foreground: #9a9a9a;
+  --accent: #1e1e22;
+  --accent-foreground: #ededed;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: #8b80ff;
+  --online-bg: rgba(22, 163, 74, 0.1);
+  --online-border: rgba(22, 163, 74, 0.3);
+  --online-text: #4ade80;
+  --online-solid: #16a34a;
+}
+
+@theme inline {
+  --font-sans:
+    "Geist Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    sans-serif;
+  --font-mono:
+    "Geist Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace,
+    monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand-500: var(--brand-500);
+  --color-online-bg: var(--online-bg);
+  --color-online-border: var(--online-border);
+  --color-online-text: var(--online-text);
+  --color-online-solid: var(--online-solid);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-feature-settings:
+    "rlig" 1,
+    "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root:lang(zh),
+:root:lang(zh-CN) {
+  --font-sans:
+    "Geist Sans", -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", "WenQuanYi Micro Hei",
+    "Roboto", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:not(:disabled),
+a[href],
+summary,
+select:not(:disabled),
+input[type="checkbox"]:not(:disabled),
+input[type="radio"]:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+label:has(input[type="checkbox"]:not(:disabled)),
+label:has(input[type="radio"]:not(:disabled)) {
+  cursor: pointer;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+.skitter-split-view {
+  --focus-border: var(--border);
+  --separator-border: var(--border);
+  --sash-hover-size: 1px;
+  height: 100%;
+  width: 100%;
+}
+
+.skitter-split-view .sash {
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+
+.skitter-split-view .sash::before {
+  opacity: 1;
+}
+
+.skitter-split-view .sash-hover::before,
+.skitter-split-view .sash-active::before {
+  background: var(--border);
+}
+
+.skitter-registry-scroll [data-radix-scroll-area-viewport] > div {
+  display: block !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.workflow-flow {
+  --xy-background-color: transparent;
+  --xy-background-pattern-dots-color-default: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
+  --xy-controls-button-background-color-default: var(--background);
+  --xy-controls-button-background-color-hover-default: var(--muted);
+  --xy-controls-button-color-default: var(--muted-foreground);
+  --xy-controls-button-border-color-default: transparent;
+  --xy-node-border-default: transparent;
+  --xy-node-boxshadow-default: none;
+  --xy-edge-stroke-default: var(--border);
+  --xy-edge-stroke-width-default: 2;
+  --xy-minimap-background-color-default: color-mix(in srgb, var(--background) 92%, transparent);
+}
+
+.workflow-flow .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  min-width: 0;
+  min-height: 0;
+  border: 2px solid var(--background);
+  background: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  opacity: 1;
+  pointer-events: none;
+}
+
+.workflow-flow .react-flow__edge-path {
+  shape-rendering: geometricPrecision;
+}
+
+.workflow-flow .react-flow__controls {
+  overflow: hidden;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--background) 88%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 10px 28px -12px rgb(15 23 42 / 0.28);
+}
+
+.workflow-flow .react-flow__controls-button {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 7px;
+}
+
+.workflow-flow .react-flow__controls-button:hover {
+  color: var(--foreground);
+}
+
+.workflow-flow .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.workflow-flow .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px -12px rgb(15 23 42 / 0.28);
+}
+
+.workflow-flow .react-flow__minimap-mask {
+  fill: color-mix(in srgb, var(--muted-foreground) 14%, transparent);
+  stroke: color-mix(in srgb, var(--brand-500) 40%, transparent);
+  stroke-width: 2;
+}

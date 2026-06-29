@@ -1,0 +1,381 @@
+import i18n from "i18next";
+import { initReactI18next } from "react-i18next";
+import type { DashboardLanguage } from "./types";
+
+const CONFIG_STORAGE_KEY = "skitter.dashboard.config";
+const LANGUAGE_STORAGE_KEY = "skitter.dashboard.language";
+
+function isLanguage(value: unknown): value is DashboardLanguage {
+  return value === "en" || value === "zh";
+}
+
+function browserLanguage(): DashboardLanguage {
+  return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function initialLanguage(): DashboardLanguage {
+  try {
+    const storedLanguage = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (isLanguage(storedLanguage)) return storedLanguage;
+
+    const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
+    if (!raw) return browserLanguage();
+
+    const parsed = JSON.parse(raw) as { language?: unknown };
+    return isLanguage(parsed.language) ? parsed.language : browserLanguage();
+  } catch {
+    return browserLanguage();
+  }
+}
+
+export const resources = {
+  en: {
+    translation: {
+      common: {
+        cancel: "Cancel",
+        save: "Save",
+        workflow: "Scene",
+        workflows: "Scenes",
+        scenes: "Tasks",
+        skitter: "Skitter",
+        a2a: "A2A",
+      },
+      settings: {
+        title: "MQTT Config",
+        trigger: "MQTT Config",
+        description: "Network MQTT WebSocket connection used by this dashboard.",
+        brokerUrl: "Broker URL",
+        brokerUrlInvalid: "Enter a WebSocket URL starting with ws:// or wss://",
+        org: "Organization",
+        unit: "Unit",
+        username: "Username",
+        password: "Password",
+        clientId: "MQTT Client ID",
+      },
+      preferences: {
+        trigger: "Language and theme",
+        title: "Preferences",
+        language: "Language",
+        english: "English",
+        chinese: "中文",
+        theme: "Theme",
+      },
+      header: {
+        reconnect: "Reconnect",
+        theme: "Theme: {{theme}} (effective: {{resolvedTheme}})",
+      },
+      connection: {
+        connected: "Connected",
+        connecting: "Connecting",
+        disconnected: "Disconnected",
+        error: "Error",
+      },
+      theme: {
+        system: "System",
+        light: "Light",
+        dark: "Dark",
+      },
+      registry: {
+        savedWorkflows: "Saved",
+        noWorkflows: "No saved scenes. Create one in chat.",
+        taskAgents: "Task agents",
+        noScenes: "No task agents. Use Create to add one.",
+        registeredDeviceAgents: "Device Agent Cards",
+        noOnlineAgents: "No registered device agents",
+        deleted: "Deleted {{name}}",
+        failedDelete: "Failed to delete {{name}}",
+        delete: "Delete {{name}}",
+        loadingDevices: "Loading devices",
+        selectDevice: "Select device",
+        offline: "offline",
+        sort: "Sort",
+        sortNewest: "Newest",
+        sortOldest: "Oldest",
+      },
+      chat: {
+        workflowPlaceholder: "Type a goal to create or run...",
+        scenePlaceholder: "Ask this task to coordinate devices...",
+        send: "Send message",
+        sceneStarting: "Task agent is handling the request...",
+        sceneWorking: "Task agent is coordinating devices...",
+        sceneFallback: "Task agent is working...",
+        skitterStarting: "Skitter is handling the request...",
+        skitterWorkflow: "Skitter is running...",
+        skitterFallback: "Skitter is working...",
+      },
+      preview: {
+        sceneTrace: "Task trace",
+        workflowTrace: "Scene trace",
+        tracePanel: "Trace",
+        a2aTraceEmpty: "No trace",
+        workflowTraceEmpty: "No trace",
+        preparingCallFlow: "Preparing call flow",
+        progress: "Progress",
+        workflowSession: "Scene session",
+      },
+      flow: {
+        title: "Scene flow",
+        empty: "No workflow graph",
+        open: "View {{name}} workflow",
+        expand: "Fullscreen",
+        start: "Start",
+        step: "Step {{index}}",
+        terminal: "terminal",
+      },
+      progress: {
+        requestTitle: "Processing",
+        createTitle: "Creating",
+        runTitle: "Preparing run",
+        requestSubtitle: "Skitter is matching the request to a saved scene.",
+        createSubmitted: "Skitter received the request.",
+        createSubtitle: "Skitter is designing the scene.",
+        createRegistering: "Skitter is saving the scene.",
+        runSubtitle: "Skitter is preparing the selected item.",
+        running: "running",
+        completed: "completed",
+        failed: "failed",
+        steps: {
+          submitted: "Send request",
+          building: "Design scene",
+          resolving: "Match scene",
+          registering: "Save scene",
+          preparing_run: "Prepare execution",
+          completed: "Ready",
+        },
+      },
+      trace: {
+        workflowCallFlow: "Scene call flow",
+        callFlow: "Call flow",
+        a2aCallFlow: "A2A call flow",
+        a2aSteps: "A2A steps",
+        scenePlanning: "Task agent is planning the A2A call flow.",
+        skitterPreparing: "Skitter is checking the request and preparing the call flow.",
+        step: "Step {{index}}",
+        completed: "completed",
+        running: "running",
+        failed: "failed",
+        waiting: "waiting",
+        a2aStepsCompleted: "{{completed}}/{{total}} A2A steps completed",
+        stepsCompleted: "{{completed}}/{{total}} steps completed",
+        preparingA2A: "Preparing A2A call flow",
+        preparingCallFlow: "Preparing call flow",
+        workflowSession: "Scene session",
+        planTask: "Plan task",
+      },
+      status: {
+        runningWorkflow: "Running {{name}}...",
+        bindDevices: "Bind devices for {{name}} in the left panel, then ask Skitter to run it again.",
+        a2aFailed: "A2A request failed",
+        mqttDisconnected: "MQTT client is not connected",
+        coordinatorTimeout: "Coordinator did not reply before timeout",
+        agentTimeout: "Agent did not reply before timeout",
+        noDevices: "No registered devices",
+        a2aTimeout: "A2A request timed out",
+      },
+      fallback: {
+        skitterDescription: "Scene coordinator",
+        scenesName: "Tasks",
+        scenesDescription: "Task agents",
+        waitingSceneDiscovery: "Waiting for task agent discovery",
+      },
+      mockTask: {
+        title: "Create task agent",
+        create: "Create task agent",
+        createShort: "Create",
+        created: "Created {{name}}",
+        delete: "Delete {{name}}",
+        nameLabel: "Agent name",
+        namePlaceholder: "Example: Smart Cockpit Coordinator",
+        descriptionLabel: "Description",
+        descriptionPlaceholder: "Example: Coordinate cockpit scene mode, range, and microclimate devices.",
+        devicesTitle: "Available device agents",
+        noDevices: "No registered device agents are online yet.",
+        stepPlan: "Plan task",
+        stepPlanResult: "Parsed user intent and prepared the device coordination plan.",
+        stepDevices: "Match device agents",
+        stepDevicesResult: "Selected available device agents and prepared A2A calls.",
+        mockReply:
+          "### {{name}}\n\nTask agent created from the dashboard preview.\n\n- Interprets the user request\n- Selects matching device agents\n- Coordinates execution through A2A",
+      },
+    },
+  },
+  zh: {
+    translation: {
+      common: {
+        cancel: "取消",
+        save: "保存",
+        workflow: "场景",
+        workflows: "场景",
+        scenes: "任务",
+        skitter: "Skitter",
+        a2a: "A2A",
+      },
+      settings: {
+        title: "MQTT 配置",
+        trigger: "MQTT 配置",
+        description: "Dashboard 使用的网络层 MQTT WebSocket 连接。",
+        brokerUrl: "Broker URL",
+        brokerUrlInvalid: "请输入以 ws:// 或 wss:// 开头的 WebSocket 地址",
+        org: "组织",
+        unit: "单元",
+        username: "用户名",
+        password: "密码",
+        clientId: "MQTT Client ID",
+      },
+      preferences: {
+        trigger: "语言和主题",
+        title: "偏好",
+        language: "语言",
+        english: "English",
+        chinese: "中文",
+        theme: "主题",
+      },
+      header: {
+        reconnect: "重新连接",
+        theme: "主题：{{theme}}（当前：{{resolvedTheme}}）",
+      },
+      connection: {
+        connected: "已连接",
+        connecting: "连接中",
+        disconnected: "已断开",
+        error: "错误",
+      },
+      theme: {
+        system: "跟随系统",
+        light: "浅色",
+        dark: "深色",
+      },
+      registry: {
+        savedWorkflows: "已保存",
+        noWorkflows: "暂无场景，可在对话中创建。",
+        taskAgents: "任务 Agent",
+        noScenes: "暂无任务 Agent，可点击创建。",
+        registeredDeviceAgents: "已注册设备 Agent",
+        noOnlineAgents: "没有注册设备 Agent",
+        deleted: "已删除 {{name}}",
+        failedDelete: "删除 {{name}} 失败",
+        delete: "删除 {{name}}",
+        loadingDevices: "加载设备中",
+        selectDevice: "选择设备",
+        offline: "离线",
+        sort: "排序",
+        sortNewest: "最近上报",
+        sortOldest: "最早上报",
+      },
+      chat: {
+        workflowPlaceholder: "输入目标，创建或运行...",
+        scenePlaceholder: "让这个任务协调设备...",
+        send: "发送消息",
+        sceneStarting: "任务 Agent 正在处理请求...",
+        sceneWorking: "任务 Agent 正在协调设备...",
+        sceneFallback: "任务 Agent 正在处理...",
+        skitterStarting: "Skitter 正在处理请求...",
+        skitterWorkflow: "Skitter 正在运行...",
+        skitterFallback: "Skitter 正在处理...",
+      },
+      preview: {
+        sceneTrace: "任务链路",
+        workflowTrace: "场景链路",
+        tracePanel: "链路",
+        a2aTraceEmpty: "暂无链路",
+        workflowTraceEmpty: "暂无链路",
+        preparingCallFlow: "正在准备调用链路",
+        progress: "进度",
+        workflowSession: "场景会话",
+      },
+      flow: {
+        title: "场景流程图",
+        empty: "暂无流程图",
+        open: "查看 {{name}} 流程图",
+        expand: "全屏查看",
+        start: "开始",
+        step: "步骤 {{index}}",
+        terminal: "终点",
+      },
+      progress: {
+        requestTitle: "正在处理",
+        createTitle: "正在创建",
+        runTitle: "准备运行",
+        requestSubtitle: "Skitter 正在匹配场景。",
+        createSubmitted: "Skitter 已收到请求。",
+        createSubtitle: "Skitter 正在设计场景。",
+        createRegistering: "Skitter 正在保存场景。",
+        runSubtitle: "Skitter 正在准备选中项。",
+        running: "进行中",
+        completed: "已完成",
+        failed: "失败",
+        steps: {
+          submitted: "发送请求",
+          building: "设计场景",
+          resolving: "匹配场景",
+          registering: "保存场景",
+          preparing_run: "准备执行",
+          completed: "就绪",
+        },
+      },
+      trace: {
+        workflowCallFlow: "场景调用链路",
+        callFlow: "调用链路",
+        a2aCallFlow: "A2A 调用链路",
+        a2aSteps: "A2A 步骤",
+        scenePlanning: "任务 Agent 正在规划 A2A 调用链路。",
+        skitterPreparing: "Skitter 正在检查请求并准备调用链路。",
+        step: "步骤 {{index}}",
+        completed: "已完成",
+        running: "进行中",
+        failed: "失败",
+        waiting: "等待中",
+        a2aStepsCompleted: "{{completed}}/{{total}} 个 A2A 步骤已完成",
+        stepsCompleted: "{{completed}}/{{total}} 个步骤已完成",
+        preparingA2A: "正在准备 A2A 调用链路",
+        preparingCallFlow: "正在准备调用链路",
+        workflowSession: "场景会话",
+        planTask: "规划任务",
+      },
+      status: {
+        runningWorkflow: "正在运行 {{name}}...",
+        bindDevices: "先在左侧为 {{name}} 绑定设备，然后再让 Skitter 运行一次。",
+        a2aFailed: "A2A 请求失败",
+        mqttDisconnected: "MQTT 客户端未连接",
+        coordinatorTimeout: "Coordinator 响应超时",
+        agentTimeout: "Agent 响应超时",
+        noDevices: "没有注册设备",
+        a2aTimeout: "A2A 请求超时",
+      },
+      fallback: {
+        skitterDescription: "场景协调",
+        scenesName: "任务",
+        scenesDescription: "任务 Agent",
+        waitingSceneDiscovery: "等待任务 Agent 发现",
+      },
+      mockTask: {
+        title: "创建任务 Agent",
+        create: "创建任务 Agent",
+        createShort: "创建",
+        created: "已创建 {{name}}",
+        delete: "删除 {{name}}",
+        nameLabel: "Agent 名称",
+        namePlaceholder: "例如：智能驾驶舱",
+        descriptionLabel: "描述",
+        descriptionPlaceholder: "例如：协调座舱场景、续航与微气候设备，自动完成驾驶舱体验编排。",
+        devicesTitle: "可用设备 Agent",
+        noDevices: "当前没有在线的已注册设备 Agent。",
+        stepPlan: "规划任务",
+        stepPlanResult: "解析用户意图，并准备设备协调计划。",
+        stepDevices: "匹配设备 Agent",
+        stepDevicesResult: "选择可用设备 Agent，并准备 A2A 调用。",
+        mockReply:
+          "### {{name}}\n\n这是从 Dashboard 创建的任务 Agent 预览。\n\n- 理解座舱场景请求\n- 选择匹配的设备 Agent\n- 通过 A2A 协调座舱设备执行",
+      },
+    },
+  },
+} as const;
+
+void i18n.use(initReactI18next).init({
+  resources,
+  lng: initialLanguage(),
+  fallbackLng: "en",
+  interpolation: { escapeValue: false },
+});
+
+export default i18n;

@@ -879,11 +879,11 @@ export function useSkitterDashboard() {
         handleEvent(payloadText);
       }
 
-      if (topic.startsWith(`${topicPrefix()}/reply/${config.org}/${config.unit}/dashboard/`)) {
+      if (topic.startsWith(`${topicPrefix()}/reply/${config.org}/${config.unit}/${clientId}/`)) {
         handleReply(payloadText, packet);
       }
     },
-    [config.org, config.unit, handleEvent, handleReply],
+    [clientId, config.org, config.unit, handleEvent, handleReply],
   );
 
   // Route messages through a ref so that callback churn (e.g. the i18n `t`
@@ -906,7 +906,8 @@ export function useSkitterDashboard() {
     setConnectionError("");
 
     const options: IClientOptions = {
-      clientId,
+      // Transport binding requires MQTT Client ID as {org_id}/{unit_id}/{agent_id}.
+      clientId: `${config.org}/${config.unit}/${clientId}`,
       protocolVersion: 5,
       clean: true,
       reconnectPeriod: 2500,

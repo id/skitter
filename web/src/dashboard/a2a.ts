@@ -69,7 +69,9 @@ export function requestTopic(config: DashboardConfig, agentId: string) {
 }
 
 export function replyTopic(config: DashboardConfig, clientId: string) {
-  return `${topicPrefix()}/reply/${config.org}/${config.unit}/dashboard/${clientId}`;
+  // clientId is the requester's own agent_id segment; callers append a
+  // per-request reply_suffix → $a2a/v1/reply/{org}/{unit}/{agent_id}/{suffix}.
+  return `${topicPrefix()}/reply/${config.org}/${config.unit}/${clientId}`;
 }
 
 export function eventTopic(config: DashboardConfig) {
